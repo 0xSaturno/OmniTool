@@ -33,17 +33,13 @@ jobs:
       # Clone and build libdeflate from NVIDIA's gdeflate branch.
       # Uses MSVC on windows-latest; DLL ends up in build/Release/.
       - name: Build libdeflate
+        shell: cmd
         run: |
           git clone --branch gdeflate --depth 1 https://github.com/NVIDIA/libdeflate libdeflate-src
-          cmake -S libdeflate-src -B libdeflate-build -A x64 `
-            -DLIBDEFLATE_BUILD_SHARED_LIB=ON `
-            -DLIBDEFLATE_BUILD_STATIC_LIB=OFF `
-            -DLIBDEFLATE_BUILD_GZIP=OFF `
-            -DLIBDEFLATE_BUILD_TESTS=OFF
-          cmake --build libdeflate-build --config Release
-          $dll = Get-ChildItem -Recurse libdeflate-build -Filter libdeflate.dll | Select-Object -First 1
-          Copy-Item $dll.FullName src-tauri/libdeflate.dll
-        shell: pwsh
+          cd libdeflate-src
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          nmake /f Makefile.msc libdeflate.dll
+          copy libdeflate.dll ..\src-tauri\libdeflate.dll
 
       - name: Build app
         run: npm run tauri -- build --no-bundle
