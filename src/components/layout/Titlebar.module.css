@@ -1,0 +1,77 @@
+.titlebar {
+  position: relative;
+  height: 30px;
+  background: var(--bg-surface);
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 9999;
+}
+
+.dragRegion {
+  flex: 1;
+  /* Required for Tauri to recognize this area for dragging */
+  -webkit-app-region: drag;
+}
+
+.titleContainer {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.titleIcon {
+  display: flex;
+  align-items: center;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.titleText {
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.titleSeparator {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.windowControls {
+  display: flex;
+  height: 100%;
+}
+
+.controlBtn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  cursor: default;
+  transition: background 0.1s;
+}
+
+.controlBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.closeBtn:hover {
+  background: #e81123;
+  color: white;
+}

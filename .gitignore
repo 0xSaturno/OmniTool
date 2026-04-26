@@ -1,0 +1,22 @@
+# Rust
+src-tauri/target/
+src-tauri/gen/
+.cargo/
+
+# Node / Vite
+node_modules/
+dist/
+
+# Build artifacts
+*.pdb
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project-specific
+dev_tools/
+*.code-workspace
+*.dll

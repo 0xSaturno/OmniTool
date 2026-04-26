@@ -1,0 +1,69 @@
+[package]
+name = "omnitool"
+version = "0.1.0"
+edition = "2021"
+default-run = "OmniTool"
+
+[features]
+dev-tools = []
+
+[lib]
+name = "omnitool_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "OmniTool"
+path = "src/main.rs"
+
+[[bin]]
+name = "diag"
+path = "src/bin/diag.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dump_subset"
+path = "src/bin/dump_subset.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "inject_once"
+path = "src/bin/inject_once.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "roundtrip"
+path = "src/bin/roundtrip.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "sections"
+path = "src/bin/sections.rs"
+required-features = ["dev-tools"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri          = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs     = "2"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+byteorder      = "1"
+lz4_flex       = "0.11"
+glam           = "0.29"
+thiserror      = "2"
+log            = "0.4"
+flate2         = "1"
+zip            = "2"
+walkdir        = "2"
+tauri-plugin-shell = "2"
+libloading     = "0.8"
+ureq           = { version = "2", features = ["tls"] }
+
+[profile.release]
+opt-level    = 3
+lto          = true
+codegen-units = 1
+panic        = "abort"
+strip        = true

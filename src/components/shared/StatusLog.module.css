@@ -1,0 +1,29 @@
+.log {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.entry {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+}
+
+.prefix {
+  flex-shrink: 0;
+  width: 1rem;
+}
+
+.success { color: var(--success); }
+.warning { color: var(--warning); }
+.error   { color: var(--error);   }
+.info    { color: var(--text-secondary); }

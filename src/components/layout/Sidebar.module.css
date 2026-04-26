@@ -1,0 +1,213 @@
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.collapsed {
+  width: 48px;
+}
+
+/* Brand */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1.25rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.25rem;
+  min-width: 0;
+  transition: padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.collapsed .brand {
+  justify-content: center;
+  padding-left: 10px;
+  padding-right: 10px;
+  gap: 0;
+}
+
+.collapsed .collapseBtn {
+  margin-left: 0;
+}
+
+.brandIcon {
+  font-size: 1.2rem;
+  color: var(--accent);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.collapsed .brandIcon {
+  opacity: 0;
+  transform: scale(0.8);
+  pointer-events: none;
+  width: 0;
+  overflow: hidden;
+}
+
+.brandName {
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+
+.collapsed .brandName {
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  overflow: hidden;
+}
+
+.collapseBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 1.1rem;
+  padding: 0;
+  margin-left: auto;
+  transition: background 0.15s, color 0.15s, margin 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.collapseBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Nav links */
+
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0 0.5rem;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  background: transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: 
+    background 0.15s, 
+    color 0.15s, 
+    padding 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    margin 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.collapsed .navLink {
+  padding-left: 9px; /* Centers the 22px-ish icon area in 48px - margins */
+  margin: 0 4px;
+}
+
+.navLink:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.navLink.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.navIcon {
+  font-size: 1.15rem;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.navLabel {
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+
+.collapsed .navLabel {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Groups */
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-top: 0.6rem;
+}
+
+.groupLabel {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0 1.25rem 0.2rem;
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+  max-height: 2rem;
+  transition: opacity 0.2s, max-height 0.3s, padding 0.3s;
+}
+
+.collapsed .groupLabel {
+  opacity: 0;
+  max-height: 0;
+  padding: 0;
+  pointer-events: none;
+}
+
+/* Spacer & settings */
+
+.spacer {
+  flex: 1;
+}
+
+.settingsBtn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: calc(100% - 1rem);
+  margin: 0.25rem 0.5rem 0;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), margin 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.collapsed .settingsBtn {
+  width: calc(100% - 8px);
+  margin-left: 4px;
+  margin-right: 4px;
+}

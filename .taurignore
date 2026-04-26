@@ -1,0 +1,25 @@
+# Files that should NOT trigger a Rust rebuild during `tauri dev`.
+# Only src-tauri/src/** and Cargo files need to cause a recompile.
+
+# Frontend source 
+src/
+
+# Vite / Node artefacts 
+dist/
+node_modules/
+
+# Root config files 
+index.html
+vite.config.ts
+tsconfig.json
+package.json
+package-lock.json
+
+# Docs / scratch 
+*.md
+*.txt
+
+# OS / editor 
+.DS_Store
+Thumbs.db
+desktop.ini

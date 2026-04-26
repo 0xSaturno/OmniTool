@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      # Clone and build libdeflate from NVIDIA's gdeflate branch.
+      # Uses MSVC on windows-latest; DLL ends up in build/Release/.
+      - name: Build libdeflate
+        run: |
+          git clone --branch gdeflate --depth 1 https://github.com/NVIDIA/libdeflate libdeflate-src
+          cmake -S libdeflate-src -B libdeflate-build -A x64 `
+            -DLIBDEFLATE_BUILD_SHARED_LIB=ON `
+            -DLIBDEFLATE_BUILD_STATIC_LIB=OFF `
+            -DLIBDEFLATE_BUILD_GZIP=OFF `
+            -DLIBDEFLATE_BUILD_TESTS=OFF
+          cmake --build libdeflate-build --config Release
+          $dll = Get-ChildItem -Recurse libdeflate-build -Filter libdeflate.dll | Select-Object -First 1
+          Copy-Item $dll.FullName src-tauri/libdeflate.dll
+        shell: pwsh
+
+      - name: Build app
+        run: npm run tauri -- build --no-bundle
+
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Path dist-release | Out-Null
+          Copy-Item src-tauri/target/release/OmniTool.exe dist-release/
+          Copy-Item src-tauri/libdeflate.dll dist-release/
+          foreach ($f in @("README.md", "LICENSE", "NOTICE")) {
+            if (Test-Path $f) { Copy-Item $f dist-release/ }
+          }
+          $tag = "${{ github.ref_name }}"
+          Compress-Archive -Path dist-release/* -DestinationPath "OmniTool-$tag-windows-x64.zip"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniTool-windows-x64
+          path: OmniTool-*-windows-x64.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OmniTool-*-windows-x64.zip
+          generate_release_notes: true
