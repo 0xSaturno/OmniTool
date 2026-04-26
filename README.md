@@ -1,5 +1,10 @@
 # OmniTool
 
+[![Latest Release](https://img.shields.io/github/v/release/0xSaturno/OmniTool?style=flat-square&color=blue)](https://github.com/0xSaturno/OmniTool/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/0xSaturno/OmniTool/total?style=flat-square&color=green)](https://github.com/0xSaturno/OmniTool/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square&logo=windows)](https://github.com/0xSaturno/OmniTool/releases/latest)
+[![License](https://img.shields.io/github/license/0xSaturno/OmniTool?style=flat-square&color=orange)](LICENSE)
+
 A desktop modding toolkit for **Ratchet & Clank: Rift Apart (PC)**.  
 Built with Tauri + React + Rust.
 
@@ -11,7 +16,7 @@ Built with Tauri + React + Rust.
 
 **Material Remapper** — Remap material path references inside `.model` files.
 
-**Asset Browser** — Browse the game's TOC archive, filter by path, and extract assets to a staging project.
+**Asset Browser** — Browse the game's TOC archive, filter by path, and extract assets to a stage mod project.
 
 **Config Editor** — Convert `.config` files to JSON. Edit them with the inline editor that supports formatting and syntax highlighting.
 
