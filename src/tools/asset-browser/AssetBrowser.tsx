@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useDeferredValue, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
@@ -9,6 +11,9 @@ import styles from "./AssetBrowser.module.css";
 
 const SEND_TO_ROUTES: Record<string, { label: string; route: string }> = {
   config:   { label: "Config Editor",     route: "/tools/config-editor" },
+  actor:    { label: "Config Editor",     route: "/tools/config-editor" },
+  conduit:  { label: "Config Editor",     route: "/tools/config-editor" },
+  performanceset: { label: "Config Editor", route: "/tools/config-editor" },
   model:    { label: "Model Converter",   route: "/tools/model-converter" },
   material: { label: "Material Remapper", route: "/tools/material-remapper" },
 };
@@ -162,6 +167,29 @@ export default function AssetBrowser() {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);
   }
 
+  const refreshProjects = useCallback(async () => {
+    try {
+      const projectList: ProjectInfo[] = await invoke("list_projects");
+      setProjects(projectList);
+      setSelectedProject((prev) => {
+        if (projectList.length === 0) return "";
+        if (prev && projectList.some((p) => p.name === prev)) return prev;
+        return projectList[0].name;
+      });
+    } catch (e) {
+      pushLog("error", `Failed to refresh projects: ${e}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen("projects-changed", () => {
+      refreshProjects();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [refreshProjects]);
+
   const handleLoad = useCallback(async () => {
     if (!archivesDir) {
       pushLog("error", "Select an archives directory first.");
@@ -208,17 +236,13 @@ export default function AssetBrowser() {
       setTree(treeRoot);
       pushLog("success", `Tree built with ${assets.length} assets`);
 
-      const projectList: ProjectInfo[] = await invoke("list_projects");
-      setProjects(projectList);
-      if (projectList.length > 0 && !selectedProject) {
-        setSelectedProject(projectList[0].name);
-      }
+      await refreshProjects();
     } catch (e) {
       pushLog("error", String(e));
     } finally {
       setLoading(false);
     }
-  }, [archivesDir, selectedProject]);
+  }, [archivesDir, refreshProjects]);
 
   const handleSelect = useCallback((node: TreeNodeData, event: React.MouseEvent) => {
     if (!node.asset) return;
@@ -266,7 +290,7 @@ export default function AssetBrowser() {
             projectName: selectedProject,
             assetPath: path,
           });
-          pushLog("success", `→ ${result}`);
+          pushLog("success", `→ ${path}: ${result}`);
           ok++;
         } catch (e) {
           pushLog("error", `✗ ${path}: ${e}`);
@@ -289,8 +313,7 @@ export default function AssetBrowser() {
         game: "RCRA",
         author: newProjAuthor.trim(),
       });
-      const projectList: ProjectInfo[] = await invoke("list_projects");
-      setProjects(projectList);
+      await refreshProjects();
       setSelectedProject(newProjName.trim());
       pushLog("success", `Project "${newProjName.trim()}" created.`);
       setShowNewProject(false);
@@ -322,6 +345,42 @@ export default function AssetBrowser() {
       navigate(route, { state: { filePath: tempPath, assetPath: node.fullPath } });
     } catch (e) {
       pushLog("error", `Failed to extract: ${e}`);
+    }
+  }
+
+  async function handleExtractAssetToPath(node: TreeNodeData) {
+    setCtxMenu(null);
+    if (!node.asset || !tocPathRef.current || !archivesDir) return;
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Extract Asset To Folder",
+      });
+
+      if (!selected || Array.isArray(selected)) return;
+
+      const result: string = await invoke("extract_asset_to_path", {
+        tocPath: tocPathRef.current,
+        assetId: node.asset.id,
+        archivesDir,
+        outputDir: selected,
+        assetPath: node.fullPath,
+      });
+      pushLog("success", `Extracted ${node.fullPath} → ${result}`);
+    } catch (e) {
+      pushLog("error", `Extract to path failed: ${e}`);
+    }
+  }
+
+  async function handleCopyAssetPath(node: TreeNodeData) {
+    setCtxMenu(null);
+    try {
+      await navigator.clipboard.writeText(node.fullPath);
+      pushLog("success", `Copied asset path: ${node.fullPath}`);
+    } catch (e) {
+      pushLog("error", `Copy path failed: ${e}`);
     }
   }
 
@@ -545,8 +604,16 @@ export default function AssetBrowser() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {targets.length > 0 ? (
-              <>
+            <>
+              <div className={styles.ctxItem} onClick={() => handleExtractAssetToPath(ctxMenu.node)}>
+                Extract to Folder
+              </div>
+              <div className={styles.ctxItem} onClick={() => handleCopyAssetPath(ctxMenu.node)}>
+                Copy Asset Path
+              </div>
+              {targets.length > 0 && (
+                <>
+                  <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                 <div style={{ padding: "3px 16px 2px", fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)" }}>
                   Send To
                 </div>
@@ -575,12 +642,14 @@ export default function AssetBrowser() {
                 >
                   Stager (extract)
                 </div>
-              </>
-            ) : (
-              <div style={{ padding: "6px 16px", fontSize: "0.85rem", color: "var(--text-muted)" }}>
-                No tools for .{ext}
-              </div>
-            )}
+                </>
+              )}
+              {targets.length === 0 && (
+                <div style={{ padding: "6px 16px", fontSize: "0.78rem", color: "var(--text-muted)" }}>
+                  No send-to tools for .{ext}
+                </div>
+              )}
+            </>
           </div>
         );
       })()}

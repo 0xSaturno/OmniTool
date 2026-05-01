@@ -24,6 +24,10 @@ fn pretty(n: f32) -> String {
 }
 
 pub fn model_to_ascii(model: &ModelFile, look: usize) -> Result<String> {
+    model_to_ascii_for_looks(model, &[look])
+}
+
+pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<String> {
     let dat1 = &model.dat1;
 
     // Sections
@@ -65,12 +69,11 @@ pub fn model_to_ascii(model: &ModelFile, look: usize) -> Result<String> {
 
     let has_bones_section = dat1.get_section_data(TAG_JOINTS).is_some();
 
-    // Meshes to export (LOD 0, selected look)
-    let looks: Vec<usize> = vec![look];
+    // Meshes to export (LOD 0, selected look(s))
     let lod = 0;
     let mut mesh_set = std::collections::BTreeSet::new();
-    for look in &looks {
-        if let Some(l) = look_sec.looks.get(*look) {
+    for &look in looks {
+        if let Some(l) = look_sec.looks.get(look) {
             if let Some(lod_entry) = l.lods.get(lod) {
                 for mi in lod_entry.start..(lod_entry.start + lod_entry.count) {
                     mesh_set.insert(mi as usize);

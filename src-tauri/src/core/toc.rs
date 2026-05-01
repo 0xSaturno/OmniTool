@@ -17,10 +17,12 @@ const SECTION_ASSET_IDS: u32 = 0x506D7B8A;
 const SECTION_SPANS: u32 = 0xEDE8ADA9;
 const SECTION_SIZES: u32 = 0x65BCF461;
 const SECTION_ARCHIVES: u32 = 0x398ABFF0;
+const SECTION_ASSET_HEADERS: u32 = 0x654BDED9;
 
 const SIZE_ENTRY_LEN: usize = 16;
 const ARCHIVE_ENTRY_LEN: usize = 66;
 const ARCHIVE_NAME_LEN: usize = 40;
+const ASSET_HEADER_LEN: usize = 36;
 
 #[derive(Debug, Clone)]
 pub struct TocAsset {
@@ -52,6 +54,7 @@ pub struct Toc {
     spans: Vec<Span>,
     sizes: Vec<SizeEntry>,
     archive_names: Vec<String>,
+    asset_headers: Vec<Vec<u8>>,
 }
 
 impl Toc {
@@ -90,6 +93,7 @@ impl Toc {
         let spans = Self::parse_spans(&dat1)?;
         let sizes = Self::parse_sizes(&dat1)?;
         let archive_names = Self::parse_archives(&dat1)?;
+        let asset_headers = Self::parse_asset_headers(&dat1);
 
         info!(
             "TOC parsed: {} assets, {} spans, {} archives",
@@ -98,7 +102,7 @@ impl Toc {
             archive_names.len()
         );
 
-        Ok(Self { asset_ids, spans, sizes, archive_names })
+        Ok(Self { asset_ids, spans, sizes, archive_names, asset_headers })
     }
 
     fn parse_asset_ids(dat1: &Dat1) -> Result<Vec<u64>> {
@@ -164,6 +168,27 @@ impl Toc {
         Ok(names)
     }
 
+    fn parse_asset_headers(dat1: &Dat1) -> Vec<Vec<u8>> {
+        let Some(data) = dat1.get_section_data(SECTION_ASSET_HEADERS) else {
+            return Vec::new();
+        };
+        if data.len() % ASSET_HEADER_LEN != 0 {
+            warn!(
+                "TOC asset header section size {} is not divisible by {}",
+                data.len(),
+                ASSET_HEADER_LEN
+            );
+        }
+        let count = data.len() / ASSET_HEADER_LEN;
+        let mut headers = Vec::with_capacity(count);
+        for i in 0..count {
+            let start = i * ASSET_HEADER_LEN;
+            headers.push(data[start..start + ASSET_HEADER_LEN].to_vec());
+        }
+        debug!("Parsed {} asset headers", headers.len());
+        headers
+    }
+
     /// Get all asset IDs.
     pub fn asset_ids(&self) -> &[u64] {
         &self.asset_ids
@@ -224,7 +249,25 @@ impl Toc {
                 archive_path.display()
             )))?;
 
-        extract_from_archive(&archive_data, asset.offset as u64, asset.size as usize)
+        let mut raw = extract_from_archive(&archive_data, asset.offset as u64, asset.size as usize)?;
+
+        if asset.header_offset >= 0 {
+            let header_index = (asset.header_offset as usize) / ASSET_HEADER_LEN;
+            let header = self.asset_headers.get(header_index).ok_or_else(|| {
+                ToolkitError::Parse(format!(
+                    "asset header index {} out of range ({}) for asset {:#018X}",
+                    header_index,
+                    self.asset_headers.len(),
+                    asset.asset_id
+                ))
+            })?;
+            let mut combined = Vec::with_capacity(header.len() + raw.len());
+            combined.extend_from_slice(header);
+            combined.extend_from_slice(&raw);
+            raw = combined;
+        }
+
+        Ok(raw)
     }
 }
 

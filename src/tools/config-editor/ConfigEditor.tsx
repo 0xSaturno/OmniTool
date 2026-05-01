@@ -9,11 +9,12 @@ import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import styles from "./ConfigEditor.module.css";
 
-const CONFIG_FILTER = [{ name: "Insomniac Config", extensions: ["config"] }];
+const CONFIG_FILTER = [{ name: "Insomniac Config", extensions: ["config", "actor", "conduit", "performanceset"] }];
 
 interface ConfigData {
   config_type: string;
   content_json: string;
+  can_save: boolean;
 }
 
 export default function ConfigEditor() {
@@ -27,6 +28,7 @@ export default function ConfigEditor() {
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [canSave, setCanSave] = useState(true);
 
   const [log, setLog] = useState<LogEntry[]>([]);
   const [running, setRunning] = useState(false);
@@ -96,7 +98,7 @@ export default function ConfigEditor() {
 
   async function loadConfig() {
     if (!configPath) {
-      pushLog("error", "Select a .config file first.");
+      pushLog("error", "Select a supported config-like file first (.config/.actor/.conduit/.performanceset).");
       return;
     }
     setRunning(true);
@@ -108,8 +110,12 @@ export default function ConfigEditor() {
       const result: ConfigData = await invoke("read_config", { configPath });
       setConfigType(result.config_type);
       setJsonText(result.content_json);
+      setCanSave(result.can_save);
       setLoaded(true);
       pushLog("success", `Loaded config type: ${result.config_type}`);
+      if (!result.can_save) {
+        pushLog("warning", "This format is currently read-only in OmniTool.");
+      }
     } catch (e) {
       pushLog("error", String(e));
     } finally {
@@ -129,6 +135,10 @@ export default function ConfigEditor() {
 
   async function saveConfig() {
     if (!configPath || !loaded) return;
+    if (!canSave) {
+      pushLog("error", "Saving is not supported for this file format yet.");
+      return;
+    }
     if (jsonError) {
       pushLog("error", "Fix the JSON errors before saving.");
       return;
@@ -156,17 +166,18 @@ export default function ConfigEditor() {
     setJsonText("");
     setConfigType("");
     setJsonError("");
+    setCanSave(true);
     setLog([]);
   }, []);
 
   return (
     <div className={styles.page}>
       <h2 className={styles.title}>Config Editor</h2>
-      <p className={styles.subtitle}>Read and edit game .config files (serialized binary → JSON).</p>
+      <p className={styles.subtitle}>Read and edit .config/.actor/.conduit/.performanceset files (serialized binary → JSON).</p>
 
       <div className={styles.panel}>
         <FilePickerInput
-          label="Source .config"
+          label="Source config-like file"
           value={configPath}
           onChange={handleConfigPathChange}
           mode="open"
@@ -203,7 +214,7 @@ export default function ConfigEditor() {
 
           <div className={styles.actions}>
             <FilePickerInput
-              label="Output .config (optional)"
+              label="Output file (optional)"
               value={outPath}
               onChange={setOutPath}
               mode="save"
@@ -214,7 +225,7 @@ export default function ConfigEditor() {
               <button
                 className={styles.secondaryBtn}
                 onClick={() => setSendToStager(outPath || configPath)}
-                disabled={running || !!jsonError}
+                disabled={running || !!jsonError || !canSave}
                 title="Send output to a Stager project"
               >
                 Send to Stager
@@ -222,7 +233,7 @@ export default function ConfigEditor() {
               <button
                 className={styles.runBtn}
                 onClick={saveConfig}
-                disabled={running || !!jsonError}
+                disabled={running || !!jsonError || !canSave}
               >
                 {running ? "Saving…" : "Save Config"}
               </button>

@@ -10,7 +10,7 @@ use crate::core::filesystem;
 use crate::core::toc::Toc;
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
-    ascii_writer::model_to_ascii as do_model_to_ascii,
+    ascii_writer::model_to_ascii_for_looks as do_model_to_ascii_for_looks,
     model::ModelFile,
     sections::{
         look::{LookSection, TAG_LOOK},
@@ -23,15 +23,28 @@ pub async fn model_to_ascii(
     model_path: String,
     ascii_path: Option<String>,
     look: Option<usize>,
+    looks: Option<Vec<usize>>,
 ) -> Result<String, ToolkitError> {
     let start = Instant::now();
     eprintln!("[model_to_ascii] loading model from {}", model_path);
     let model_data = std::fs::read(&model_path)?;
     let model = ModelFile::parse(&model_data)?;
     
-    let look_idx = look.unwrap_or(0);
-    eprintln!("[model_to_ascii] converting model to ASCII (look={})", look_idx);
-    let ascii = do_model_to_ascii(&model, look_idx)?;
+    let selected_looks: Vec<usize> = if let Some(ls) = looks {
+        if ls.is_empty() {
+            vec![look.unwrap_or(0)]
+        } else {
+            let mut unique = std::collections::BTreeSet::new();
+            for l in ls {
+                unique.insert(l);
+            }
+            unique.into_iter().collect()
+        }
+    } else {
+        vec![look.unwrap_or(0)]
+    };
+    eprintln!("[model_to_ascii] converting model to ASCII (looks={:?})", selected_looks);
+    let ascii = do_model_to_ascii_for_looks(&model, &selected_looks)?;
 
     let out_path = ascii_path
         .filter(|s| !s.is_empty())
@@ -44,6 +57,53 @@ pub async fn model_to_ascii(
     std::fs::write(&out_path, &ascii)?;
     eprintln!("[model_to_ascii] saved ASCII to {} in {:?}", out_path.display(), start.elapsed());
     Ok(out_path.to_string_lossy().into_owned())
+}
+
+#[derive(serde::Serialize)]
+pub struct LookGroupInfo {
+    pub index: usize,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn list_model_lookgroups(model_path: String) -> Result<Vec<LookGroupInfo>, ToolkitError> {
+    let model_data = std::fs::read(&model_path)?;
+    let model = ModelFile::parse(&model_data)?;
+
+    // Determine how many look groups exist from TAG_LOOK (visibility ranges).
+    let look_count = model
+        .dat1
+        .get_section_data(TAG_LOOK)
+        .map(|d| LookSection::parse(d))
+        .transpose()?
+        .map(|ls| ls.looks.len())
+        .unwrap_or(0);
+
+    // Resolve names from TAG_LOOK_BUILT (ModelLookBuilt) when present.
+    let mut names: Vec<String> = Vec::new();
+    if let Some(lb_data) = model.dat1.get_section_data(TAG_LOOK_BUILT) {
+        if lb_data.len() >= 4 {
+            let size1 = u32::from_le_bytes(lb_data[0..4].try_into().unwrap()) as usize;
+            let region_end = size1.min(lb_data.len());
+            let entry_size = 80;
+            let n = region_end / entry_size;
+            for i in 0..n {
+                let base = i * entry_size;
+                let string_off =
+                    u32::from_le_bytes(lb_data[base + 76..base + 80].try_into().unwrap());
+                let name = model.dat1.get_string(string_off).unwrap_or_default();
+                names.push(name);
+            }
+        }
+    }
+
+    let total = look_count.max(names.len());
+    let mut out = Vec::with_capacity(total);
+    for i in 0..total {
+        let name = names.get(i).cloned().unwrap_or_else(|| format!("look_{i}"));
+        out.push(LookGroupInfo { index: i, name });
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -496,7 +556,7 @@ pub async fn extract_asset_to_project(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&out_path, &raw)?;
-        summary.push(format!("span {}→{}B", asset.span_index, raw.len()));
+        summary.push(format!("{} (span {}→{}B)", asset_path, asset.span_index, raw.len()));
         debug!(
             "extract_asset_to_project: span {} wrote {} bytes to {}",
             asset.span_index,
@@ -510,6 +570,54 @@ pub async fn extract_asset_to_project(
         matching.len(),
         start.elapsed()
     );
+    Ok(summary.join(", "))
+}
+
+#[tauri::command]
+pub async fn extract_asset_to_path(
+    toc_path: String,
+    asset_id: String,
+    archives_dir: String,
+    output_dir: String,
+    asset_path: String,
+) -> Result<String, ToolkitError> {
+    let id = u64::from_str_radix(&asset_id, 16)
+        .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
+
+    let data = std::fs::read(&toc_path)?;
+    let toc = Toc::parse(&data)?;
+
+    let matching: Vec<_> = toc
+        .assets()
+        .into_iter()
+        .filter(|a| a.asset_id == id)
+        .collect();
+    if matching.is_empty() {
+        return Err(ToolkitError::Parse(format!(
+            "asset {asset_id} not found in TOC"
+        )));
+    }
+
+    let base = PathBuf::from(output_dir);
+    let mut summary = Vec::new();
+
+    for asset in &matching {
+        let raw = toc.extract_asset(asset, Path::new(&archives_dir))?;
+        let out_path = base
+            .join(asset.span_index.to_string())
+            .join(&asset_path);
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out_path, &raw)?;
+        summary.push(format!(
+            "{} (span {}→{}B)",
+            out_path.display(),
+            asset.span_index,
+            raw.len()
+        ));
+    }
+
     Ok(summary.join(", "))
 }
 
@@ -818,6 +926,7 @@ pub fn import_assets_to_project(
 pub struct ConfigData {
     pub config_type: String,
     pub content_json: String,
+    pub can_save: bool,
 }
 
 #[tauri::command]
@@ -828,12 +937,13 @@ pub async fn read_config(config_path: String) -> Result<ConfigData, ToolkitError
     let cfg = ConfigFile::parse(&data)?;
     let content_json = serde_json::to_string_pretty(&cfg.content)
         .map_err(|e| ToolkitError::Parse(format!("failed to serialize content to JSON: {e}")))?;
+    let can_save = !cfg.config_type.starts_with("ReadOnly_");
     eprintln!(
         "[config_editor] loaded type={:?} in {:?}",
         cfg.config_type,
         start.elapsed()
     );
-    Ok(ConfigData { config_type: cfg.config_type, content_json })
+    Ok(ConfigData { config_type: cfg.config_type, content_json, can_save })
 }
 
 #[tauri::command]
@@ -851,10 +961,15 @@ pub async fn write_config(
 
     // Load original to preserve the magic and unk bytes
     let data = std::fs::read(&config_path)?;
-    let original = ConfigFile::parse(&data)?;
-
-    let cfg = ConfigFile { magic: original.magic, unk: original.unk, config_type, content };
-    let bytes = cfg.save();
+    let mut cfg = ConfigFile::parse(&data)?;
+    if cfg.config_type.starts_with("ReadOnly_") {
+        return Err(ToolkitError::Unsupported(
+            "saving is not supported for this file format yet".to_string(),
+        ));
+    }
+    cfg.config_type = config_type;
+    cfg.content = content;
+    let bytes = cfg.save()?;
 
     let output = out_path
         .filter(|s| !s.is_empty())

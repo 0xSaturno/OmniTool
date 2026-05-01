@@ -237,6 +237,7 @@ struct MeshUpdate {
     first_skin_batch: u16,
     first_weight_index: u32,
     skin_batches_count: u16,
+    force_relative: bool,
     /// false for untouched meshes — skip the flag-strip so their original flags are preserved
     strip_flags: bool,
 }
@@ -257,6 +258,32 @@ fn parse_mesh_index_from_ascii_name(name: &str) -> Option<usize> {
         }
     }
     None
+}
+
+fn build_ascii_mesh_index_map(ascii: &AsciiModel, mesh_count: usize) -> Result<std::collections::HashMap<usize, usize>> {
+    let mut ascii_by_index: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::with_capacity(ascii.meshes.len());
+    for (ascii_i, mesh_ascii) in ascii.meshes.iter().enumerate() {
+        let mesh_index = parse_mesh_index_from_ascii_name(&mesh_ascii.name).unwrap_or(ascii_i);
+        if mesh_index >= mesh_count {
+            return Err(ToolkitError::Parse(format!(
+                "mesh '{}' resolved to index {} but model has only {} meshes",
+                mesh_ascii.name,
+                mesh_index,
+                mesh_count
+            )));
+        }
+        if let Some(prev_ascii_i) = ascii_by_index.insert(mesh_index, ascii_i) {
+            return Err(ToolkitError::Parse(format!(
+                "duplicate ASCII mesh mapping for model mesh #{}: '{}' and '{}'. \
+                 Export must contain exactly one mesh per smNN index",
+                mesh_index,
+                ascii.meshes[prev_ascii_i].name,
+                mesh_ascii.name
+            )));
+        }
+    }
+    Ok(ascii_by_index)
 }
 
 fn should_rebuild_skin(meshes: &[MeshDefinition], ascii: &AsciiModel) -> Result<bool> {
@@ -351,14 +378,10 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     // pointer shifts. (The old global-repack glitch came from not copying
     // untouched-mesh bytes into the new layout; see HANDOFF_mesh_glitch.md.)
     let n_meshes = meshes.len();
-    let mut ascii_by_index: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::with_capacity(ascii.meshes.len());
-    for (i, m) in ascii.meshes.iter().enumerate() {
-        let mi = parse_mesh_index_from_ascii_name(&m.name).unwrap_or(i);
-        ascii_by_index.insert(mi, i);
-    }
+    let ascii_by_index = build_ascii_mesh_index_map(ascii, n_meshes)?;
     let mut new_vstart = vec![0u32; n_meshes];
     let mut new_istart = vec![0u32; n_meshes];
+    let mut force_relative = vec![false; n_meshes];
     let orig_vertexes_for_raw_w: Vec<Vertex>;
     {
         let mut cv: u64 = 0;
@@ -376,6 +399,28 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             };
             cv += vc;
             ci += ic;
+        }
+        for mi in 0..n_meshes {
+            if meshes[mi].has_relative_indices() {
+                continue;
+            }
+            let vc = if let Some(&ai) = ascii_by_index.get(&mi) {
+                ascii.meshes[ai].vertexes.len() as u64
+            } else {
+                meshes[mi].vertex_count as u64
+            };
+            if vc == 0 {
+                continue;
+            }
+            let max_abs_index = new_vstart[mi] as u64 + vc - 1;
+            if max_abs_index > u16::MAX as u64 {
+                force_relative[mi] = true;
+                eprintln!(
+                    "[inject_ascii] mesh #{} absolute indices would overflow (max_abs_index={}) -> forcing relative indices",
+                    mi,
+                    max_abs_index
+                );
+            }
         }
         let new_vert_total = cv as usize;
         let new_idx_total = ci as usize;
@@ -410,6 +455,19 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             if om.has_relative_indices() {
                 new_indices[nis..nis + copy_ic]
                     .clone_from_slice(&idx_sec.values[old_is..old_is + copy_ic]);
+            } else if force_relative[mi] {
+                // Convert absolute source indices into relative indices.
+                for k in 0..copy_ic {
+                    let v = idx_sec.values[old_is + k] as i64 - old_vs as i64;
+                    if !(0..=u16::MAX as i64).contains(&v) {
+                        return Err(ToolkitError::Parse(format!(
+                            "relative index conversion out of range for mesh {}: {}",
+                            mi,
+                            v
+                        )));
+                    }
+                    new_indices[nis + k] = v as u16;
+                }
             } else {
                 // Absolute indices reference mesh.vertex_start — shift them by
                 // (new_vs - old_vs) so they keep pointing at this mesh's verts
@@ -417,6 +475,13 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 let shift: i64 = nvs as i64 - old_vs as i64;
                 for k in 0..copy_ic {
                     let v = idx_sec.values[old_is + k] as i64 + shift;
+                    if !(0..=u16::MAX as i64).contains(&v) {
+                        return Err(ToolkitError::Parse(format!(
+                            "index overflow for mesh {} while shifting absolute indices: {}",
+                            mi,
+                            v
+                        )));
+                    }
                     new_indices[nis + k] = v as u16;
                 }
             }
@@ -739,7 +804,8 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         }
 
         // Write faces
-        let vc_offset = if mesh.has_relative_indices() { 0 } else { vertex_start };
+        let use_relative_indices = mesh.has_relative_indices() || force_relative[mesh_index];
+        let vc_offset = if use_relative_indices { 0 } else { vertex_start };
         for face in &mesh_data_ascii.faces {
             if cur_index + 2 < idx_sec.values.len() {
                 idx_sec.values[cur_index + 0] = (face.2 + vc_offset) as u16;
@@ -775,6 +841,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             first_skin_batch,
             first_weight_index,
             skin_batches_count,
+            force_relative: force_relative[mesh_index],
             strip_flags: true,
         });
     }
@@ -853,6 +920,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 first_skin_batch: new_first_skin_batch,
                 first_weight_index: new_first_weight_index,
                 skin_batches_count: new_skin_batches_count,
+                force_relative: force_relative[mi],
                 strip_flags: false,
             });
         }
@@ -1057,7 +1125,7 @@ fn calculate_tangents(
         // baked tangents (causing normal-map glitches on shoulder pads/claws).
         if !u.strip_flags { continue; }
         let mesh = meshes.get(u.mesh_index);
-        let relative = mesh.map(|m| m.has_relative_indices()).unwrap_or(true);
+        let relative = u.force_relative || mesh.map(|m| m.has_relative_indices()).unwrap_or(true);
         let vs = u.vertex_start as usize;
         let is = u.index_start as usize;
         let ic = u.index_count as usize;
@@ -1177,6 +1245,7 @@ fn update_meshes(model: &mut ModelFile, updates: &[MeshUpdate]) -> Result<()> {
                 m.first_weight_index = u.first_weight_index;
             }
             if u.strip_flags { m.flags = m.flags & 0x111; }
+            if u.force_relative { m.flags |= 0x10; }
             eprintln!(
                 "[inject_ascii] updated mesh #{}: v_start={} v_count={} i_start={} i_count={} first_weight={} skin_batches={}",
                 u.mesh_index,

@@ -135,7 +135,6 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
     const filterTerms = lowerFilter.split(/\s+/).filter(Boolean);
 
     function search(node: TreeNodeData) {
-      if (results.length >= 200) return;
       if (node.asset) {
         const pathLower = node.fullPath.toLowerCase();
         if (filterTerms.every(term => pathLower.includes(term))) {
@@ -143,7 +142,6 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
         }
       }
       for (const child of node.children.values()) {
-        if (results.length >= 200) return;
         search(child);
       }
     }
@@ -167,11 +165,6 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
             <span className={styles.nodeName}>{node.fullPath}</span>
           </div>
         ))}
-        {results.length >= 200 && (
-          <div className={styles.treeRow} style={{ paddingLeft: "8px", opacity: 0.5 }}>
-            <span className={styles.nodeName}>... additional results omitted for performance</span>
-          </div>
-        )}
       </div>
     );
   }

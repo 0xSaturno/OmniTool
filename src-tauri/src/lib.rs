@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::model_to_ascii,
+            commands::list_model_lookgroups,
             commands::ascii_to_model,
             commands::read_model_materials,
             commands::save_model_materials,
@@ -19,6 +20,7 @@ pub fn run() {
             commands::load_toc,
             commands::list_toc_assets,
             commands::extract_asset_to_project,
+            commands::extract_asset_to_path,
             commands::create_project,
             commands::list_projects,
             commands::delete_project,

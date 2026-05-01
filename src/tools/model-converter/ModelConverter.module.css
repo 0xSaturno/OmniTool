@@ -64,6 +64,26 @@
 .runBtn:hover { opacity: 0.85; }
 .runBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.injectActionsRow {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.overwriteToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  user-select: none;
+}
+
+.overwriteToggle input {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
 .lookRow {
   display: flex;
   align-items: center;
@@ -96,4 +116,95 @@
 .lookHint {
   font-size: 0.78rem;
   color: var(--text-muted);
+}
+
+.lookGroupsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lookGroupsHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.listLookGroupsBtn {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.listLookGroupsBtn:hover {
+  background: var(--bg-base);
+  border-color: var(--accent);
+}
+
+.listLookGroupsBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lookGroupsActions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+  font-size: 0.75rem;
+}
+
+.linkBtn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.75rem;
+  text-decoration: underline;
+}
+
+.linkBtn:hover { opacity: 0.8; }
+
+.lookGroupsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.lookGroupItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.25rem 0.4rem;
+  border-radius: 4px;
+}
+
+.lookGroupItem:hover {
+  background: var(--bg-elevated);
+}
+
+.lookGroupIndex {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  min-width: 2.5rem;
+}
+
+.lookGroupName {
+  color: var(--text-primary);
+  flex: 1;
 }

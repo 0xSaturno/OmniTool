@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import StagerTreeView from "./StagerTreeView";
@@ -77,6 +78,7 @@ export default function Stager() {
       setFormAuthor("");
       await loadProjects();
       setSelected(formName.trim());
+      await emit("projects-changed");
     } catch (e) {
       pushLog("error", `Failed to create project: ${e}`);
     } finally {
@@ -94,6 +96,7 @@ export default function Stager() {
       }
       setConfirmDelete(null);
       await loadProjects();
+      await emit("projects-changed");
     } catch (e) {
       pushLog("error", `Failed to delete project: ${e}`);
     }

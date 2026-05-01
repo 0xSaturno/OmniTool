@@ -2,7 +2,7 @@
 # Only src-tauri/src/** and Cargo files need to cause a recompile.
 
 # Frontend source 
-src/
+./src/
 
 # Vite / Node artefacts 
 dist/

@@ -14,6 +14,9 @@ interface TreeNode {
 
 const SEND_TO_ROUTES: Record<string, { label: string; route: string }> = {
   config:   { label: "Config Editor",      route: "/tools/config-editor" },
+  actor:    { label: "Config Editor",      route: "/tools/config-editor" },
+  conduit:  { label: "Config Editor",      route: "/tools/config-editor" },
+  performanceset: { label: "Config Editor", route: "/tools/config-editor" },
   model:    { label: "Model Converter",    route: "/tools/model-converter" },
   material: { label: "Material Remapper",  route: "/tools/material-remapper" },
 };
