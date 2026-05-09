@@ -38,6 +38,11 @@ body {
   background: var(--bg-base);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+input, textarea, pre, code, .selectable {
+  user-select: text;
 }
 
 a { color: inherit; }

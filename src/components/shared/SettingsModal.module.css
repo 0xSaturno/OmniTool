@@ -110,6 +110,31 @@
   color: var(--text-muted);
 }
 
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.toggleRow input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  margin-right: 0.45rem;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.toggleRow span {
+  padding-left: 0.1rem;
+}
+
 .hashesRow {
   display: flex;
   align-items: center;

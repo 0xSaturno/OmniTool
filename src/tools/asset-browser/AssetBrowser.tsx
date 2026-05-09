@@ -2,20 +2,22 @@ import { useState, useCallback, useRef, useDeferredValue, useEffect } from "reac
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useNavigate } from "react-router-dom";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import TreeView, { type TreeNodeData } from "./TreeView";
 import { useSettings } from "../../contexts/SettingsContext";
+import { openToolWindow } from "../../utils/openToolWindow";
 import styles from "./AssetBrowser.module.css";
 
 const SEND_TO_ROUTES: Record<string, { label: string; route: string }> = {
-  config:   { label: "Config Editor",     route: "/tools/config-editor" },
-  actor:    { label: "Config Editor",     route: "/tools/config-editor" },
-  conduit:  { label: "Config Editor",     route: "/tools/config-editor" },
+  config: { label: "Config Editor", route: "/tools/config-editor" },
+  actor: { label: "Config Editor", route: "/tools/config-editor" },
+  conduit: { label: "Config Editor", route: "/tools/config-editor" },
   performanceset: { label: "Config Editor", route: "/tools/config-editor" },
-  model:    { label: "Model Converter",   route: "/tools/model-converter" },
+  model: { label: "Model Converter", route: "/tools/model-converter" },
   material: { label: "Material Remapper", route: "/tools/material-remapper" },
+  atmosphere: { label: "Atmosphere Editor", route: "/tools/atmosphere-editor" },
+  zonelightbin: { label: "ZoneLightBin Module", route: "/tools/zonelightbin-module" },
 };
 
 function extOf(path: string) {
@@ -124,7 +126,6 @@ function formatSize(bytes: number): string {
 
 export default function AssetBrowser() {
   const { settings } = useSettings();
-  const navigate = useNavigate();
   const archivesDir = settings.archivesDir;
   const [loading, setLoading] = useState(false);
   const [tocInfo, setTocInfo] = useState<TocInfo | null>(null);
@@ -342,7 +343,7 @@ export default function AssetBrowser() {
         archivesDir,
         filename: node.fullPath,
       });
-      navigate(route, { state: { filePath: tempPath, assetPath: node.fullPath } });
+      openToolWindow(route, { filePath: tempPath, assetPath: node.fullPath }, settings.launchToolsInNewWindows);
     } catch (e) {
       pushLog("error", `Failed to extract: ${e}`);
     }
@@ -381,6 +382,34 @@ export default function AssetBrowser() {
       pushLog("success", `Copied asset path: ${node.fullPath}`);
     } catch (e) {
       pushLog("error", `Copy path failed: ${e}`);
+    }
+  }
+
+  async function handleExportAsDds(node: TreeNodeData) {
+    setCtxMenu(null);
+    if (!node.asset || !tocPathRef.current || !archivesDir) return;
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Export Texture as DDS (Select Output Folder)",
+      });
+
+      if (!selected || Array.isArray(selected)) return;
+
+      pushLog("info", `Exporting ${node.fullPath} to DDS…`);
+      const result: string = await invoke("extract_asset_as_dds", {
+        tocPath: tocPathRef.current,
+        assetId: node.asset.id,
+        archivesDir,
+        outputDir: selected,
+        assetPath: node.fullPath,
+      });
+
+      pushLog("success", `Exported to DDS: ${result}`);
+    } catch (e) {
+      pushLog("error", `Export as DDS failed: ${e}`);
     }
   }
 
@@ -460,7 +489,7 @@ export default function AssetBrowser() {
           {selectionCount > 0 ? (
             <div className={styles.detailsContent}>
               <h3 className={styles.detailsTitle}>Selection Details</h3>
-              
+
               <div className={styles.selectedInfoVertical}>
                 {singleNode?.asset ? (
                   <>
@@ -477,8 +506,8 @@ export default function AssetBrowser() {
                       <div className={styles.spansList}>
                         {singleNode.asset.spans.map((s, idx) => {
                           const isTexture = singleNode.fullPath.toLowerCase().endsWith(".texture");
-                          const label = isTexture 
-                            ? (s.span === 0 ? "SD" : s.span === 1 ? "HD" : `S${s.span}`) 
+                          const label = isTexture
+                            ? (s.span === 0 ? "SD" : s.span === 1 ? "HD" : `S${s.span}`)
                             : `S${s.span}`;
                           return (
                             <div key={idx} className={styles.spanItem}>
@@ -608,40 +637,45 @@ export default function AssetBrowser() {
               <div className={styles.ctxItem} onClick={() => handleExtractAssetToPath(ctxMenu.node)}>
                 Extract to Folder
               </div>
+              {ext === "texture" && (
+                <div className={styles.ctxItem} onClick={() => handleExportAsDds(ctxMenu.node)}>
+                  Export as DDS
+                </div>
+              )}
               <div className={styles.ctxItem} onClick={() => handleCopyAssetPath(ctxMenu.node)}>
                 Copy Asset Path
               </div>
               {targets.length > 0 && (
                 <>
                   <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
-                <div style={{ padding: "3px 16px 2px", fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)" }}>
-                  Send To
-                </div>
-                {targets.map(([, t]) => (
-                  <div key={t.route} className={styles.ctxItem} onClick={() => handleSendToTool(ctxMenu.node, t.route)}>
-                    {t.label}
+                  <div style={{ padding: "3px 16px 2px", fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)" }}>
+                    Send To
                   </div>
-                ))}
-                <div
-                  className={styles.ctxItem}
-                  onClick={async () => {
-                    setCtxMenu(null);
-                    if (!ctxMenu.node.asset || !tocPathRef.current || !archivesDir) return;
-                    try {
-                      const tempPath: string = await invoke("extract_to_temp", {
-                        tocPath: tocPathRef.current,
-                        assetId: ctxMenu.node.asset.id,
-                        archivesDir,
-                        filename: ctxMenu.node.fullPath,
-                      });
-                      setSendToStager({ file: tempPath, defaultPath: `0/${ctxMenu.node.fullPath}` });
-                    } catch (e) {
-                      pushLog("error", `Extract failed: ${e}`);
-                    }
-                  }}
-                >
-                  Stager (extract)
-                </div>
+                  {targets.map(([, t]) => (
+                    <div key={t.route} className={styles.ctxItem} onClick={() => handleSendToTool(ctxMenu.node, t.route)}>
+                      {t.label}
+                    </div>
+                  ))}
+                  <div
+                    className={styles.ctxItem}
+                    onClick={async () => {
+                      setCtxMenu(null);
+                      if (!ctxMenu.node.asset || !tocPathRef.current || !archivesDir) return;
+                      try {
+                        const tempPath: string = await invoke("extract_to_temp", {
+                          tocPath: tocPathRef.current,
+                          assetId: ctxMenu.node.asset.id,
+                          archivesDir,
+                          filename: ctxMenu.node.fullPath,
+                        });
+                        setSendToStager({ file: tempPath, defaultPath: `0/${ctxMenu.node.fullPath}` });
+                      } catch (e) {
+                        pushLog("error", `Extract failed: ${e}`);
+                      }
+                    }}
+                  >
+                    Stager (extract)
+                  </div>
                 </>
               )}
               {targets.length === 0 && (

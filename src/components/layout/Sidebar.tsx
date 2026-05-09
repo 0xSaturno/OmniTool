@@ -2,20 +2,21 @@ import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import { TOOLS, type ToolDefinition } from "../../tools/registry";
 import { useSettings } from "../../contexts/SettingsContext";
+import { openToolWindow } from "../../utils/openToolWindow";
 import styles from "./Sidebar.module.css";
-import { BsWrenchAdjustableCircle } from "react-icons/bs";
+import OmniToolIcon from "../icons/OmniToolIcon";
 import { LuHouse, LuChevronsLeft, LuChevronsRight, LuSettings } from "react-icons/lu";
 
 const CATEGORIES: { id: ToolDefinition["category"]; label: string }[] = [
+  { id: "asset", label: "Asset" },
   { id: "model", label: "Model" },
-  { id: "animation", label: "Animation" },
-  { id: "archive", label: "Archive" },
+  { id: "texture", label: "Texture" },
   { id: "config", label: "Config" },
   { id: "misc", label: "Misc" },
 ];
 
 export default function Sidebar() {
-  const { setSettingsOpen } = useSettings();
+  const { settings, setSettingsOpen } = useSettings();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("rcra_sidebar_collapsed") === "true"
   );
@@ -28,9 +29,8 @@ export default function Sidebar() {
 
   return (
     <nav className={`${styles.sidebar} ${collapsed ? styles.collapsed : ""}`}>
-      {/* Brand: icon + name fade, toggle always right-aligned */}
       <div className={styles.brand}>
-        <span className={styles.brandIcon}><BsWrenchAdjustableCircle /></span>
+        <span className={styles.brandIcon}><OmniToolIcon style={{ width: "1.2rem", height: "1.2rem" }} /></span>
         <span className={styles.brandName}>OmniTool</span>
         <button
           className={styles.collapseBtn}
@@ -54,17 +54,28 @@ export default function Sidebar() {
       {CATEGORIES.filter((cat) => TOOLS.some((t) => t.category === cat.id)).map((cat) => (
         <div key={cat.id} className={styles.group}>
           <span className={styles.groupLabel}>{cat.label}</span>
-          {TOOLS.filter((t) => t.category === cat.id).map((tool) => (
-            <NavLink
-              key={tool.id}
-              to={tool.path}
-              className={({ isActive }) => `${styles.navLink} ${isActive ? styles.active : ""}`}
-              title={collapsed ? tool.label : undefined}
-            >
-              <span className={styles.navIcon}>{tool.icon}</span>
-              <span className={styles.navLabel}>{tool.label}</span>
-            </NavLink>
-          ))}
+          {TOOLS.filter((t) => t.category === cat.id).map((tool) => {
+            const isWIP = tool.id === "atmosphere-editor" || tool.id === "zonelightbin-module";
+            const isDisabled = tool.id === "zonelightbin-module";
+            return (
+              <NavLink
+                key={tool.id}
+                to={tool.path}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (!isDisabled) {
+                    openToolWindow(tool.path, undefined, settings.launchToolsInNewWindows);
+                  }
+                }}
+                className={({ isActive }) => `${styles.navLink} ${isActive ? styles.active : ""} ${isWIP ? styles.navLinkWIP : ""} ${isDisabled ? styles.navLinkDisabled : ""}`}
+                title={collapsed ? tool.label : undefined}
+                style={isDisabled ? { pointerEvents: "none" } : undefined}
+              >
+                <span className={styles.navIcon}>{tool.icon}</span>
+                <span className={styles.navLabel}>{tool.label}</span>
+              </NavLink>
+            );
+          })}
         </div>
       ))}
 

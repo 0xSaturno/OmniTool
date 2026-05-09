@@ -367,6 +367,69 @@ fn conduit_unwrap_typed_payload(v: &Value) -> Value {
     }
 }
 
+fn config_node_type_label(node_type: u8) -> &'static str {
+    match node_type {
+        NT_UINT8 => "UINT8",
+        NT_UINT16 => "UINT16",
+        NT_UINT32 => "UINT32",
+        NT_INT8 => "INT8",
+        NT_INT16 => "INT16",
+        NT_INT32 => "INT32",
+        NT_FLOAT => "FLOAT",
+        NT_STRING => "STRING",
+        NT_OBJECT => "OBJECT",
+        NT_BOOLEAN => "BOOLEAN",
+        NT_INSTANCE_ID => "INSTANCE_ID",
+        NT_NULL => "NULL",
+        _ => "UNKNOWN",
+    }
+}
+
+fn config_unwrap_typed_value(v: &Value) -> Value {
+    if let Some(map) = v.as_object() {
+        let type_str = map.get("Type").and_then(|t| t.as_str());
+        let maybe_wrapped = map.get("Value");
+        if let (Some(_), Some(value)) = (type_str, maybe_wrapped) {
+            return config_unwrap_typed_payload(value);
+        }
+
+        let mut out = serde_json::Map::new();
+        for (k, value) in map {
+            out.insert(k.clone(), config_unwrap_typed_value(value));
+        }
+        return Value::Object(out);
+    }
+
+    if let Some(arr) = v.as_array() {
+        return Value::Array(arr.iter().map(config_unwrap_typed_value).collect());
+    }
+
+    v.clone()
+}
+
+fn config_unwrap_typed_payload(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, value) in map {
+                out.insert(k.clone(), config_unwrap_typed_value(value));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(config_unwrap_typed_value).collect()),
+        _ => v.clone(),
+    }
+}
+
+fn config_extract_main_for_save(v: &Value) -> Value {
+    if let Some(map) = v.as_object() {
+        if let Some(main) = map.get("Main") {
+            return config_unwrap_typed_value(main);
+        }
+    }
+    config_unwrap_typed_value(v)
+}
+
 impl ConfigFile {
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 4 {
@@ -402,21 +465,26 @@ impl ConfigFile {
             dat1.get_section_data(CONFIG_TYPE_TAG),
             dat1.get_section_data(CONFIG_CONTENT_TAG),
         ) {
-            let type_obj = deserialize_section(type_data, &dat1)?;
-            let config_type = type_obj
+            let type_plain = deserialize_section(type_data, &dat1)?;
+            let config_type = type_plain
                 .get("Type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown")
                 .to_string();
 
-            let content = deserialize_section(content_data, &dat1)?;
+            let type_obj = deserialize_section_typed(type_data, &dat1)?;
+            let content_obj = deserialize_section_typed(content_data, &dat1)?;
+            let content = serde_json::json!({
+                "Header": type_obj,
+                "Main": content_obj,
+            });
             return Ok(Self {
                 magic,
                 unk,
                 config_type,
                 content,
                 content_tag: CONFIG_CONTENT_TAG,
-                original_dat1: None,
+                original_dat1: Some(dat1),
             });
         }
 
@@ -493,32 +561,40 @@ impl ConfigFile {
             )));
         }
 
-        let mut pool = StringsPool::new();
-        pool.add("Config Built File");
+        let content_main = config_extract_main_for_save(&self.content);
+
+        let mut dat1 = if let Some(d) = self.original_dat1.take() {
+            d
+        } else {
+            let mut pool = StringsPool::new();
+            pool.add("Config Built File");
+
+            let sections_map: HashMap<u32, usize> =
+                [(CONFIG_TYPE_TAG, 0), (CONFIG_CONTENT_TAG, 1)].into_iter().collect();
+
+            // dat1.unk1 stores the wrapper magic (for wrapped files) or CONFIG_MAGIC as a label.
+            let dat1_unk1 = if self.magic == DAT1_MAGIC { CONFIG_MAGIC } else { self.magic };
+
+            Dat1 {
+                magic: DAT1_MAGIC,
+                unk1: dat1_unk1,
+                total_size: 0,
+                sections: vec![
+                    SectionHeader { tag: CONFIG_TYPE_TAG, offset: 0, size: 0 },
+                    SectionHeader { tag: CONFIG_CONTENT_TAG, offset: 0, size: 0 },
+                ],
+                unknowns: vec![],
+                strings_pool: pool.data,
+                section_data: vec![Vec::new(), Vec::new()],
+                sections_map,
+            }
+        };
 
         let type_obj = serde_json::json!({ "Type": self.config_type });
-        let type_bytes = serialize_section(&type_obj, &mut pool);
-        let content_bytes = serialize_section(&self.content, &mut pool);
-
-        let sections_map: HashMap<u32, usize> =
-            [(CONFIG_TYPE_TAG, 0), (CONFIG_CONTENT_TAG, 1)].into_iter().collect();
-
-        // dat1.unk1 stores the wrapper magic (for wrapped files) or CONFIG_MAGIC as a label.
-        let dat1_unk1 = if self.magic == DAT1_MAGIC { CONFIG_MAGIC } else { self.magic };
-
-        let mut dat1 = Dat1 {
-            magic: DAT1_MAGIC,
-            unk1: dat1_unk1,
-            total_size: 0,
-            sections: vec![
-                SectionHeader { tag: CONFIG_TYPE_TAG, offset: 0, size: 0 },
-                SectionHeader { tag: CONFIG_CONTENT_TAG, offset: 0, size: 0 },
-            ],
-            unknowns: vec![],
-            strings_pool: pool.data,
-            section_data: vec![type_bytes, content_bytes],
-            sections_map,
-        };
+        let type_bytes = serialize_section_into_dat1(&type_obj, &mut dat1);
+        let content_bytes = serialize_section_into_dat1(&content_main, &mut dat1);
+        dat1.set_section_data(CONFIG_TYPE_TAG, type_bytes)?;
+        dat1.set_section_data(CONFIG_CONTENT_TAG, content_bytes)?;
 
         let dat1_bytes = dat1.save();
 
@@ -563,6 +639,11 @@ impl StringsPool {
 fn deserialize_section(data: &[u8], dat1: &Dat1) -> Result<Value> {
     let mut cur = Cursor::new(data);
     deserialize_object(&mut cur, dat1)
+}
+
+fn deserialize_section_typed(data: &[u8], dat1: &Dat1) -> Result<Value> {
+    let mut cur = Cursor::new(data);
+    deserialize_object_typed(&mut cur, dat1)
 }
 
 fn deserialize_object(cur: &mut Cursor<&[u8]>, dat1: &Dat1) -> Result<Value> {
@@ -622,6 +703,69 @@ fn deserialize_object(cur: &mut Cursor<&[u8]>, dat1: &Dat1) -> Result<Value> {
     Ok(Value::Object(map))
 }
 
+fn deserialize_object_typed(cur: &mut Cursor<&[u8]>, dat1: &Dat1) -> Result<Value> {
+    let _zero = cur.read_u32::<LE>()?;
+    let _magic = cur.read_u32::<LE>()?;
+    let children_count = cur.read_u32::<LE>()? as usize;
+    let data_len = cur.read_u32::<LE>()? as usize;
+    let start = cur.position() as usize;
+
+    let mut descriptors: Vec<(u16, u8)> = Vec::with_capacity(children_count);
+    for _ in 0..children_count {
+        let _hash = cur.read_u32::<LE>()?;
+        let flags = cur.read_u16::<LE>()?;
+        let _unk = cur.read_u8()?;
+        let node_type = cur.read_u8()?;
+        descriptors.push((flags, node_type));
+    }
+
+    let mut name_offsets: Vec<u32> = Vec::with_capacity(children_count);
+    for _ in 0..children_count {
+        name_offsets.push(cur.read_u32::<LE>()?);
+    }
+
+    let mut map = serde_json::Map::new();
+    for i in 0..children_count {
+        let (flags, node_type) = descriptors[i];
+        let items_count = (flags >> 4) as usize;
+        let name = dat1
+            .get_string(name_offsets[i])
+            .unwrap_or_else(|| format!("field_{}", name_offsets[i]));
+
+        let value = if items_count != 1 {
+            let mut arr = Vec::with_capacity(items_count);
+            for _ in 0..items_count {
+                arr.push(deserialize_node_payload_typed(cur, node_type, dat1)?);
+            }
+            Value::Array(arr)
+        } else {
+            deserialize_node_payload_typed(cur, node_type, dat1)?
+        };
+
+        map.insert(
+            name,
+            serde_json::json!({
+                "Type": config_node_type_label(node_type),
+                "Value": value,
+            }),
+        );
+    }
+
+    let pos = cur.position();
+    let aligned = (pos + 3) & !3;
+    if aligned > pos {
+        cur.seek(SeekFrom::Start(aligned))?;
+    }
+
+    let finish = cur.position() as usize;
+    let expected_end = start + data_len;
+    if finish < expected_end {
+        cur.seek(SeekFrom::Start(expected_end as u64))?;
+    }
+
+    Ok(Value::Object(map))
+}
+
 fn deserialize_node(cur: &mut Cursor<&[u8]>, node_type: u8, dat1: &Dat1) -> Result<Value> {
     match node_type {
         NT_UINT8 => Ok(Value::Number(cur.read_u8()?.into())),
@@ -639,6 +783,33 @@ fn deserialize_node(cur: &mut Cursor<&[u8]>, node_type: u8, dat1: &Dat1) -> Resu
         }
         NT_STRING => deserialize_inline_string(cur),
         NT_OBJECT => deserialize_object(cur, dat1),
+        NT_BOOLEAN => Ok(Value::Bool(cur.read_u8()? != 0)),
+        NT_INSTANCE_ID => Ok(Value::Number(cur.read_u64::<LE>()?.into())),
+        NT_NULL => {
+            cur.read_u8()?;
+            Ok(Value::Null)
+        }
+        _ => Err(ToolkitError::Parse(format!("unknown config node type 0x{node_type:02X}"))),
+    }
+}
+
+fn deserialize_node_payload_typed(cur: &mut Cursor<&[u8]>, node_type: u8, dat1: &Dat1) -> Result<Value> {
+    match node_type {
+        NT_UINT8 => Ok(Value::Number(cur.read_u8()?.into())),
+        NT_UINT16 => Ok(Value::Number(cur.read_u16::<LE>()?.into())),
+        NT_UINT32 => Ok(Value::Number(cur.read_u32::<LE>()?.into())),
+        NT_INT8 => Ok(Value::Number(cur.read_i8()?.into())),
+        NT_INT16 => Ok(Value::Number(cur.read_i16::<LE>()?.into())),
+        NT_INT32 => Ok(Value::Number(cur.read_i32::<LE>()?.into())),
+        NT_FLOAT => {
+            let bits = cur.read_u32::<LE>()?;
+            let f = f32::from_bits(bits) as f64;
+            Ok(Value::Number(
+                serde_json::Number::from_f64(f).unwrap_or(serde_json::Number::from(0)),
+            ))
+        }
+        NT_STRING => deserialize_inline_string(cur),
+        NT_OBJECT => deserialize_object_typed(cur, dat1),
         NT_BOOLEAN => Ok(Value::Bool(cur.read_u8()? != 0)),
         NT_INSTANCE_ID => Ok(Value::Number(cur.read_u64::<LE>()?.into())),
         NT_NULL => {

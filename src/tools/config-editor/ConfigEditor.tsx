@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useLocation } from "react-router-dom";
 import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
@@ -35,10 +36,13 @@ export default function ConfigEditor() {
 
   // Measure the border div after the editor renders so CodeMirror gets a
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
     const s = location.state as { filePath?: string; assetPath?: string } | null;
-    if (s?.filePath) setConfigPath(s.filePath);
-    if (s?.assetPath) setAssetPath(s.assetPath);
-  }, [location.state]);
+    const filePath = s?.filePath ?? params.get("filePath") ?? undefined;
+    const incomingAssetPath = s?.assetPath ?? params.get("assetPath") ?? undefined;
+    if (filePath) setConfigPath(filePath);
+    if (incomingAssetPath) setAssetPath(incomingAssetPath);
+  }, [location.state, location.search]);
 
   // concrete pixel height — required for its internal scroller to activate.
   const borderRef = useRef<HTMLDivElement>(null);
@@ -123,6 +127,39 @@ export default function ConfigEditor() {
     }
   }
 
+  async function exportJson() {
+    if (!loaded) return;
+    if (jsonError) {
+      pushLog("error", "Fix the JSON errors before exporting.");
+      return;
+    }
+
+    const baseName = configPath
+      ? configPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "config"
+      : "config";
+
+    const exportPath = await save({
+      title: "Export Config as JSON",
+      defaultPath: `${baseName}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!exportPath) return;
+
+    setRunning(true);
+    try {
+      pushLog("info", "Exporting JSON …");
+      const result: string = await invoke("export_config_json", {
+        contentJson: jsonText,
+        outPath: exportPath,
+      });
+      pushLog("success", `Exported JSON → ${result}`);
+    } catch (e) {
+      pushLog("error", String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
   function onJsonChange(text: string) {
     setJsonText(text);
     try {
@@ -173,11 +210,11 @@ export default function ConfigEditor() {
   return (
     <div className={styles.page}>
       <h2 className={styles.title}>Config Editor</h2>
-      <p className={styles.subtitle}>Read and edit .config/.actor/.conduit/.performanceset files (serialized binary → JSON).</p>
+      <p className={styles.subtitle}>Read and edit .config files</p>
 
       <div className={styles.panel}>
         <FilePickerInput
-          label="Source config-like file"
+          label="Source .config file"
           value={configPath}
           onChange={handleConfigPathChange}
           mode="open"
@@ -222,6 +259,14 @@ export default function ConfigEditor() {
               placeholder="Leave blank — saves as _edited"
             />
             <div className={styles.actionRow}>
+              <button
+                className={styles.secondaryBtn}
+                onClick={exportJson}
+                disabled={running || !!jsonError}
+                title="Export current editor content as .json"
+              >
+                Export JSON
+              </button>
               <button
                 className={styles.secondaryBtn}
                 onClick={() => setSendToStager(outPath || configPath)}

@@ -2,7 +2,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use byteorder::{LE, ReadBytesExt};
+use byteorder::{ReadBytesExt, LE};
 use flate2::read::ZlibDecoder;
 use log::{debug, info, warn};
 
@@ -78,12 +78,16 @@ impl Toc {
                 debug!("TOC: old format (magic {:#010X}), zlib-compressed", magic);
                 let mut decompressed = Vec::new();
                 let mut decoder = ZlibDecoder::new(&data[8..]);
-                decoder.read_to_end(&mut decompressed)
+                decoder
+                    .read_to_end(&mut decompressed)
                     .map_err(|e| ToolkitError::Parse(format!("zlib decompression failed: {e}")))?;
                 decompressed
             }
             _ => {
-                return Err(ToolkitError::InvalidMagic { expected: TOC_MAGIC_RCRA, got: magic });
+                return Err(ToolkitError::InvalidMagic {
+                    expected: TOC_MAGIC_RCRA,
+                    got: magic,
+                });
             }
         };
 
@@ -102,11 +106,18 @@ impl Toc {
             archive_names.len()
         );
 
-        Ok(Self { asset_ids, spans, sizes, archive_names, asset_headers })
+        Ok(Self {
+            asset_ids,
+            spans,
+            sizes,
+            archive_names,
+            asset_headers,
+        })
     }
 
     fn parse_asset_ids(dat1: &Dat1) -> Result<Vec<u64>> {
-        let data = dat1.get_section_data(SECTION_ASSET_IDS)
+        let data = dat1
+            .get_section_data(SECTION_ASSET_IDS)
             .ok_or(ToolkitError::SectionNotFound(SECTION_ASSET_IDS))?;
         let count = data.len() / 8;
         let mut cur = Cursor::new(data);
@@ -119,7 +130,8 @@ impl Toc {
     }
 
     fn parse_spans(dat1: &Dat1) -> Result<Vec<Span>> {
-        let data = dat1.get_section_data(SECTION_SPANS)
+        let data = dat1
+            .get_section_data(SECTION_SPANS)
             .ok_or(ToolkitError::SectionNotFound(SECTION_SPANS))?;
         let count = data.len() / 8;
         let mut cur = Cursor::new(data);
@@ -135,7 +147,8 @@ impl Toc {
     }
 
     fn parse_sizes(dat1: &Dat1) -> Result<Vec<SizeEntry>> {
-        let data = dat1.get_section_data(SECTION_SIZES)
+        let data = dat1
+            .get_section_data(SECTION_SIZES)
             .ok_or(ToolkitError::SectionNotFound(SECTION_SIZES))?;
         let count = data.len() / SIZE_ENTRY_LEN;
         let mut cur = Cursor::new(data);
@@ -153,14 +166,18 @@ impl Toc {
     }
 
     fn parse_archives(dat1: &Dat1) -> Result<Vec<String>> {
-        let data = dat1.get_section_data(SECTION_ARCHIVES)
+        let data = dat1
+            .get_section_data(SECTION_ARCHIVES)
             .ok_or(ToolkitError::SectionNotFound(SECTION_ARCHIVES))?;
         let count = data.len() / ARCHIVE_ENTRY_LEN;
         let mut names = Vec::with_capacity(count);
         for i in 0..count {
             let start = i * ARCHIVE_ENTRY_LEN;
             let name_bytes = &data[start..start + ARCHIVE_NAME_LEN];
-            let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(ARCHIVE_NAME_LEN);
+            let end = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(ARCHIVE_NAME_LEN);
             let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
             names.push(name);
         }
@@ -230,12 +247,16 @@ impl Toc {
 
     /// Extract an asset's raw bytes given the archives directory path.
     pub fn extract_asset(&self, asset: &TocAsset, archives_dir: &Path) -> Result<Vec<u8>> {
-        let archive_name = self.archive_names.get(asset.archive_index as usize)
-            .ok_or_else(|| ToolkitError::Parse(format!(
-                "archive index {} out of range ({})",
-                asset.archive_index,
-                self.archive_names.len()
-            )))?;
+        let archive_name = self
+            .archive_names
+            .get(asset.archive_index as usize)
+            .ok_or_else(|| {
+                ToolkitError::Parse(format!(
+                    "archive index {} out of range ({})",
+                    asset.archive_index,
+                    self.archive_names.len()
+                ))
+            })?;
 
         let archive_path = archives_dir.join(archive_name);
         debug!(
@@ -243,13 +264,15 @@ impl Toc {
             asset.asset_id, archive_name, asset.offset, asset.size
         );
 
-        let archive_data = std::fs::read(&archive_path)
-            .map_err(|e| ToolkitError::Parse(format!(
+        let archive_data = std::fs::read(&archive_path).map_err(|e| {
+            ToolkitError::Parse(format!(
                 "failed to read archive {}: {e}",
                 archive_path.display()
-            )))?;
+            ))
+        })?;
 
-        let mut raw = extract_from_archive(&archive_data, asset.offset as u64, asset.size as usize)?;
+        let mut raw =
+            extract_from_archive(&archive_data, asset.offset as u64, asset.size as usize)?;
 
         if asset.header_offset >= 0 {
             let header_index = (asset.header_offset as usize) / ASSET_HEADER_LEN;
@@ -289,17 +312,20 @@ fn parse_dsar_blocks(data: &[u8]) -> Result<(Vec<DsarBlockHeader>, u32)> {
 
     let magic = cur.read_u32::<LE>()?;
     if magic != DSAR_MAGIC {
-        return Err(ToolkitError::InvalidMagic { expected: DSAR_MAGIC, got: magic });
+        return Err(ToolkitError::InvalidMagic {
+            expected: DSAR_MAGIC,
+            got: magic,
+        });
     }
     let _version = cur.read_u32::<LE>()?;
-    let block_count = cur.read_u32::<LE>()?;
+    let _block_count = cur.read_u32::<LE>()?;
     let blocks_header_end = cur.read_u32::<LE>()?;
     let _original_size = cur.read_u64::<LE>()?;
     // 8 bytes padding
     cur.seek(SeekFrom::Current(8))?;
 
-    let mut blocks = Vec::with_capacity(block_count as usize);
-    for _ in 0..block_count {
+    let mut blocks = Vec::new();
+    while (cur.position() as u32) < blocks_header_end {
         let real_offset = cur.read_u32::<LE>()?;
         let _unk1 = cur.read_u32::<LE>()?;
         let comp_offset = cur.read_u32::<LE>()?;
@@ -319,7 +345,13 @@ fn parse_dsar_blocks(data: &[u8]) -> Result<(Vec<DsarBlockHeader>, u32)> {
         });
     }
 
-    debug!("DSAR: {} blocks, header_end={}", blocks.len(), blocks_header_end);
+    blocks.sort_by_key(|b| b.real_offset);
+
+    debug!(
+        "DSAR: {} blocks, header_end={}",
+        blocks.len(),
+        blocks_header_end
+    );
     Ok((blocks, blocks_header_end))
 }
 
@@ -336,7 +368,9 @@ fn extract_from_archive(archive_data: &[u8], offset: u64, size: usize) -> Result
         if end > archive_data.len() {
             return Err(ToolkitError::Parse(format!(
                 "read past end of uncompressed archive: offset={}, size={}, archive_len={}",
-                offset, size, archive_data.len()
+                offset,
+                size,
+                archive_data.len()
             )));
         }
         return Ok(archive_data[start..end].to_vec());
@@ -348,7 +382,8 @@ fn extract_from_archive(archive_data: &[u8], offset: u64, size: usize) -> Result
     let asset_end = offset + size as u64;
 
     // Binary search for the first block whose real_offset region covers asset_start
-    let first = blocks.partition_point(|b| (b.real_offset as u64 + b.real_size as u64) <= asset_start);
+    let first =
+        blocks.partition_point(|b| (b.real_offset as u64 + b.real_size as u64) <= asset_start);
 
     let mut result = vec![0u8; size];
     let mut filled = 0usize;
@@ -363,7 +398,11 @@ fn extract_from_archive(archive_data: &[u8], offset: u64, size: usize) -> Result
 
         debug!(
             "DSAR block: real_offset={}, real_size={}, comp_offset={}, comp_size={}, type={}",
-            block.real_offset, block.real_size, block.comp_offset, block.comp_size, block.compression_type
+            block.real_offset,
+            block.real_size,
+            block.comp_offset,
+            block.comp_size,
+            block.compression_type
         );
 
         let decompressed = decompress_block(archive_data, block, blocks_header_end)?;
@@ -398,7 +437,11 @@ fn extract_from_archive(archive_data: &[u8], offset: u64, size: usize) -> Result
     Ok(result)
 }
 
-fn decompress_block(archive_data: &[u8], block: &DsarBlockHeader, _header_end: u32) -> Result<Vec<u8>> {
+fn decompress_block(
+    archive_data: &[u8],
+    block: &DsarBlockHeader,
+    _header_end: u32,
+) -> Result<Vec<u8>> {
     // comp_offset is an absolute offset into the archive file
     let data_start = block.comp_offset as usize;
     let data_end = data_start + block.comp_size as usize;
@@ -406,7 +449,9 @@ fn decompress_block(archive_data: &[u8], block: &DsarBlockHeader, _header_end: u
     if data_end > archive_data.len() {
         return Err(ToolkitError::Parse(format!(
             "DSAR block data out of bounds: {}..{} (archive len {})",
-            data_start, data_end, archive_data.len()
+            data_start,
+            data_end,
+            archive_data.len()
         )));
     }
 
@@ -417,7 +462,9 @@ fn decompress_block(archive_data: &[u8], block: &DsarBlockHeader, _header_end: u
         2 => decompress_gdeflate(compressed, block.real_size as usize),
         3 => lz4_flex::decompress(compressed, block.real_size as usize)
             .map_err(|e| ToolkitError::Parse(format!("LZ4 decompression failed: {e}"))),
-        other => Err(ToolkitError::Unsupported(format!("DSAR compression type {other}"))),
+        other => Err(ToolkitError::Unsupported(format!(
+            "DSAR compression type {other}"
+        ))),
     }
 }
 
@@ -432,11 +479,13 @@ fn decompress_block(archive_data: &[u8], block: &DsarBlockHeader, _header_end: u
 /// Each tile is a libdeflate "gdeflate page" — NOT plain DEFLATE.
 fn decompress_gdeflate(compressed: &[u8], output_size: usize) -> Result<Vec<u8>> {
     if compressed.len() < 8 {
-        return Err(ToolkitError::Parse("gdeflate: buffer too small for header".into()));
+        return Err(ToolkitError::Parse(
+            "gdeflate: buffer too small for header".into(),
+        ));
     }
 
     let lib_id = compressed[0];
-    let magic  = compressed[1];
+    let magic = compressed[1];
     if lib_id != 4 || (lib_id ^ magic) != 0xFF {
         return Err(ToolkitError::Parse(format!(
             "gdeflate: bad header (libid={lib_id:#x} magic={magic:#x})"
@@ -450,7 +499,9 @@ fn decompress_gdeflate(compressed: &[u8], output_size: usize) -> Result<Vec<u8>>
 
     let offsets_end = 8 + num_tiles * 4;
     if compressed.len() < offsets_end {
-        return Err(ToolkitError::Parse("gdeflate: truncated tile offset table".into()));
+        return Err(ToolkitError::Parse(
+            "gdeflate: truncated tile offset table".into(),
+        ));
     }
 
     let offsets: Vec<usize> = (0..num_tiles)
@@ -484,42 +535,60 @@ fn decompress_gdeflate(compressed: &[u8], output_size: usize) -> Result<Vec<u8>>
         pos = end;
     }
 
-    debug!("gdeflate: {} tile(s), output_size={}", num_tiles, output_size);
+    debug!(
+        "gdeflate: {} tile(s), output_size={}",
+        num_tiles, output_size
+    );
 
-    // libdeflate (dynamic)
-    // Each tile is a libdeflate gdeflate page.
-    // load libdeflate.dll once per process
     #[repr(C)]
-    struct InPage { data: *const u8, nbytes: usize }
+    struct InPage {
+        data: *const u8,
+        nbytes: usize,
+    }
 
-    type AllocFn  = unsafe extern "C" fn() -> *mut std::ffi::c_void;
-    type DecompFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const InPage, usize,
-                                         *mut u8, usize, *mut usize) -> i32;
-    type FreeFn   = unsafe extern "C" fn(*mut std::ffi::c_void);
+    type AllocFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+    type DecompFn = unsafe extern "C" fn(
+        *mut std::ffi::c_void,
+        *const InPage,
+        usize,
+        *mut u8,
+        usize,
+        *mut usize,
+    ) -> i32;
+    type FreeFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 
     // Cache the loaded library for the process lifetime.
     static LIB: OnceLock<Option<libloading::Library>> = OnceLock::new();
 
-    let lib = LIB.get_or_init(|| {
-        let candidates = [
-            // Next to the exe (dev + installed)
-            std::env::current_exe().ok()
-                .and_then(|p| p.parent().map(|d| d.join("libdeflate.dll"))),
-            // Tauri resource dir (bundled release)
-            Some(std::path::PathBuf::from("libdeflate.dll")),
-        ];
-        for path in candidates.into_iter().flatten() {
-            if let Ok(lib) = unsafe { libloading::Library::new(&path) } {
-                info!("gdeflate: loaded libdeflate from {}", path.display());
-                return Some(lib);
+    let lib = LIB
+        .get_or_init(|| {
+            let candidates = [
+                // Next to the exe (dev + installed)
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.join("libdeflate.dll"))),
+                // Tauri resource dir (bundled release)
+                Some(std::path::PathBuf::from("libdeflate.dll")),
+            ];
+            for path in candidates.into_iter().flatten() {
+                if let Ok(lib) = unsafe { libloading::Library::new(&path) } {
+                    info!("gdeflate: loaded libdeflate from {}", path.display());
+                    return Some(lib);
+                }
             }
-        }
-        warn!("gdeflate: libdeflate.dll not found — type-2 compressed assets cannot be extracted");
-        None
-    }).as_ref().ok_or_else(|| ToolkitError::Parse(
-        "gdeflate: libdeflate.dll not found. \
-        Please ensure libdeflate.dll is present in the application directory.".into()
-    ))?;
+            warn!(
+                "gdeflate: libdeflate.dll not found — type-2 compressed assets cannot be extracted"
+            );
+            None
+        })
+        .as_ref()
+        .ok_or_else(|| {
+            ToolkitError::Parse(
+                "gdeflate: libdeflate.dll not found. \
+        Please ensure libdeflate.dll is present in the application directory."
+                    .into(),
+            )
+        })?;
 
     let result = unsafe {
         let alloc: libloading::Symbol<AllocFn> = lib
@@ -532,23 +601,33 @@ fn decompress_gdeflate(compressed: &[u8], output_size: usize) -> Result<Vec<u8>>
             .get(b"libdeflate_free_gdeflate_decompressor\0")
             .map_err(|e| ToolkitError::Parse(format!("gdeflate: {e}")))?;
 
-        let alloc_fn: AllocFn  = *alloc;
+        let alloc_fn: AllocFn = *alloc;
         let decomp_fn: DecompFn = *decomp;
-        let free_fn:  FreeFn   = *free;
+        let free_fn: FreeFn = *free;
 
         let ctx = alloc_fn();
         if ctx.is_null() {
             return Err(ToolkitError::Parse("gdeflate: alloc returned null".into()));
         }
 
-        let pages: Vec<InPage> = tile_slices.iter()
-            .map(|s| InPage { data: s.as_ptr(), nbytes: s.len() })
+        let pages: Vec<InPage> = tile_slices
+            .iter()
+            .map(|s| InPage {
+                data: s.as_ptr(),
+                nbytes: s.len(),
+            })
             .collect();
 
-        let mut out    = vec![0u8; output_size];
+        let mut out = vec![0u8; output_size];
         let mut actual = 0usize;
-        let rc = decomp_fn(ctx, pages.as_ptr(), pages.len(),
-                           out.as_mut_ptr(), out.len(), &mut actual);
+        let rc = decomp_fn(
+            ctx,
+            pages.as_ptr(),
+            pages.len(),
+            out.as_mut_ptr(),
+            out.len(),
+            &mut actual,
+        );
         free_fn(ctx);
 
         if rc != 0 {

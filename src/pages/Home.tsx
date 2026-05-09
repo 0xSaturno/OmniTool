@@ -1,25 +1,36 @@
-import { useNavigate } from "react-router-dom";
 import { TOOLS } from "../tools/registry";
+import { openToolWindow } from "../utils/openToolWindow";
+import { useSettings } from "../contexts/SettingsContext";
 import styles from "./Home.module.css";
-import { BsWrenchAdjustableCircle } from "react-icons/bs";
+import OmniToolIcon from "../components/icons/OmniToolIcon";
 
 export default function Home() {
-  const navigate = useNavigate();
+  const { settings } = useSettings();
+
   return (
     <div className={styles.home}>
-      <h1 className={styles.title}><BsWrenchAdjustableCircle /> OmniTool</h1>
+      <h1 className={styles.title}><OmniToolIcon style={{ width: "1em", height: "1em", verticalAlign: "middle", marginTop: "-0.2em" }} /> OmniTool</h1>
       <p className={styles.subtitle}>
         Ratchet &amp; Clank: Rift Apart modding suite
       </p>
 
       <div className={styles.grid}>
-        {TOOLS.map((tool) => (
-          <button key={tool.id} className={styles.card} onClick={() => navigate(tool.path)}>
-            <span className={styles.cardIcon}>{tool.icon}</span>
-            <span className={styles.cardLabel}>{tool.label}</span>
-            <span className={styles.cardDesc}>{tool.description}</span>
-          </button>
-        ))}
+        {TOOLS.map((tool) => {
+          const isWIP = tool.id === "atmosphere-editor" || tool.id === "zonelightbin-module";
+          const isDisabled = tool.id === "zonelightbin-module";
+          return (
+            <button
+              key={tool.id}
+              className={`${styles.card} ${isWIP ? styles.cardWIP : ""} ${isDisabled ? styles.cardDisabled : ""}`}
+              onClick={() => openToolWindow(tool.path, undefined, settings.launchToolsInNewWindows)}
+              disabled={isDisabled}
+            >
+              <span className={styles.cardIcon}>{tool.icon}</span>
+              <span className={styles.cardLabel}>{tool.label}</span>
+              <span className={styles.cardDesc}>{tool.description}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

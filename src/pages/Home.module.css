@@ -1,6 +1,8 @@
 .home {
   max-width: 900px;
   margin: 0 auto;
+  overflow-y: auto;
+  height: 100%;
 }
 
 .title {
@@ -54,4 +56,32 @@
   font-size: 0.8rem;
   color: var(--text-secondary);
   line-height: 1.4;
+}
+
+.cardWIP {
+  position: relative;
+  overflow: hidden;
+}
+
+.cardWIP::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    #ffd700,
+    #ffd700 8px,
+    #000000 8px,
+    #000000 16px
+  );
+  border-left: 1px solid #000;
+}
+
+.cardDisabled {
+  opacity: 0.5;
+  pointer-events: none;
+  filter: grayscale(100%);
 }

@@ -38,7 +38,8 @@ export default function ModelConverter() {
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-    const fp = (location.state as { filePath?: string } | null)?.filePath;
+    const params = new URLSearchParams(location.search);
+    const fp = (location.state as { filePath?: string } | null)?.filePath ?? params.get("filePath");
     if (!fp) return;
     // .model → pre-fill the model-to-ascii source; .ascii → pre-fill ascii-to-model source
     if (fp.toLowerCase().endsWith(".model")) {
@@ -49,7 +50,7 @@ export default function ModelConverter() {
       setAsciiPath(fp);
       setTab("to-model");
     }
-  }, [location.state]);
+  }, [location.state, location.search]);
 
   // Reset look-group cache whenever the source model changes.
   useEffect(() => {

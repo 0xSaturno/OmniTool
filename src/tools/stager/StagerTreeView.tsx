@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useNavigate } from "react-router-dom";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
+import { useSettings } from "../../contexts/SettingsContext";
+import { openToolWindow } from "../../utils/openToolWindow";
 import styles from "./StagerTreeView.module.css";
 
 interface TreeNode {
@@ -34,7 +35,7 @@ export default function StagerTreeView({
   assets: string[];
   onRefresh: () => void;
 }) {
-  const navigate = useNavigate();
+  const { settings } = useSettings();
   const [tree, setTree] = useState<TreeNode>({ name: "", path: "", isFolder: true, children: new Map() });
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -113,7 +114,7 @@ export default function StagerTreeView({
     try {
       const projectDir: string = await invoke("get_project_path", { name: project });
       const absolutePath = `${projectDir}\\${node.path.replace(/\//g, "\\")}`;
-      navigate(route, { state: { filePath: absolutePath } });
+      openToolWindow(route, { filePath: absolutePath }, settings.launchToolsInNewWindows);
     } catch (e) {
       console.error("Send to tool failed:", e);
     }

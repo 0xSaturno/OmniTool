@@ -16,10 +16,7 @@ export default function SettingsModal() {
     if (!isSettingsOpen) return;
     invoke<string>("get_hashes_path").then((p) => {
       setHashesPath(p);
-      // Check existence by trying to load — if it returns entries it exists
-      invoke("load_hashes")
-        .then(() => setHashesExist(true))
-        .catch(() => setHashesExist(false));
+      invoke<boolean>("hashes_exist").then(setHashesExist).catch(() => setHashesExist(false));
     });
   }, [isSettingsOpen]);
 
@@ -67,6 +64,20 @@ export default function SettingsModal() {
               <button className={styles.browseBtn} onClick={pickArchivesDir}>Browse</button>
             </div>
             <p className={styles.hint}>Used by Asset Browser to load game files</p>
+          </div>
+
+          <div className={styles.field}>
+            <label className={styles.toggleRow}>
+              <input
+                type="checkbox"
+                checked={settings.launchToolsInNewWindows}
+                onChange={(e) => updateSettings({ launchToolsInNewWindows: e.target.checked })}
+              />
+              <span>Launch tools in separate windows</span>
+            </label>
+            <p className={styles.hint}>
+              When disabled, tools open in a single unified window instead.
+            </p>
           </div>
 
           <div className={styles.field}>

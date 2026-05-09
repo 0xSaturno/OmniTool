@@ -45,10 +45,13 @@ export default function MaterialRemapper() {
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
     const s = location.state as { filePath?: string; assetPath?: string } | null;
-    if (s?.filePath) setModelPath(s.filePath);
-    if (s?.assetPath) setAssetPath(s.assetPath);
-  }, [location.state]);
+    const filePath = s?.filePath ?? params.get("filePath") ?? undefined;
+    const incomingAssetPath = s?.assetPath ?? params.get("assetPath") ?? undefined;
+    if (filePath) setModelPath(filePath);
+    if (incomingAssetPath) setAssetPath(incomingAssetPath);
+  }, [location.state, location.search]);
 
   function pushLog(type: LogEntry["type"], message: string) {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);

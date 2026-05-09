@@ -7,7 +7,7 @@ interface Props {
   label: string;
   value: string;
   onChange: (path: string) => void;
-  mode: "open" | "save";
+  mode: "open" | "save" | "dir";
   filters?: { name: string; extensions: string[] }[];
   placeholder?: string;
 }
@@ -103,6 +103,12 @@ export default function FilePickerInput({ label, value, onChange, mode, filters,
       const result = await open({ filters, multiple: false });
       if (typeof result === "string") {
         console.debug("[FilePickerInput] picked open path", { label, mode, result });
+        onChange(result);
+      }
+    } else if (mode === "dir") {
+      const result = await open({ directory: true, multiple: false });
+      if (typeof result === "string") {
+        console.debug("[FilePickerInput] picked dir path", { label, mode, result });
         onChange(result);
       }
     } else {

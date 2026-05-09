@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 
 export interface AppSettings {
   archivesDir: string;
+  launchToolsInNewWindows: boolean;
 }
 
 interface SettingsContextValue {
@@ -13,6 +14,7 @@ interface SettingsContextValue {
 
 const defaultSettings: AppSettings = {
   archivesDir: "",
+  launchToolsInNewWindows: false,
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
