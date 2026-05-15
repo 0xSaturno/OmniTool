@@ -135,3 +135,17 @@
 
 .secondaryBtn:hover { border-color: var(--accent); color: var(--accent); }
 .secondaryBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.overwriteToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  user-select: none;
+}
+
+.overwriteToggle input {
+  width: 0.9rem;
+  height: 0.9rem;
+}

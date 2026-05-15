@@ -118,7 +118,7 @@
 /* Right Column: Details */
 
 .detailsColumn {
-  width: 260px;
+  width: 300px;
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
@@ -224,6 +224,53 @@
 .spanArc {
   color: var(--text-muted);
   margin-left: auto;
+}
+
+/* Extraction-source row (shows the resolved archive per span) */
+.sourcePath {
+  color: var(--text-primary);
+  font-weight: 500;
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Span row when the source resolves to a `d\mods\*` override */
+.sourceWarning {
+  background: rgba(210, 153, 34, 0.12);
+  border-left: 3px solid var(--warning);
+  padding-left: 0.4rem;
+}
+
+.modBadge {
+  background: var(--warning);
+  color: #000;
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.sourceWarningNote {
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  border-radius: var(--radius);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+
+.sourceWarningNote code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: rgba(210, 153, 34, 0.15);
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  color: var(--warning);
 }
 
 /* Extract Section */

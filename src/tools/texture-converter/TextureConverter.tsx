@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
+import { useSettings } from "../../contexts/SettingsContext";
 import { invoke } from "@tauri-apps/api/core";
+import { type TextureInfo, FORMAT_MAP, DIMENSION_MAP, TextureBadges, useTextureInfo } from "../../components/shared/TextureViewer";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import FilePickerInput from "../../components/shared/FilePickerInput";
@@ -9,39 +11,9 @@ import styles from "./TextureConverter.module.css";
 const TEXTURE_FILTER = [{ name: "Texture Asset", extensions: ["texture"] }];
 const DDS_FILTER = [{ name: "DDS Texture", extensions: ["dds"] }];
 
-interface TextureInfo {
-  width: number;
-  height: number;
-  mipmaps: number;
-  hdmipmaps: number;
-  images: number;
-  bytes_per_pixel: number;
-  size: number;
-  hdsize: number;
-  format: number;
-}
-
-const FORMAT_MAP: Record<number, string> = {
-  2: "DXGI_FORMAT_R32G32B32A32_FLOAT",
-  10: "DXGI_FORMAT_R16G16B16A16_FLOAT",
-  28: "DXGI_FORMAT_R8G8B8A8_UNORM",
-  29: "DXGI_FORMAT_R8G8B8A8_UNORM_SRGB",
-  71: "DXGI_FORMAT_BC1_UNORM",
-  72: "DXGI_FORMAT_BC1_UNORM_SRGB",
-  74: "DXGI_FORMAT_BC2_UNORM",
-  75: "DXGI_FORMAT_BC2_UNORM_SRGB",
-  77: "DXGI_FORMAT_BC3_UNORM",
-  78: "DXGI_FORMAT_BC3_UNORM_SRGB",
-  80: "DXGI_FORMAT_BC4_UNORM",
-  83: "DXGI_FORMAT_BC5_UNORM",
-  87: "DXGI_FORMAT_B8G8R8A8_UNORM",
-  91: "DXGI_FORMAT_B8G8R8A8_UNORM_SRGB",
-  61: "DXGI_FORMAT_R8_UNORM",
-  95: "DXGI_FORMAT_BC6H_UF16",
-  96: "DXGI_FORMAT_BC6H_SF16",
-  98: "DXGI_FORMAT_BC7_UNORM",
-  99: "DXGI_FORMAT_BC7_UNORM_SRGB"
-};
+const FORMAT_MAP_FULL: Record<number, string> = Object.fromEntries(
+  Object.entries(FORMAT_MAP).map(([k, v]) => [k, `DXGI_FORMAT_${v}`])
+);
 
 type Tab = "extract" | "replace" | "batch";
 
@@ -124,7 +96,7 @@ function JobFormat({ path, type }: { path: string, type: "texture" | "dds" }) {
     const cmd = type === "texture" ? "tauri_get_texture_info" : "tauri_get_dds_info";
     invoke<TextureInfo>(cmd, { path }).then(info => {
       if (active) {
-        const fmtStr = FORMAT_MAP[info.format] || `FORMAT_${info.format}`;
+        const fmtStr = FORMAT_MAP_FULL[info.format] || `FORMAT_${info.format}`;
         setFormat(fmtStr.replace("DXGI_FORMAT_", ""));
       }
     }).catch(() => {
@@ -134,6 +106,16 @@ function JobFormat({ path, type }: { path: string, type: "texture" | "dds" }) {
   }, [path, type]);
 
   return <span>{format}</span>;
+}
+
+function JobBadges({ path }: { path: string }) {
+  const info = useTextureInfo(path);
+  if (!info || (!info.is_cubemap && !info.is_ibl && !(info.content_type & 0x03))) return null;
+  return (
+    <div style={{ marginTop: "0.15rem" }}>
+      <TextureBadges info={info} size="small" />
+    </div>
+  );
 }
 
 interface TreeNode {
@@ -277,6 +259,7 @@ function DdsDropzonePreview({ path, onDropPath }: { path: string | null, onDropP
 }
 
 export default function TextureConverter() {
+  const { settings } = useSettings();
   const [tab, setTab] = useState<Tab>("extract");
 
   const [sourcePath, setSourcePath] = useState("");
@@ -313,6 +296,8 @@ export default function TextureConverter() {
   }, [projectSource, selectedProject]);
 
   const [ignoreFormat, setIgnoreFormat] = useState(false);
+  const [outputFormat, setOutputFormat] = useState<"auto" | "dds" | "png">("auto");
+  const [cubeMode, setCubeMode] = useState<"array" | "cross">("array");
 
   const [sourceInfo, setSourceInfo] = useState<TextureInfo | null>(null);
   const [ddsInfo, setDdsInfo] = useState<TextureInfo | null>(null);
@@ -502,6 +487,7 @@ export default function TextureConverter() {
           jobs: selectedJobs,
           outputDir: extractOutDir,
           projectDir,
+          outputFormat: (!settings.experimentalTiffExport && outputFormat === "auto") ? "auto-notiff" : outputFormat,
         });
         pushLog("success", result);
       } else {
@@ -541,6 +527,8 @@ export default function TextureConverter() {
         result = await invoke("tauri_extract_texture", {
           sourcePath,
           outputDir: outDir || null,
+          outputFormat: (!settings.experimentalTiffExport && outputFormat === "auto") ? "auto-notiff" : outputFormat,
+          cubeMode,
         });
       } else {
         pushLog("info", `Injecting ${ddsPath} into ${sourcePath}...`);
@@ -615,6 +603,56 @@ export default function TextureConverter() {
                   mode="dir"
                 />
 
+                {tab === "extract" && (
+                  <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", alignItems: "center", marginTop: "0.25rem" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                      <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }}>Output Format</span>
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                        {(["auto", "dds", "png"] as const).map(fmt => (
+                          <button key={fmt}
+                            onClick={() => setOutputFormat(fmt)}
+                            style={{
+                              padding: "0.2rem 0.6rem", fontSize: "0.75rem", fontWeight: 600, borderRadius: "4px", cursor: "pointer", border: "1px solid",
+                              borderColor: outputFormat === fmt ? "var(--accent)" : "var(--border)",
+                              background: outputFormat === fmt ? "var(--accent-muted)" : "var(--surface-2)",
+                              color: outputFormat === fmt ? "var(--accent)" : "var(--text-secondary)",
+                            }}>
+                            {fmt.toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {sourceInfo?.is_cubemap && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                        <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }}>
+                          Cubemap Layout
+                        </span>
+                        <div style={{ display: "flex", gap: "0.4rem" }}>
+                          {(["array", "cross"] as const).map(mode => (
+                            <button key={mode}
+                              onClick={() => mode !== "cross" && setCubeMode(mode)}
+                              disabled={mode === "cross"}
+                              title={mode === "cross" ? "Cross export wip" : "Export raw face data as DDS array"}
+                              style={{
+                                padding: "0.2rem 0.6rem", fontSize: "0.75rem", fontWeight: 600, borderRadius: "4px",
+                                cursor: mode === "cross" ? "not-allowed" : "pointer", border: "1px solid",
+                                borderColor: cubeMode === mode ? "var(--accent)" : "var(--border)",
+                                background: cubeMode === mode ? "var(--accent-muted)" : "var(--surface-2)",
+                                color: mode === "cross" ? "var(--text-muted)" : cubeMode === mode ? "var(--accent)" : "var(--text-secondary)",
+                                opacity: mode === "cross" ? 0.45 : 1,
+                              }}>
+                              {mode === "array" ? "Array" : "Cross"}
+                            </button>
+                          ))}
+                        </div>
+                        {cubeMode === "cross" && (
+                          <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Cross always outputs PNG</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {tab === "replace" && (
                   <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
                     <label className={styles.checkboxLabel}>
@@ -639,15 +677,17 @@ export default function TextureConverter() {
                     <thead>
                       <tr>
                         <th></th>
+                        <th>Dim</th>
                         <th>Width</th>
                         <th>Height</th>
-                        <th>Mipmaps</th>
-                        <th>HDMipmaps</th>
-                        <th>Images</th>
-                        <th>BytesPerPixel</th>
+                        <th>Mips</th>
+                        <th>HD Mips</th>
+                        <th>Faces</th>
+                        <th>BPP</th>
                         <th>Size</th>
-                        <th>HDSize</th>
+                        <th>HD Size</th>
                         <th>Format</th>
+                        <th>Flags</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -655,6 +695,7 @@ export default function TextureConverter() {
                         <td><strong>Source</strong></td>
                         {sourceInfo ? (
                           <>
+                            <td style={{ color: sourceInfo.is_cubemap ? "#a78bfa" : "var(--text-secondary)", fontWeight: sourceInfo.is_cubemap ? 700 : 400 }}>{DIMENSION_MAP[sourceInfo.dimension] ?? sourceInfo.dimension}</td>
                             <td>{sourceInfo.width}</td>
                             <td>{sourceInfo.height}</td>
                             <td>{sourceInfo.mipmaps}</td>
@@ -663,10 +704,11 @@ export default function TextureConverter() {
                             <td>{sourceInfo.bytes_per_pixel}</td>
                             <td>{sourceInfo.size}</td>
                             <td>{sourceInfo.hdsize}</td>
-                            <td>{FORMAT_MAP[sourceInfo.format] || `DXGI_FORMAT_${sourceInfo.format}`}</td>
+                            <td>{FORMAT_MAP_FULL[sourceInfo.format] || `DXGI_FORMAT_${sourceInfo.format}`}</td>
+                            <td><TextureBadges info={sourceInfo} /></td>
                           </>
                         ) : (
-                          <td colSpan={9} style={{ color: "var(--text-secondary)" }}>No source file selected</td>
+                          <td colSpan={11} style={{ color: "var(--text-secondary)" }}>No source file selected</td>
                         )}
                       </tr>
                       {tab === "replace" && (
@@ -674,6 +716,7 @@ export default function TextureConverter() {
                           <td><strong>Custom</strong></td>
                           {ddsInfo ? (
                             <>
+                              <td>{DIMENSION_MAP[ddsInfo.dimension] ?? ddsInfo.dimension}</td>
                               <td>{ddsInfo.width}</td>
                               <td>{ddsInfo.height}</td>
                               <td>{ddsInfo.mipmaps}</td>
@@ -682,10 +725,11 @@ export default function TextureConverter() {
                               <td>{ddsInfo.bytes_per_pixel}</td>
                               <td>{ddsInfo.size}</td>
                               <td>{ddsInfo.hdsize}</td>
-                              <td>{FORMAT_MAP[ddsInfo.format] || `DXGI_FORMAT_${ddsInfo.format}`}</td>
+                              <td>{FORMAT_MAP_FULL[ddsInfo.format] || `DXGI_FORMAT_${ddsInfo.format}`}</td>
+                              <td><TextureBadges info={ddsInfo} /></td>
                             </>
                           ) : (
-                            <td colSpan={9} style={{ color: "var(--text-secondary)" }}>No DDS file selected</td>
+                            <td colSpan={11} style={{ color: "var(--text-secondary)" }}>No DDS file selected</td>
                           )}
                         </tr>
                       )}
@@ -876,12 +920,13 @@ export default function TextureConverter() {
 
                               <div style={{ fontSize: "0.85rem", fontWeight: 600, wordBreak: "break-all", lineHeight: 1.2 }}>{job.base_name.split("/").pop()}</div>
 
-                              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between" }}>
+                              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                 <div style={{ color: "var(--text-tertiary)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "0.5rem" }} title="DXGI Format">
                                   {job.sd_path ? <JobFormat path={job.sd_path} type="texture" /> : "Unknown"}
                                 </div>
                                 <div style={{ color: ddsOk ? "var(--accent)" : "inherit" }}>DDS: {ddsOk ? "Ready" : "Missing"}</div>
                               </div>
+                              {job.sd_path && <JobBadges path={job.sd_path} />}
                             </div>
                           );
                         })}

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
+import { useLocation } from "react-router-dom";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import StagerTreeView from "./StagerTreeView";
 import styles from "./Stager.module.css";
@@ -14,6 +15,7 @@ interface Project {
 }
 
 export default function Stager() {
+  const location = useLocation();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [assets, setAssets] = useState<string[]>([]);
@@ -57,6 +59,24 @@ export default function Stager() {
   useEffect(() => {
     loadProjects();
   }, []);
+
+  // Listen for projects-changed from other modules (e.g., Asset Browser creating projects)
+  useEffect(() => {
+    const unlisten = listen("projects-changed", () => {
+      loadProjects();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Refresh when navigating back to stager
+  useEffect(() => {
+    if (location.pathname === "/tools/stager") {
+      loadProjects();
+      if (selected) loadAssets(selected);
+    }
+  }, [location.pathname, selected]);
 
   useEffect(() => {
     if (selected) loadAssets(selected);

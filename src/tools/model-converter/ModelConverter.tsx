@@ -38,6 +38,7 @@ export default function ModelConverter() {
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
+    if (location.pathname !== "/tools/model-converter") return;
     const params = new URLSearchParams(location.search);
     const fp = (location.state as { filePath?: string } | null)?.filePath ?? params.get("filePath");
     if (!fp) return;
@@ -50,7 +51,7 @@ export default function ModelConverter() {
       setAsciiPath(fp);
       setTab("to-model");
     }
-  }, [location.state, location.search]);
+  }, [location.pathname, location.state, location.search]);
 
   // Reset look-group cache whenever the source model changes.
   useEffect(() => {

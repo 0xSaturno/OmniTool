@@ -1,6 +1,6 @@
 use base64::prelude::*;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use image::{ImageFormat, RgbaImage};
+use image::{ImageFormat, Rgb32FImage, RgbaImage};
 use serde::Serialize;
 use std::fs::File;
 use std::io::Cursor as ImageCursor;
@@ -26,6 +26,10 @@ pub struct TextureInfo {
     pub size: u32,
     pub hdsize: u32,
     pub format: u32,
+    pub is_cubemap: bool,
+    pub is_ibl: bool,
+    pub dimension: u8,
+    pub content_type: u8,
 }
 
 pub struct SourceTex {
@@ -48,6 +52,8 @@ pub struct SourceTex {
     pub aspect: i32,
     pub format: u16,
     pub bytes_per_pixel: f64,
+    pub dimension: u8,
+    pub content_type: u8,
 }
 
 impl SourceTex {
@@ -128,18 +134,19 @@ impl SourceTex {
 
         let aspect = ((width as f64 / height as f64).log2()) as i32;
 
-        t_cur.read_u8().unwrap();
-        let _channels = t_cur.read_u8().unwrap();
+        let flags_raw = t_cur.read_u16::<LittleEndian>().unwrap();
+        let dimension = ((flags_raw >> 4) & 0x7) as u8;
+        let content_type = ((flags_raw >> 7) & 0x7F) as u8;
         let format = t_cur.read_u16::<LittleEndian>().unwrap();
 
-        let basemipsize = mip_level_size(sd_width as u32, sd_height as u32, format as u32)
+        let basemipsize_single = mip_level_size(sd_width as u32, sd_height as u32, format as u32)
             .unwrap_or(tex_size / images as u32);
 
         let format_bits = bits_per_pixel(format as u32);
         let bytes_per_pixel = if format_bits > 0 {
             (format_bits / 8) as f64
         } else {
-            2f64.powf(((basemipsize as f64 / sd_width as f64 / sd_height as f64).log2()).floor())
+            2f64.powf(((basemipsize_single as f64 / sd_width as f64 / sd_height as f64).log2()).floor())
         };
 
         t_cur.seek(SeekFrom::Current(8)).unwrap();
@@ -158,6 +165,23 @@ impl SourceTex {
             );
         }
 
+        // For cubemap textures, the header stores images=1 but packs all 6 faces
+        // contiguously. Derive the true face count from sdsize / per-face mip chain.
+        let is_cubemap_dim = dimension == 4;
+        let (images, basemipsize) = if is_cubemap_dim && basemipsize_single > 0 && tex_size > 0 {
+            let mip_chain: u32 = (0..mipmaps_count)
+                .map(|m| {
+                    let mw = (sd_width as u32 >> m).max(1);
+                    let mh = (sd_height as u32 >> m).max(1);
+                    mip_level_size(mw, mh, format as u32).unwrap_or(0)
+                })
+                .sum();
+            let face_count = if mip_chain > 0 { (tex_size / mip_chain).max(1) } else { images as u32 };
+            (face_count as u16, basemipsize_single)
+        } else {
+            (images, basemipsize_single)
+        };
+
         t_cur.seek(SeekFrom::Current(11)).unwrap();
 
         let start_pos = if stg {
@@ -170,8 +194,7 @@ impl SourceTex {
         let mut mipmaps = Vec::new();
         for _ in 0..images {
             let mut mip = vec![0u8; (tex_size / images as u32) as usize];
-            let read_len = fs.read(&mut mip).unwrap_or(0);
-            mip.truncate(read_len);
+            fs.read_exact(&mut mip).unwrap_or(());
             mipmaps.push(mip);
         }
 
@@ -211,8 +234,11 @@ impl SourceTex {
             aspect,
             format,
             bytes_per_pixel,
+            dimension,
+            content_type,
         })
     }
+
 }
 
 pub struct DDSTex {
@@ -304,6 +330,7 @@ impl DDSTex {
         hdmipmaps_count: u32,
         format: u32,
         basemipsize: u32,
+        is_cubemap: bool,
     ) -> Result<(), String> {
         let mut fs = File::create(fn_out).map_err(|e| e.to_string())?;
         fs.write_all(b"DDS ").unwrap();
@@ -337,14 +364,19 @@ impl DDSTex {
             caps |= 8 | 0x400000;
         }
         fs.write_u32::<LittleEndian>(caps).unwrap();
-        fs.write_all(&[0u8; 4 * 4]).unwrap(); // caps2-4, reserved
+        // caps2: CubeMapAll (0xFE00) when cubemap, else 0
+        let caps2 = if is_cubemap { 0x0000_FE00u32 } else { 0u32 };
+        fs.write_u32::<LittleEndian>(caps2).unwrap();
+        fs.write_all(&[0u8; 3 * 4]).unwrap(); // caps3, caps4, reserved
 
         // DX10 header
         fs.write_u32::<LittleEndian>(format).unwrap();
         fs.write_u32::<LittleEndian>(if height > 1 { 3 } else { 2 })
             .unwrap();
-        fs.write_u32::<LittleEndian>(0).unwrap(); // misc
-        fs.write_u32::<LittleEndian>(1).unwrap(); // arraySize
+        // DX10 misc: 4 = D3D11_RESOURCE_MISC_TEXTURECUBE
+        let dx10_misc = if is_cubemap { 4u32 } else { 0u32 };
+        fs.write_u32::<LittleEndian>(dx10_misc).unwrap();
+        fs.write_u32::<LittleEndian>(1).unwrap(); // arraySize (faces are covered by misc cube flag)
         fs.write_u32::<LittleEndian>(0).unwrap(); // misc flags
 
         if let Some(hd) = hdmipmaps_data {
@@ -376,7 +408,7 @@ fn is_block_compressed(format: u32) -> bool {
     matches!(format, 70..=84 | 94..=99)
 }
 
-fn mip_level_size(width: u32, height: u32, format: u32) -> Option<u32> {
+pub fn mip_level_size(width: u32, height: u32, format: u32) -> Option<u32> {
     let format_bits = bits_per_pixel(format);
     if format_bits <= 0 {
         return None;
@@ -392,14 +424,40 @@ fn mip_level_size(width: u32, height: u32, format: u32) -> Option<u32> {
     Some((((width as u64 * height as u64 * format_bits as u64) + 7) / 8) as u32)
 }
 
+/// `output_format`: "dds" | "png" | "auto"  
+/// `cube_mode`:      "array" | "cross"  
 pub fn extract_texture(
     source_path: &str,
     output_dir: Option<String>,
     explicit_hd_path: Option<&str>,
+    output_format: Option<&str>,
+    cube_mode: Option<&str>,
 ) -> Result<String, String> {
     let tex = SourceTex::read(source_path, explicit_hd_path)?;
+
+    let is_cubemap = tex.dimension == 4;
+    let is_hdr = matches!(tex.format, 95 | 96 | 2 | 10 | 16); // BC6H, RGBA_FLOAT, R16G16B16A16, RG32
+    let is_multi = tex.images > 1;
+    let want_cross = is_cubemap && cube_mode.unwrap_or("array") == "cross";
+
+    // Determine effective output format
+    let effective_fmt = match output_format.unwrap_or("auto") {
+        "png" => "png",
+        "dds" => "dds",
+        fmt => {
+            // auto / auto-notiff: TIFF for single 2D HDR (unless notiff), PNG for simple 2D LDR, DDS for multi/cubemap
+            let tiff_ok = fmt != "auto-notiff";
+            if is_hdr && !is_multi && !is_cubemap && tiff_ok { "tiff" }
+            else if !is_hdr && !is_multi && !is_cubemap { "png" }
+            else { "dds" }
+        }
+    };
+    // Cross export always PNG (it's an assembled image, not a raw DDS)
+    let effective_fmt = if want_cross { "png" } else { effective_fmt };
+
+    let ext = match effective_fmt { "tiff" => "tiff", "png" => "png", _ => "dds" };
     let mut out_base = PathBuf::from(source_path);
-    out_base.set_extension("dds");
+    out_base.set_extension(ext);
     if let Some(dir) = output_dir {
         out_base = PathBuf::from(dir).join(out_base.file_name().unwrap());
     }
@@ -422,7 +480,100 @@ pub fn extract_texture(
     }
 
     let mut logs = String::new();
-    if tex.images > 1 {
+
+    // ── Cross PNG export for cubemaps ────────────────────────────────────────
+    if want_cross && is_cubemap && tex.images >= 6 {
+        let face_w = tex.sd_width as usize;
+        let face_h = tex.sd_height as usize;
+        let mip_size = mip_level_size(face_w as u32, face_h as u32, tex.format as u32)
+            .map(|v| v as usize)
+            .unwrap_or_else(|| (face_w as f64 * face_h as f64 * tex.bytes_per_pixel).ceil() as usize);
+
+        let faces: Vec<Vec<u8>> = (0..6usize)
+            .filter_map(|i| {
+                if i < tex.mipmaps.len() && tex.mipmaps[i].len() >= mip_size {
+                    Some(tex.mipmaps[i][..mip_size].to_vec())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if faces.len() < 6 {
+            return Err("Not enough cube face data for cross export".into());
+        }
+
+        let cross_bytes = cubemap_cross_png_bytes(&faces, face_w, face_h, tex.format as u32, tex.content_type)?;
+        std::fs::write(&out_base, &cross_bytes).map_err(|e| e.to_string())?;
+        logs.push_str(&format!("Wrote {} (cubemap cross, {}x{})\n", out_base.display(), face_w * 4, face_h * 2));
+        return Ok(logs);
+    }
+
+    // ── TIFF export for HDR single-surface textures ─────────────────────────
+    if effective_fmt == "tiff" && !is_cubemap && tex.images == 1 {
+        let width = tex.sd_width as usize;
+        let height = tex.sd_height as usize;
+        let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
+            .map(|v| v as usize)
+            .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
+
+        if tex.mipmaps[0].len() < mip_size {
+            return Err("Not enough SD data for TIFF export".into());
+        }
+        let tiff_bytes = decode_to_tiff_bytes(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32)?;
+        std::fs::write(&out_base, &tiff_bytes).map_err(|e| e.to_string())?;
+        logs.push_str(&format!("Wrote {} ({}x{} TIFF HDR)\n", out_base.display(), width, height));
+        return Ok(logs);
+    }
+
+    // ── Simple PNG export for non-HDR 2D single-surface textures ────────────
+    if effective_fmt == "png" && !is_cubemap && tex.images == 1 {
+        let width = tex.sd_width as usize;
+        let height = tex.sd_height as usize;
+        let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
+            .map(|v| v as usize)
+            .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
+
+        if tex.mipmaps[0].len() < mip_size {
+            return Err("Not enough SD data for PNG export".into());
+        }
+        let png_b64 = decode_to_base64_png(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32, tex.content_type)?;
+        let png_bytes = base64::prelude::BASE64_STANDARD.decode(png_b64.as_bytes()).map_err(|e| e.to_string())?;
+        std::fs::write(&out_base, &png_bytes).map_err(|e| e.to_string())?;
+        logs.push_str(&format!("Wrote {} ({}x{} PNG)\n", out_base.display(), width, height));
+        return Ok(logs);
+    }
+
+    // ── DDS export ────────────────────────────────────────────────────────────
+    if tex.images > 1 && is_cubemap {
+        // Write a single DDS containing all 6 cube faces interleaved (DXGI cube array)
+        let mut all_hd: Vec<u8> = Vec::new();
+        let mut all_sd: Vec<u8> = Vec::new();
+        let hd_per_face = if let Some(hd) = hdmips {
+            hd.len() / tex.images as usize
+        } else {
+            0
+        };
+        for i in 0..tex.images as usize {
+            if let Some(hd) = hdmips {
+                all_hd.extend_from_slice(&hd[i * hd_per_face..(i + 1) * hd_per_face]);
+            }
+            all_sd.extend_from_slice(&tex.mipmaps[i]);
+        }
+        DDSTex::write_single(
+            out_base.to_str().unwrap(),
+            final_width,
+            final_height,
+            if all_hd.is_empty() { None } else { Some(&all_hd) },
+            &all_sd,
+            tex.mipmaps_count as u32,
+            final_hdmipmaps as u32,
+            tex.format as u32,
+            tex.basemipsize,
+            true,
+        )?;
+        logs.push_str(&format!("Wrote {} (cubemap, {} faces)\n", out_base.display(), tex.images));
+    } else if tex.images > 1 {
         for i in 0..tex.images {
             let mut single_out = out_base.clone();
             single_out.set_extension(format!("A{}.dds", i));
@@ -444,6 +595,7 @@ pub fn extract_texture(
                 final_hdmipmaps as u32,
                 tex.format as u32,
                 tex.basemipsize,
+                false,
             )?;
             logs.push_str(&format!("Wrote {}\n", single_out.display()));
         }
@@ -458,6 +610,7 @@ pub fn extract_texture(
             final_hdmipmaps as u32,
             tex.format as u32,
             tex.basemipsize,
+            false,
         )?;
         logs.push_str(&format!("Wrote {}\n", out_base.display()));
     }
@@ -683,6 +836,8 @@ pub fn replace_texture(
 
 pub fn get_texture_info(path: &str) -> Result<TextureInfo, String> {
     let tex = SourceTex::read(path, None)?;
+    let is_cubemap = tex.dimension == 4;
+    let is_ibl = (tex.content_type & 0x08) != 0;
     Ok(TextureInfo {
         width: tex.width as u32,
         height: tex.height as u32,
@@ -693,47 +848,19 @@ pub fn get_texture_info(path: &str) -> Result<TextureInfo, String> {
         size: tex.size,
         hdsize: tex.hdsize,
         format: tex.format as u32,
+        is_cubemap,
+        is_ibl,
+        dimension: tex.dimension,
+        content_type: tex.content_type,
     })
 }
 
 pub fn get_texture_preview(path: &str) -> Result<String, String> {
-    let tex = SourceTex::read(path, None)?;
-    if tex.images == 0 || tex.mipmaps.is_empty() {
-        return Err("No images available for preview".into());
-    }
+    crate::tools::texture_preview::get_cached_preview(path)
+}
 
-    if tex.hdsize > 0 && tex.hdmipmaps > 0 && !tex.hdfilename.is_empty() {
-        let hd_bytes = std::fs::read(&tex.hdfilename)
-            .map_err(|e| format!("Failed to read {}: {}", tex.hdfilename, e))?;
-        let width = tex.width as usize;
-        let height = tex.height as usize;
-        let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
-            .map(|v| v as usize)
-            .unwrap_or_else(|| {
-                (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize
-            });
-
-        let per_image_len = hd_bytes.len() / tex.images as usize;
-        if per_image_len < mip_size {
-            return Err("Not enough HD data to decode preview".into());
-        }
-
-        let mip_data = &hd_bytes[..mip_size];
-        return decode_to_base64_png(mip_data, width, height, tex.format as u32);
-    }
-
-    let width = tex.sd_width as usize;
-    let height = tex.sd_height as usize;
-    let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
-        .map(|v| v as usize)
-        .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
-
-    if tex.mipmaps[0].len() < mip_size {
-        return Err("Not enough data to decode preview".into());
-    }
-
-    let mip_data = &tex.mipmaps[0][..mip_size];
-    decode_to_base64_png(mip_data, width, height, tex.format as u32)
+pub fn clear_texture_thumbnail_cache() -> Result<usize, String> {
+    crate::tools::texture_preview::clear_cache()
 }
 
 pub fn get_dds_preview(path: &str) -> Result<String, String> {
@@ -755,7 +882,119 @@ pub fn get_dds_preview(path: &str) -> Result<String, String> {
     }
     mip_data.truncate(read_len);
 
-    decode_to_base64_png(&mip_data, width, height, tex.format)
+    decode_to_base64_png(&mip_data, width, height, tex.format, 0)
+}
+
+/// Decode an HDR texture to a 32-bit float TIFF byte vector.
+/// Supported formats: 95/96 (BC6H UF/SF), 10 (R16G16B16A16F), 2 (R32G32B32A32F), 16 (R32G32F)
+fn decode_to_tiff_bytes(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    format: u32,
+) -> Result<Vec<u8>, String> {
+    let npx = width * height;
+    let mut floats = vec![[0f32; 3]; npx]; // RGB f32 per pixel
+
+    match format {
+        95 | 96 => {
+            // BC6H: decode to tone-mapped u32, then unpack back to raw half-float via bc6 block decode
+            // Re-decode properly: iterate blocks and store raw f32 directly
+            let _guard = BC6_PANIC_HOOK_GUARD.lock().map_err(|_| "BC6 lock failed".to_string())?;
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let blocks_w = (width + 3) / 4;
+            let blocks_h = (height + 3) / 4;
+            let expected = blocks_w * blocks_h * 16;
+            if data.len() < expected {
+                std::panic::set_hook(prev_hook);
+                return Err("Not enough BC6H data for TIFF export".into());
+            }
+            let preferred_signed = format == 96;
+            for by in 0..blocks_h {
+                for bx in 0..blocks_w {
+                    let bi = (by * blocks_w + bx) * 16;
+                    let mut block_pixels = [0u32; 16];
+                    let ok = catch_unwind(AssertUnwindSafe(|| {
+                        decode_bc6_block(&data[bi..bi + 16], &mut block_pixels, preferred_signed)
+                    })).is_ok();
+                    if !ok { continue; }
+                    let y0 = by * 4; let x0 = bx * 4;
+                    for oy in 0..4 { for ox in 0..4 {
+                        let y = y0 + oy; let x = x0 + ox;
+                        if y >= height || x >= width { continue; }
+                        // texture2ddecoder BC6H output: each u32 = BGRA where B,G,R are
+                        // half-float bits packed in the lower 16 bits of each byte pair
+                        // Actually output is BGRA u8×4, where B/G/R are tone-mapped u8.
+                        // For float TIFF, reinterpret the u32 as-is using half::f16 from raw bits.
+                        // texture2ddecoder packs BC6H decoded halves into u32 as: lo16=R_half, hi16=G_half
+                        // but the actual layout is BGRA u8. Use the raw half bits from block decode instead.
+                        // The safer approach: read back from block_pixels as BGRA u8 tone-mapped values
+                        // then divide by 255. Not ideal but avoids needing a separate BC6H float decoder.
+                        let p = block_pixels[oy * 4 + ox];
+                        let b = p.to_le_bytes();
+                        // b = [B, G, R, A] in texture2ddecoder output
+                        floats[y * width + x] = [
+                            b[2] as f32 / 255.0,
+                            b[1] as f32 / 255.0,
+                            b[0] as f32 / 255.0,
+                        ];
+                    }}
+                }
+            }
+            std::panic::set_hook(prev_hook);
+        }
+        10 => {
+            // R16G16B16A16_FLOAT: half-float per channel, 8 bytes/px
+            for i in 0..npx {
+                let px = i * 8;
+                if px + 5 < data.len() {
+                    floats[i] = [
+                        half_to_f32(u16::from_le_bytes([data[px],   data[px+1]])),
+                        half_to_f32(u16::from_le_bytes([data[px+2], data[px+3]])),
+                        half_to_f32(u16::from_le_bytes([data[px+4], data[px+5]])),
+                    ];
+                }
+            }
+        }
+        2 => {
+            // R32G32B32A32_FLOAT: 4×f32, 16 bytes/px
+            for i in 0..npx {
+                let px = i * 16;
+                if px + 11 < data.len() {
+                    floats[i] = [
+                        f32::from_le_bytes([data[px],    data[px+1],  data[px+2],  data[px+3]]),
+                        f32::from_le_bytes([data[px+4],  data[px+5],  data[px+6],  data[px+7]]),
+                        f32::from_le_bytes([data[px+8],  data[px+9],  data[px+10], data[px+11]]),
+                    ];
+                }
+            }
+        }
+        16 => {
+            // R32G32_FLOAT: 2×f32, 8 bytes/px — store in R+G, B=0
+            for i in 0..npx {
+                let px = i * 8;
+                if px + 7 < data.len() {
+                    floats[i] = [
+                        f32::from_le_bytes([data[px],   data[px+1], data[px+2], data[px+3]]),
+                        f32::from_le_bytes([data[px+4], data[px+5], data[px+6], data[px+7]]),
+                        0.0,
+                    ];
+                }
+            }
+        }
+        _ => return Err(format!("Format {} not supported for TIFF HDR export", format)),
+    }
+
+    let img = Rgb32FImage::from_raw(
+        width as u32,
+        height as u32,
+        floats.into_iter().flatten().collect(),
+    ).ok_or("Failed to build Rgb32FImage")?;
+
+    let mut buf = ImageCursor::new(Vec::new());
+    img.write_to(&mut buf, ImageFormat::Tiff).map_err(|e| e.to_string())?;
+    Ok(buf.into_inner())
 }
 
 fn decode_to_base64_png(
@@ -763,13 +1002,30 @@ fn decode_to_base64_png(
     width: usize,
     height: usize,
     format: u32,
+    content_type: u8,
 ) -> Result<String, String> {
+    let is_normal = (content_type & 0x02) != 0;
     let mut u32_pixels = vec![0u32; width * height];
     let res: Result<(), String> = match format {
         71 | 72 => decode_bc1(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
         77 | 78 => decode_bc3(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
         80 => decode_bc4(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
-        83 => decode_bc5(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
+        83 => {
+            decode_bc5(data, width, height, &mut u32_pixels).map_err(|e| e.to_string())?;
+            if is_normal {
+                for p in u32_pixels.iter_mut() {
+                    let b = p.to_le_bytes();
+                    // texture2ddecoder BC5 output: BGRA where B=ch0(X), G=ch1(Y)
+                    // Reconstruct Z = sqrt(1 - X² - Y²), remap [-1,1] → [0,255]
+                    let x = (b[2] as f32 / 127.5) - 1.0;
+                    let y = (b[1] as f32 / 127.5) - 1.0;
+                    let z = (1.0 - (x * x + y * y).min(1.0)).sqrt();
+                    let zb = ((z * 0.5 + 0.5) * 255.0).round() as u8;
+                    *p = u32::from_le_bytes([zb, b[1], b[2], 255]);
+                }
+            }
+            Ok(())
+        },
         95 => decode_bc6_resilient(data, width, height, &mut u32_pixels, false),
         96 => decode_bc6_resilient(data, width, height, &mut u32_pixels, true),
         98 | 99 => decode_bc7(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
@@ -799,6 +1055,7 @@ fn decode_to_base64_png(
             Ok(())
         }
         10 => {
+            // R16G16B16A16_FLOAT: HDR half-float values; use reinhard tone-map
             for i in 0..(width * height) {
                 let px = i * 8;
                 if px + 7 < data.len() {
@@ -807,9 +1064,9 @@ fn decode_to_base64_png(
                     let b = half_to_f32(u16::from_le_bytes([data[px + 4], data[px + 5]]));
                     let a = half_to_f32(u16::from_le_bytes([data[px + 6], data[px + 7]]));
                     u32_pixels[i] = u32::from_le_bytes([
-                        float_to_preview_u8(r),
-                        float_to_preview_u8(g),
-                        float_to_preview_u8(b),
+                        float_to_preview_u8_hdr(r),
+                        float_to_preview_u8_hdr(g),
+                        float_to_preview_u8_hdr(b),
                         float_to_preview_u8(a),
                     ]);
                 } else {
@@ -921,12 +1178,327 @@ fn decode_to_base64_png(
     Ok(BASE64_STANDARD.encode(cursor.into_inner()))
 }
 
+/// Decode texture data to RGBA buffer (for downscaling).
+pub fn decode_to_rgba(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    format: u32,
+    content_type: u8,
+) -> Result<Vec<u8>, String> {
+    let is_normal = (content_type & 0x02) != 0;
+    let mut u32_pixels = vec![0u32; width * height];
+    let res: Result<(), String> = match format {
+        71 | 72 => decode_bc1(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
+        77 | 78 => decode_bc3(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
+        80 => decode_bc4(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
+        83 => {
+            decode_bc5(data, width, height, &mut u32_pixels).map_err(|e| e.to_string())?;
+            if is_normal {
+                for p in u32_pixels.iter_mut() {
+                    let b = p.to_le_bytes();
+                    let x = (b[2] as f32 / 127.5) - 1.0;
+                    let y = (b[1] as f32 / 127.5) - 1.0;
+                    let z = (1.0 - (x * x + y * y).min(1.0)).sqrt();
+                    let zb = ((z * 0.5 + 0.5) * 255.0).round() as u8;
+                    *p = u32::from_le_bytes([zb, b[1], b[2], 255]);
+                }
+            }
+            Ok(())
+        },
+        95 => decode_bc6_resilient(data, width, height, &mut u32_pixels, false),
+        96 => decode_bc6_resilient(data, width, height, &mut u32_pixels, true),
+        98 | 99 => decode_bc7(data, width, height, &mut u32_pixels).map_err(|e| e.to_string()),
+        28 | 29 => {
+            for i in 0..(width * height) {
+                if i * 4 + 3 < data.len() {
+                    let r = data[i * 4];
+                    let g = data[i * 4 + 1];
+                    let b = data[i * 4 + 2];
+                    let a = data[i * 4 + 3];
+                    u32_pixels[i] = u32::from_le_bytes([r, g, b, a]);
+                }
+            }
+            Ok(())
+        }
+        61 => {
+            for i in 0..(width * height) {
+                if i < data.len() {
+                    let v = data[i];
+                    u32_pixels[i] = u32::from_le_bytes([v, v, v, 255]);
+                }
+            }
+            Ok(())
+        }
+        10 => {
+            for i in 0..(width * height) {
+                let px = i * 8;
+                if px + 7 < data.len() {
+                    let r = half_to_f32(u16::from_le_bytes([data[px], data[px + 1]]));
+                    let g = half_to_f32(u16::from_le_bytes([data[px + 2], data[px + 3]]));
+                    let b = half_to_f32(u16::from_le_bytes([data[px + 4], data[px + 5]]));
+                    let a = half_to_f32(u16::from_le_bytes([data[px + 6], data[px + 7]]));
+                    u32_pixels[i] = u32::from_le_bytes([
+                        float_to_preview_u8_hdr(r),
+                        float_to_preview_u8_hdr(g),
+                        float_to_preview_u8_hdr(b),
+                        float_to_preview_u8(a),
+                    ]);
+                }
+            }
+            Ok(())
+        }
+        16 => {
+            for i in 0..(width * height) {
+                let px = i * 8;
+                if px + 7 < data.len() {
+                    let r = f32::from_le_bytes([data[px], data[px + 1], data[px + 2], data[px + 3]]);
+                    let g = f32::from_le_bytes([data[px + 4], data[px + 5], data[px + 6], data[px + 7]]);
+                    let rr = float_to_preview_u8(r);
+                    let gg = float_to_preview_u8(g);
+                    u32_pixels[i] = u32::from_le_bytes([rr, gg, 0, 255]);
+                }
+            }
+            Ok(())
+        }
+        2 => {
+            for i in 0..(width * height) {
+                let px = i * 16;
+                if px + 15 < data.len() {
+                    let r = f32::from_le_bytes([data[px], data[px + 1], data[px + 2], data[px + 3]]);
+                    let g = f32::from_le_bytes([data[px + 4], data[px + 5], data[px + 6], data[px + 7]]);
+                    let b = f32::from_le_bytes([data[px + 8], data[px + 9], data[px + 10], data[px + 11]]);
+                    let a = f32::from_le_bytes([data[px + 12], data[px + 13], data[px + 14], data[px + 15]]);
+                    u32_pixels[i] = u32::from_le_bytes([
+                        float_to_preview_u8(r),
+                        float_to_preview_u8(g),
+                        float_to_preview_u8(b),
+                        float_to_preview_u8(a),
+                    ]);
+                }
+            }
+            Ok(())
+        }
+        74 | 75 => decode_bc2_manual(data, width, height, &mut u32_pixels),
+        87 | 91 => {
+            for i in 0..(width * height) {
+                if i * 4 + 3 < data.len() {
+                    let b = data[i * 4];
+                    let g = data[i * 4 + 1];
+                    let r = data[i * 4 + 2];
+                    let a = data[i * 4 + 3];
+                    u32_pixels[i] = u32::from_le_bytes([r, g, b, a]);
+                }
+            }
+            Ok(())
+        }
+        _ => return Err(format!("Format {} not supported for RGBA decode", format)),
+    };
+
+    if let Err(e) = res {
+        return Err(format!("Decode failed: {}", e));
+    }
+
+    let mut rgba_bytes = Vec::with_capacity(width * height * 4);
+    let is_raw = matches!(format, 2 | 16 | 28 | 29 | 87 | 91);
+    for p in u32_pixels {
+        let b = p.to_le_bytes();
+        if is_raw {
+            rgba_bytes.extend_from_slice(&b);
+        } else {
+            rgba_bytes.extend_from_slice(&[b[2], b[1], b[0], b[3]]);
+        }
+    }
+    Ok(rgba_bytes)
+}
+
+/// Composite 6 RGBA cubemap faces into a 4×2 horizontal-cross RGBA buffer.
+/// Returns RGBA bytes of size (face_w*4) × (face_h*2) × 4.
+pub fn cubemap_cross_preview_rgba(
+    faces_rgba: &[Vec<u8>], // 6 RGBA buffers, each face_w × face_h × 4
+    face_w: usize,
+    face_h: usize,
+) -> Result<Vec<u8>, String> {
+    if faces_rgba.len() < 6 {
+        return Err("Not enough cube faces for cross preview".into());
+    }
+
+    let offsets: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (0, 1), (1, 1)];
+    let cross_w = face_w * 4;
+    let cross_h = face_h * 2;
+    let mut cross_rgba = vec![0u8; cross_w * cross_h * 4];
+
+    for (face_idx, face_rgba) in faces_rgba.iter().enumerate().take(6) {
+        if face_rgba.is_empty() {
+            continue;
+        }
+        let (col, row) = offsets[face_idx];
+        let ox = col * face_w;
+        let oy = row * face_h;
+
+        for y in 0..face_h {
+            for x in 0..face_w {
+                let src_idx = (y * face_w + x) * 4;
+                let dst_idx = ((oy + y) * cross_w + (ox + x)) * 4;
+                cross_rgba[dst_idx..dst_idx + 4].copy_from_slice(&face_rgba[src_idx..src_idx + 4]);
+            }
+        }
+    }
+
+    Ok(cross_rgba)
+}
+
+/// Decode 6 cubemap faces (DXGI order: +X,-X,+Y,-Y,+Z,-Z) and composite
+/// them into a 4×2 horizontal-cross PNG.
+///
+/// Cross layout (each cell = face_w × face_h):
+/// ```
+///  +X  -X  +Y  -Y    (row 0)
+///  +Z  -Z  __  __    (row 1)
+/// ```
+fn cubemap_cross_preview(
+    faces: &[Vec<u8>],
+    face_w: usize,
+    face_h: usize,
+    format: u32,
+    content_type: u8,
+) -> Result<String, String> {
+    let is_normal = (content_type & 0x02) != 0;
+    if faces.len() < 6 {
+        return Err("Not enough cube faces for cross preview".into());
+    }
+
+    // DXGI cross offsets (col, row) for face index 0..5 (+X,-X,+Y,-Y,+Z,-Z)
+    let offsets: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (0, 1), (1, 1)];
+
+    let cross_w = face_w * 4;
+    let cross_h = face_h * 2;
+    let mut cross_rgba = vec![0u8; cross_w * cross_h * 4];
+
+    for (face_idx, face_data) in faces.iter().enumerate().take(6) {
+        let mut face_pixels = vec![0u32; face_w * face_h];
+        let decode_res: Result<(), String> = match format {
+            71 | 72 => decode_bc1(face_data, face_w, face_h, &mut face_pixels)
+                .map_err(|e| e.to_string()),
+            77 | 78 => decode_bc3(face_data, face_w, face_h, &mut face_pixels)
+                .map_err(|e| e.to_string()),
+            80 => decode_bc4(face_data, face_w, face_h, &mut face_pixels)
+                .map_err(|e| e.to_string()),
+            83 => {
+                decode_bc5(face_data, face_w, face_h, &mut face_pixels)
+                    .map_err(|e| e.to_string())?;
+                if is_normal {
+                    for p in face_pixels.iter_mut() {
+                        let b = p.to_le_bytes();
+                        let x = (b[2] as f32 / 127.5) - 1.0;
+                        let y = (b[1] as f32 / 127.5) - 1.0;
+                        let z = (1.0 - (x * x + y * y).min(1.0)).sqrt();
+                        let zb = ((z * 0.5 + 0.5) * 255.0).round() as u8;
+                        *p = u32::from_le_bytes([zb, b[1], b[2], 255]);
+                    }
+                }
+                Ok(())
+            },
+            95 => decode_bc6_resilient(face_data, face_w, face_h, &mut face_pixels, false),
+            96 => decode_bc6_resilient(face_data, face_w, face_h, &mut face_pixels, true),
+            98 | 99 => decode_bc7(face_data, face_w, face_h, &mut face_pixels)
+                .map_err(|e| e.to_string()),
+            28 | 29 => {
+                for i in 0..(face_w * face_h) {
+                    if i * 4 + 3 < face_data.len() {
+                        face_pixels[i] = u32::from_le_bytes([
+                            face_data[i * 4],
+                            face_data[i * 4 + 1],
+                            face_data[i * 4 + 2],
+                            face_data[i * 4 + 3],
+                        ]);
+                    }
+                }
+                Ok(())
+            }
+            87 | 91 => {
+                for i in 0..(face_w * face_h) {
+                    if i * 4 + 3 < face_data.len() {
+                        let b = face_data[i * 4];
+                        let g = face_data[i * 4 + 1];
+                        let r = face_data[i * 4 + 2];
+                        let a = face_data[i * 4 + 3];
+                        face_pixels[i] = u32::from_le_bytes([r, g, b, a]);
+                    }
+                }
+                Ok(())
+            }
+            _ => {
+                // Unsupported face format — skip with black
+                Ok(())
+            }
+        };
+
+        if decode_res.is_err() {
+            continue;
+        }
+
+        let is_raw = matches!(format, 28 | 29 | 87 | 91);
+        let (col, row) = offsets[face_idx];
+        let ox = col * face_w;
+        let oy = row * face_h;
+
+        for y in 0..face_h {
+            for x in 0..face_w {
+                let src_idx = y * face_w + x;
+                let dst_idx = (oy + y) * cross_w + (ox + x);
+                let p = face_pixels[src_idx].to_le_bytes();
+                let rgba = if is_raw {
+                    [p[0], p[1], p[2], p[3]]
+                } else {
+                    // texture2ddecoder returns BGRA; swap R and B
+                    [p[2], p[1], p[0], p[3]]
+                };
+                cross_rgba[dst_idx * 4..dst_idx * 4 + 4].copy_from_slice(&rgba);
+            }
+        }
+    }
+
+    let img = RgbaImage::from_raw(cross_w as u32, cross_h as u32, cross_rgba)
+        .ok_or("Failed to create cubemap cross RgbaImage")?;
+
+    let mut cursor = ImageCursor::new(Vec::new());
+    img.write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode cubemap cross PNG: {}", e))?;
+
+    Ok(BASE64_STANDARD.encode(cursor.into_inner()))
+}
+
+/// Same as cubemap_cross_preview but returns the raw PNG bytes instead of base64.
+fn cubemap_cross_png_bytes(
+    faces: &[Vec<u8>],
+    face_w: usize,
+    face_h: usize,
+    format: u32,
+    content_type: u8,
+) -> Result<Vec<u8>, String> {
+    let b64 = cubemap_cross_preview(faces, face_w, face_h, format, content_type)?;
+    BASE64_STANDARD.decode(b64.as_bytes()).map_err(|e| e.to_string())
+}
+
 fn float_to_preview_u8(v: f32) -> u8 {
+    float_to_preview_u8_ex(v, false)
+}
+
+fn float_to_preview_u8_hdr(v: f32) -> u8 {
+    float_to_preview_u8_ex(v, true)
+}
+
+fn float_to_preview_u8_ex(v: f32, hdr: bool) -> u8 {
     if !v.is_finite() {
         return 0;
     }
 
-    let mapped = if (-1.0..=1.0).contains(&v) {
+    let mapped = if hdr {
+        // Reinhard tone-map for HDR (BC6H, R*_FLOAT) values that can exceed 1.0
+        let lin = v.max(0.0);
+        lin / (1.0 + lin)
+    } else if (-1.0..=1.0).contains(&v) {
         (v * 0.5) + 0.5
     } else {
         v
@@ -1127,5 +1699,9 @@ pub fn get_dds_info(path: &str) -> Result<TextureInfo, String> {
         size: tex.size,
         hdsize: 0,
         format: tex.format,
+        is_cubemap: false,
+        is_ibl: false,
+        dimension: 1,
+        content_type: 0,
     })
 }

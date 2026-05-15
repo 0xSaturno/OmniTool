@@ -37,3 +37,7 @@ Built with Tauri + React + Rust.
 **[ALERT](https://github.com/Tkachov/ALERT)** — this toolkit is an extension of Tkachov's ALERT. The binary format research, section layouts, and codec logic is based on that project.
 
 **[NVIDIA/libdeflate (gdeflate)](https://github.com/NVIDIA/libdeflate/tree/gdeflate)** — GDeflate decompression support relies on NVIDIA's fork of libdeflate.
+
+**[InsomniacArchive](https://github.com/team-waldo/InsomniacArchive)** — archive format research reference.
+
+**[Rivet](https://github.com/neptuwunium/rivet)** — asset id packing, TOC layout, DDL, and locale logic draws from Rivet's research and implementation.

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import { useSettings } from "../../contexts/SettingsContext";
 import { openToolWindow } from "../../utils/openToolWindow";
+import { SEND_TO_ROUTES } from "../../utils/sendToRoutes";
 import styles from "./StagerTreeView.module.css";
 
 interface TreeNode {
@@ -12,15 +13,6 @@ interface TreeNode {
   isFolder: boolean;
   children: Map<string, TreeNode>;
 }
-
-const SEND_TO_ROUTES: Record<string, { label: string; route: string }> = {
-  config:   { label: "Config Editor",      route: "/tools/config-editor" },
-  actor:    { label: "Config Editor",      route: "/tools/config-editor" },
-  conduit:  { label: "Config Editor",      route: "/tools/config-editor" },
-  performanceset: { label: "Config Editor", route: "/tools/config-editor" },
-  model:    { label: "Model Converter",    route: "/tools/model-converter" },
-  material: { label: "Material Remapper",  route: "/tools/material-remapper" },
-};
 
 function extOf(name: string) {
   return name.split(".").pop()?.toLowerCase() ?? "";
@@ -147,7 +139,7 @@ export default function StagerTreeView({
 
   const menuNode = menu?.node;
   const sendToTargets = menuNode && !menuNode.isFolder
-    ? Object.entries(SEND_TO_ROUTES).filter(([ext]) => extOf(menuNode.name) === ext)
+    ? (SEND_TO_ROUTES[extOf(menuNode.name)] ?? [])
     : [];
 
   return (
@@ -170,7 +162,7 @@ export default function StagerTreeView({
             <>
               <div className={styles.menuDivider} />
               <div className={styles.menuSection}>Send To</div>
-              {sendToTargets.map(([, target]) => (
+              {sendToTargets.map((target) => (
                 <div
                   key={target.route}
                   className={styles.menuItem}

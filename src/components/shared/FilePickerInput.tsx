@@ -132,7 +132,6 @@ export default function FilePickerInput({ label, value, onChange, mode, filters,
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder ?? "Drop a file here or click Browse…"}
-          readOnly
         />
         <button className={styles.browseBtn} onClick={pick}>
           Browse

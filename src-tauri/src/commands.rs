@@ -8,7 +8,7 @@ use crate::core::config::ConfigFile;
 use crate::core::dat1::Dat1;
 use crate::core::error::ToolkitError;
 use crate::core::filesystem;
-use crate::core::toc::Toc;
+use crate::core::toc::{Toc, TocAsset};
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
     ascii_writer::model_to_ascii_for_looks as do_model_to_ascii_for_looks,
@@ -18,7 +18,86 @@ use crate::tools::model_converter::{
         meshes::{MeshDefinition, TAG_MESHES},
     },
 };
-use crate::tools::texture_converter::{extract_texture, replace_texture, get_texture_info, get_dds_info, get_texture_preview, get_dds_preview, TextureInfo};
+use crate::tools::texture_converter::{extract_texture, replace_texture, get_texture_info, get_dds_info, get_texture_preview, get_dds_preview, clear_texture_thumbnail_cache, TextureInfo};
+
+// ---------------------------------------------------------------------------
+// Asset extraction safety helpers
+// ---------------------------------------------------------------------------
+
+/// Case-insensitive check for archive names whose path begins with the
+/// `d\mods\` (or `d/mods/`) override prefix used by the runtime mod loader.
+pub(crate) fn is_mod_archive(name: &str) -> bool {
+    let normalized = name.replace('/', "\\").to_ascii_lowercase();
+    normalized.starts_with("d\\mods\\")
+}
+
+/// Emit a `warn!` log entry whenever an extracted asset record resolves to a
+/// mod archive so the caller knows the bytes may differ from the clean game
+/// data. Non-blocking — extraction always proceeds.
+fn warn_if_mod_source(toc: &Toc, asset: &TocAsset) {
+    let names = toc.archive_filenames();
+    if let Some(name) = names.get(asset.archive_index as usize) {
+        if is_mod_archive(name) {
+            warn!(
+                "Extract source is mod archive: {} (asset {:016X}, span {})",
+                name, asset.asset_id, asset.span_index
+            );
+        }
+    }
+}
+
+/// Optional clean-source extraction mode. Lets callers opt into reading from
+/// `toc.BAK` for parity / debug scenarios while keeping the live TOC as the
+/// safe default.
+#[derive(Clone, Copy, Debug)]
+enum SourceMode {
+    /// Use the requested TOC as-is (default — current behaviour).
+    Live,
+    /// Use sibling `toc.BAK`; return a hard error if it is missing.
+    /// No silent fallback — caller wants a guarantee of clean data.
+    RequireTocBak,
+}
+
+impl SourceMode {
+    fn parse(raw: Option<&str>) -> Result<Self, ToolkitError> {
+        match raw.unwrap_or("live").trim().to_ascii_lowercase().as_str() {
+            "" | "live" => Ok(Self::Live),
+            "require_toc_bak" | "requiretocbak" => Ok(Self::RequireTocBak),
+            other => Err(ToolkitError::Parse(format!(
+                "invalid sourceMode '{other}' (expected live|require_toc_bak)"
+            ))),
+        }
+    }
+}
+
+/// Resolve the actual TOC path to read based on the requested source mode.
+/// Always logs the chosen path.
+fn resolve_toc_path(requested: &str, mode: SourceMode) -> Result<PathBuf, ToolkitError> {
+    let req = PathBuf::from(requested);
+    let bak = req
+        .parent()
+        .map(|p| p.join("toc.BAK"))
+        .unwrap_or_else(|| PathBuf::from("toc.BAK"));
+
+    match mode {
+        SourceMode::Live => {
+            info!("source mode=live: using {}", req.display());
+            Ok(req)
+        }
+        SourceMode::RequireTocBak => {
+            if bak.exists() {
+                info!("source mode=require_toc_bak: using {}", bak.display());
+                Ok(bak)
+            } else {
+                Err(ToolkitError::Parse(format!(
+                    "require_toc_bak: {} not found beside {}",
+                    bak.display(),
+                    req.display()
+                )))
+            }
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn tauri_get_texture_info(path: String) -> Result<TextureInfo, ToolkitError> {
@@ -41,11 +120,18 @@ pub async fn tauri_get_dds_preview(path: String) -> Result<String, ToolkitError>
 }
 
 #[tauri::command]
+pub async fn tauri_clear_texture_thumbnail_cache() -> Result<usize, ToolkitError> {
+    clear_texture_thumbnail_cache().map_err(|e| ToolkitError::Parse(e))
+}
+
+#[tauri::command]
 pub async fn tauri_extract_texture(
     source_path: String,
     output_dir: Option<String>,
+    output_format: Option<String>,
+    cube_mode: Option<String>,
 ) -> Result<String, ToolkitError> {
-    extract_texture(&source_path, output_dir, None)
+    extract_texture(&source_path, output_dir, None, output_format.as_deref(), cube_mode.as_deref())
         .map_err(|e| ToolkitError::Parse(e))
 }
 
@@ -246,6 +332,7 @@ pub async fn tauri_batch_extract_textures(
     jobs: Vec<TextureJob>,
     output_dir: Option<String>,
     project_dir: String,
+    output_format: Option<String>,
 ) -> Result<String, ToolkitError> {
     let mut success_count = 0;
     let mut errors = Vec::new();
@@ -262,7 +349,12 @@ pub async fn tauri_batch_extract_textures(
         if let Some(ref out_dir) = output_dir {
             let base_path = Path::new(&project_dir);
             let sd_relative = Path::new(&sd).strip_prefix(base_path).unwrap_or(Path::new(""));
-            out_dds_path = Path::new(out_dir).join(sd_relative).with_extension("dds");
+            let out_ext = match output_format.as_deref().unwrap_or("auto") {
+                "png" => "png",
+                "tiff" => "tiff",
+                _ => "dds",
+            };
+            out_dds_path = Path::new(out_dir).join(sd_relative).with_extension(out_ext);
             if let Some(parent) = out_dds_path.parent() {
                 std::fs::create_dir_all(parent).unwrap_or(());
                 explicit_out_dir = parent.to_str().map(|s| s.to_string());
@@ -274,7 +366,7 @@ pub async fn tauri_batch_extract_textures(
             explicit_out_dir = None;
         }
 
-        match extract_texture(&sd, explicit_out_dir, job.hd_path.as_deref()) {
+        match extract_texture(&sd, explicit_out_dir, job.hd_path.as_deref(), output_format.as_deref(), None) {
             Ok(_) => success_count += 1,
             Err(e) => errors.push(format!("{}: {}", job.base_name, e)),
         }
@@ -793,17 +885,20 @@ pub async fn extract_asset_to_project(
     archives_dir: String,
     project_name: String,
     asset_path: String,
+    source_mode: Option<String>,
 ) -> Result<String, ToolkitError> {
     let start = Instant::now();
     info!(
-        "extract_asset_to_project: asset={} project={} path={}",
-        asset_id, project_name, asset_path
+        "extract_asset_to_project: asset={} project={} path={} sourceMode={:?}",
+        asset_id, project_name, asset_path, source_mode
     );
 
     let id = u64::from_str_radix(&asset_id, 16)
         .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
 
-    let data = std::fs::read(&toc_path)?;
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let data = std::fs::read(&resolved_toc)?;
     let toc = Toc::parse(&data)?;
 
     // Collect ALL spans for this asset (e.g. span 0 = SD, span 1 = HD for textures).
@@ -822,6 +917,7 @@ pub async fn extract_asset_to_project(
     let mut summary = Vec::new();
 
     for asset in &matching {
+        warn_if_mod_source(&toc, asset);
         let raw = toc.extract_asset(asset, Path::new(&archives_dir))?;
         // Each span lives in its own subfolder: 0/ for SD, 1/ for HD, etc.
         let out_path = project_base
@@ -855,11 +951,14 @@ pub async fn extract_asset_to_path(
     archives_dir: String,
     output_dir: String,
     asset_path: String,
+    source_mode: Option<String>,
 ) -> Result<String, ToolkitError> {
     let id = u64::from_str_radix(&asset_id, 16)
         .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
 
-    let data = std::fs::read(&toc_path)?;
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let data = std::fs::read(&resolved_toc)?;
     let toc = Toc::parse(&data)?;
 
     let matching: Vec<_> = toc
@@ -877,6 +976,7 @@ pub async fn extract_asset_to_path(
     let mut summary = Vec::new();
 
     for asset in &matching {
+        warn_if_mod_source(&toc, asset);
         let raw = toc.extract_asset(asset, Path::new(&archives_dir))?;
         let out_path = base
             .join(asset.span_index.to_string())
@@ -903,11 +1003,14 @@ pub async fn extract_asset_as_dds(
     archives_dir: String,
     output_dir: String,
     asset_path: String,
+    source_mode: Option<String>,
 ) -> Result<String, ToolkitError> {
     let id = u64::from_str_radix(&asset_id, 16)
         .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
 
-    let data = std::fs::read(&toc_path)?;
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let data = std::fs::read(&resolved_toc)?;
     let toc = Toc::parse(&data)?;
 
     let matching: Vec<_> = toc
@@ -930,6 +1033,7 @@ pub async fn extract_asset_as_dds(
     hd_path.set_file_name(base_name.replace(".texture", ".hd.texture"));
 
     for asset in &matching {
+        warn_if_mod_source(&toc, asset);
         let raw = toc.extract_asset(asset, Path::new(&archives_dir))?;
         if asset.span_index == 0 {
             std::fs::write(&sd_path, &raw)?;
@@ -943,7 +1047,7 @@ pub async fn extract_asset_as_dds(
     } else {
         None
     };
-    let result = extract_texture(&sd_path.to_string_lossy(), Some(output_dir), hd_explicit.as_deref())
+    let result = extract_texture(&sd_path.to_string_lossy(), Some(output_dir), hd_explicit.as_deref(), None, None)
         .map_err(|e| ToolkitError::Parse(e))?;
 
     let _ = std::fs::remove_file(&sd_path);
@@ -1333,6 +1437,40 @@ pub async fn export_config_json(content_json: String, out_path: String) -> Resul
     Ok(out_path)
 }
 
+#[tauri::command]
+pub async fn export_config_envelope(
+    config_path: String,
+    out_path: String,
+) -> Result<String, ToolkitError> {
+    use crate::core::dat1::{Dat1, DAT1_MAGIC};
+    use crate::core::ddl;
+
+    let data = std::fs::read(&config_path)?;
+    if data.len() < 4 {
+        return Err(ToolkitError::Parse("config file too small".into()));
+    }
+    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let dat1_slice: &[u8] = if magic == DAT1_MAGIC {
+        &data[..]
+    } else if data.len() >= 40
+        && u32::from_le_bytes(data[36..40].try_into().unwrap()) == DAT1_MAGIC
+    {
+        &data[36..]
+    } else {
+        return Err(ToolkitError::Parse(format!(
+            "unrecognized config wrapper (magic={magic:#010X})"
+        )));
+    };
+
+    let dat1 = Dat1::parse(dat1_slice)?;
+    let envelope = ddl::build_config_envelope(&dat1);
+    let pretty = serde_json::to_string_pretty(&envelope)
+        .map_err(|e| ToolkitError::Parse(format!("failed to serialize JSON: {e}")))?;
+    let pretty_crlf = pretty.replace('\n', "\r\n");
+    std::fs::write(&out_path, pretty_crlf)?;
+    Ok(out_path)
+}
+
 // ===========================================================================
 // Atmosphere Inspector
 // ===========================================================================
@@ -1709,6 +1847,7 @@ pub async fn extract_to_temp(
     asset_id: String,
     archives_dir: String,
     filename: String,
+    source_mode: Option<String>,
 ) -> Result<String, ToolkitError> {
     let temp_dir = std::env::temp_dir().join("omnitool");
     std::fs::create_dir_all(&temp_dir)?;
@@ -1716,7 +1855,9 @@ pub async fn extract_to_temp(
     let id = u64::from_str_radix(&asset_id, 16)
         .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
 
-    let data = std::fs::read(&toc_path)?;
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let data = std::fs::read(&resolved_toc)?;
     let toc = Toc::parse(&data)?;
 
     let asset = toc
@@ -1725,6 +1866,7 @@ pub async fn extract_to_temp(
         .find(|a| a.asset_id == id && a.span_index == 0)
         .ok_or_else(|| ToolkitError::Parse(format!("asset {asset_id} not found in TOC")))?;
 
+    warn_if_mod_source(&toc, &asset);
     let raw = toc.extract_asset(&asset, Path::new(&archives_dir))?;
 
     let fname = Path::new(&filename)
@@ -2443,5 +2585,536 @@ pub async fn diff_zonelightbin(
         reference_file_size: reference.bytes.len() as u64,
         sections,
         notes,
+    })
+}
+
+/// Write a UTF-8 string to an arbitrary path on disk. Used by the
+/// frontend to export CSV / JSON reports without needing fs scope
+/// permissions on the user-chosen output path.
+#[tauri::command]
+pub async fn write_text_file(path: String, contents: String) -> Result<(), ToolkitError> {
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&path, contents.as_bytes())?;
+    info!("write_text_file: {} ({} bytes)", path, contents.len());
+    Ok(())
+}
+
+// ===========================================================================
+// Asset References (inbound + outbound)
+// ===========================================================================
+
+#[derive(serde::Serialize, Clone)]
+pub struct AssetReferenceItem {
+    pub depth: u32,
+    pub asset_id: String,
+    pub filename: Option<String>,
+    pub referenced_in: Vec<String>,
+    pub in_toc: bool,
+    pub archive_name: Option<String>,
+    pub size: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ReferenceResult {
+    pub asset_id: String,
+    pub direction: String,
+    pub depth: u32,
+    pub references: Vec<AssetReferenceItem>,
+    pub total_found: usize,
+    pub scanned: usize,
+    pub elapsed_ms: u64,
+    pub notes: Vec<String>,
+    pub cancelled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Inbound-scan cancellation registry
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashMap as StdHashMap;
+
+type CancelRegistry = Mutex<StdHashMap<String, Arc<AtomicBool>>>;
+
+fn cancel_registry() -> &'static CancelRegistry {
+    static REG: OnceLock<CancelRegistry> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(StdHashMap::new()))
+}
+
+fn cancel_register(scan_id: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut g) = cancel_registry().lock() {
+        g.insert(scan_id.to_string(), flag.clone());
+    }
+    flag
+}
+
+fn cancel_unregister(scan_id: &str) {
+    if let Ok(mut g) = cancel_registry().lock() {
+        g.remove(scan_id);
+    }
+}
+
+/// Frontend hook to cooperatively cancel an active inbound scan. Safe
+/// no-op if the scan id is unknown (already finished or never started).
+#[tauri::command]
+pub fn cancel_asset_references(scan_id: String) -> Result<(), ToolkitError> {
+    if let Ok(g) = cancel_registry().lock() {
+        if let Some(flag) = g.get(&scan_id) {
+            flag.store(true, Ordering::Relaxed);
+            info!("cancel_asset_references: flagged scan {scan_id}");
+        }
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct ScanProgress {
+    pub scan_id: String,
+    pub scanned: usize,
+    pub total: usize,
+    pub elapsed_ms: u64,
+    /// Current process resident memory in bytes (0 if unavailable).
+    pub mem_bytes: u64,
+    /// Current process CPU usage as a 0–100 % share of the whole
+    /// machine (i.e. sysinfo's per-core sum divided by core count). 0
+    /// if unavailable.
+    pub cpu_percent: f32,
+}
+
+/// Lower the calling thread's OS scheduling priority so the global
+/// rayon (or any thread we install this in) plays nicely under load.
+/// Windows-only — no-op on other platforms.
+#[cfg(target_os = "windows")]
+fn lower_thread_priority() {
+    // Avoid pulling in `windows` / `windows-sys` for one symbol; declare
+    // the two Win32 calls inline.
+    type Handle = *mut std::ffi::c_void;
+    extern "system" {
+        fn GetCurrentThread() -> Handle;
+        fn SetThreadPriority(h_thread: Handle, n_priority: i32) -> i32;
+    }
+    const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn lower_thread_priority() {}
+
+/// Extract outbound references (`direction="to"`) up to `depth` levels, or
+/// scan the entire TOC to find inbound references (`direction="from"`).
+///
+/// Outbound mode is fast: it extracts only the target asset (and any
+/// in-TOC descendants when `depth > 1`).
+///
+/// Inbound mode is expensive — it scans every span-0 asset in the TOC,
+/// in parallel via rayon. Expect tens of seconds on a full game TOC.
+#[tauri::command]
+pub async fn get_asset_references(
+    app: tauri::AppHandle,
+    toc_path: String,
+    asset_id: String,
+    archives_dir: String,
+    direction: Option<String>,
+    depth: Option<u32>,
+    source_mode: Option<String>,
+    scan_id: Option<String>,
+    // `asset_id_allowlist`: optional hex-string allowlist limiting the
+    // inbound scan to specific asset ids (typically pre-filtered by the
+    // frontend to ref-bearing extensions like `.config`, `.actor`, `.zone`).
+    asset_id_allowlist: Option<Vec<String>>,
+    // `limit_threads`: when true, the inbound scan runs on a private rayon
+    // pool sized to ~75 % of the available cores so the rest of the system
+    // stays responsive. Default is the global pool (all cores).
+    limit_threads: Option<bool>,
+) -> Result<ReferenceResult, ToolkitError> {
+    use crate::core::references;
+    use std::collections::{HashMap, HashSet};
+    use tauri::Emitter;
+
+    let dir = direction
+        .as_deref()
+        .unwrap_or("to")
+        .trim()
+        .to_ascii_lowercase();
+    let max_depth = depth.unwrap_or(1).clamp(1, 5);
+
+    let id = u64::from_str_radix(&asset_id, 16)
+        .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
+
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let toc_bytes = std::fs::read(&resolved_toc)?;
+    let toc = Arc::new(Toc::parse(&toc_bytes)?);
+
+    let archive_names = toc.archive_filenames();
+    let archives_dir_path = PathBuf::from(&archives_dir);
+    let assets = toc.assets();
+
+    // Build the per-asset lookup. We prefer the span-0 row for metadata
+    // (archive name, size) but accept any span for *presence* checks —
+    // many references target HD-only assets that have no span-0 entry,
+    // and incorrectly flagging those as `not in TOC` was a real bug.
+    let mut by_id: HashMap<u64, TocAsset> = HashMap::with_capacity(assets.len());
+    for a in &assets {
+        match by_id.get(&a.asset_id) {
+            None => {
+                by_id.insert(a.asset_id, a.clone());
+            }
+            Some(existing) if existing.span_index != 0 && a.span_index == 0 => {
+                by_id.insert(a.asset_id, a.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+    let mut result_items: Vec<AssetReferenceItem> = Vec::new();
+    let start = Instant::now();
+    let mut scanned = 0usize;
+    let mut cancelled = false;
+
+    match dir.as_str() {
+        "to" => {
+            let mut visited: HashSet<u64> = HashSet::new();
+            visited.insert(id);
+            // BFS queue of (asset_id, current_depth)
+            let mut queue: Vec<(u64, u32)> = vec![(id, 0)];
+            let mut head = 0usize;
+
+            while head < queue.len() {
+                let (cur, d) = queue[head];
+                head += 1;
+                let Some(asset) = by_id.get(&cur) else { continue; };
+                scanned += 1;
+                let raw = match toc.extract_asset(asset, &archives_dir_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        notes.push(format!("extract {:016X}: {e}", cur));
+                        continue;
+                    }
+                };
+                let refs = match references::extract_references_from_bytes(&raw) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        notes.push(format!("parse {:016X}: {e}", cur));
+                        continue;
+                    }
+                };
+
+                // Group by target asset id; keep first filename seen and
+                // accumulate distinct source labels. Source labels are
+                // prefixed with the source asset's hex id (`<hex>::<label>`)
+                // so the frontend can resolve them back to filenames.
+                let cur_hex = format!("{:016X}", cur);
+                let mut grouped: Vec<AssetReferenceItem> = Vec::new();
+                let mut group_index: HashMap<u64, usize> = HashMap::new();
+                for r in refs {
+                    let idx = match group_index.get(&r.asset_id) {
+                        Some(&i) => i,
+                        None => {
+                            let toc_asset = by_id.get(&r.asset_id);
+                            grouped.push(AssetReferenceItem {
+                                depth: d + 1,
+                                asset_id: format!("{:016X}", r.asset_id),
+                                filename: r.filename.clone(),
+                                referenced_in: Vec::new(),
+                                in_toc: toc_asset.is_some(),
+                                archive_name: toc_asset.and_then(|a| {
+                                    archive_names.get(a.archive_index as usize).cloned()
+                                }),
+                                size: toc_asset.map(|a| a.size),
+                            });
+                            let i = grouped.len() - 1;
+                            group_index.insert(r.asset_id, i);
+                            i
+                        }
+                    };
+                    let item = &mut grouped[idx];
+                    let tagged = format!("{}::{}", cur_hex, r.source);
+                    if !item.referenced_in.contains(&tagged) {
+                        item.referenced_in.push(tagged);
+                    }
+                    if item.filename.is_none() && r.filename.is_some() {
+                        item.filename = r.filename;
+                    }
+                }
+
+                for item in grouped {
+                    let target_id = u64::from_str_radix(&item.asset_id, 16).unwrap_or(0);
+                    if visited.contains(&target_id) {
+                        continue;
+                    }
+                    visited.insert(target_id);
+                    let next_d = d + 1;
+                    if next_d < max_depth && item.in_toc {
+                        queue.push((target_id, next_d));
+                    }
+                    result_items.push(item);
+                }
+            }
+        }
+        "from" => {
+            use rayon::prelude::*;
+            let target = id;
+            let toc_for_scan = Arc::clone(&toc);
+            let archives_dir_owned = archives_dir_path.clone();
+
+            // Optional asset-id allowlist (hex). When supplied, only ids
+            // present in the set are scanned — letting the frontend pass
+            // a curated list of ref-bearing types and skip everything
+            // else without paying any extract/decompress cost.
+            let allow_set: Option<HashSet<u64>> = asset_id_allowlist.as_ref().map(|v| {
+                v.iter()
+                    .filter_map(|s| u64::from_str_radix(s.trim(), 16).ok())
+                    .collect()
+            });
+            let total_assets_in_toc = assets
+                .iter()
+                .filter(|a| a.span_index == 0 && a.asset_id != target)
+                .count();
+
+            // Filter to span-0 only and exclude the target itself.
+            let to_scan: Vec<TocAsset> = assets
+                .iter()
+                .filter(|a| a.span_index == 0 && a.asset_id != target)
+                .filter(|a| match &allow_set {
+                    Some(set) => set.contains(&a.asset_id),
+                    None => true,
+                })
+                .cloned()
+                .collect();
+            let total_to_scan = to_scan.len();
+            if let Some(set) = &allow_set {
+                notes.push(format!(
+                    "Type filter: scanning {} of {} span-0 assets ({} allowlisted ids).",
+                    total_to_scan,
+                    total_assets_in_toc,
+                    set.len()
+                ));
+            }
+
+            // Optional thread-pool throttle. When the user opts in we
+            // run the par_iter inside a private pool sized to ~50 % of
+            // the available cores AND lower each worker's OS priority
+            // to BELOW_NORMAL on Windows so the foreground UI / other
+            // apps win the scheduler whenever they want CPU.
+            let throttle = limit_threads.unwrap_or(false);
+            let scoped_pool = if throttle {
+                let avail = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4);
+                let target_threads = ((avail as f32) * 0.50).floor().max(1.0) as usize;
+                notes.push(format!(
+                    "Throttled rayon pool: {} of {} cores (BELOW_NORMAL).",
+                    target_threads, avail
+                ));
+                Some(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(target_threads)
+                        .start_handler(|_idx| {
+                            lower_thread_priority();
+                        })
+                        .build()
+                        .map_err(|e| ToolkitError::Parse(format!("rayon pool: {e}")))?,
+                )
+            } else {
+                None
+            };
+
+            // Build a per-scan archive buffer cache so each archive is
+            // mmapped at most once (#1 + #2 from the optimization notes).
+            let cache = Arc::new(toc_for_scan.archive_cache(&archives_dir_owned));
+
+            // Cancellation flag — registered when the frontend supplies a
+            // scan id. Workers check it once per asset.
+            let scan_id_str = scan_id.clone().unwrap_or_default();
+            let cancel_flag: Arc<AtomicBool> = if !scan_id_str.is_empty() {
+                cancel_register(&scan_id_str)
+            } else {
+                Arc::new(AtomicBool::new(false))
+            };
+
+            // Progress reporter — a small background thread emits
+            // `references://progress` events every 200 ms while the
+            // rayon pool grinds through `to_scan`. Stops when `done` is
+            // flipped or the channel drops.
+            let progress_counter = Arc::new(AtomicUsize::new(0));
+            let progress_done = Arc::new(AtomicBool::new(false));
+            let reporter_handle = {
+                let counter = progress_counter.clone();
+                let done = progress_done.clone();
+                let app = app.clone();
+                let scan_id = scan_id_str.clone();
+                let total = total_to_scan;
+                let started = start;
+                std::thread::spawn(move || {
+                    if scan_id.is_empty() {
+                        return;
+                    }
+                    // Per-process CPU + RAM sampler. Two refreshes
+                    // spaced by the loop sleep give sysinfo the delta
+                    // it needs for an accurate cpu_usage() reading.
+                    let pid = sysinfo::Pid::from_u32(std::process::id());
+                    let mut sys = sysinfo::System::new();
+                    let cores = std::thread::available_parallelism()
+                        .map(|n| n.get() as f32)
+                        .unwrap_or(1.0);
+                    sys.refresh_processes_specifics(
+                        sysinfo::ProcessesToUpdate::Some(&[pid]),
+                        true,
+                        sysinfo::ProcessRefreshKind::new()
+                            .with_cpu()
+                            .with_memory(),
+                    );
+                    loop {
+                        sys.refresh_processes_specifics(
+                            sysinfo::ProcessesToUpdate::Some(&[pid]),
+                            true,
+                            sysinfo::ProcessRefreshKind::new()
+                                .with_cpu()
+                                .with_memory(),
+                        );
+                        let (mem_bytes, cpu_percent) = match sys.process(pid) {
+                            Some(p) => (p.memory(), (p.cpu_usage() / cores).min(100.0)),
+                            None => (0, 0.0),
+                        };
+                        let scanned_now = counter.load(Ordering::Relaxed);
+                        let _ = app.emit(
+                            "references://progress",
+                            ScanProgress {
+                                scan_id: scan_id.clone(),
+                                scanned: scanned_now,
+                                total,
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                                mem_bytes,
+                                cpu_percent,
+                            },
+                        );
+                        if done.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                    }
+                })
+            };
+
+            let cancel_for_scan = cancel_flag.clone();
+            let counter_for_scan = progress_counter.clone();
+            let cache_for_scan = cache.clone();
+
+            let scan_body = || {
+                to_scan
+                    .par_iter()
+                    .filter_map(|asset| {
+                        if cancel_for_scan.load(Ordering::Relaxed) {
+                            return None;
+                        }
+                        let raw = toc_for_scan
+                            .extract_asset_with_cache(asset, &cache_for_scan)
+                            .ok();
+                        counter_for_scan.fetch_add(1, Ordering::Relaxed);
+                        let raw = raw?;
+                        let refs = references::extract_references_from_bytes(&raw).ok()?;
+                        let cur_hex = format!("{:016X}", asset.asset_id);
+                        let mut sources: Vec<String> = refs
+                            .into_iter()
+                            .filter(|r| r.asset_id == target)
+                            .map(|r| format!("{}::{}", cur_hex, r.source))
+                            .collect();
+                        if sources.is_empty() {
+                            return None;
+                        }
+                        sources.sort();
+                        sources.dedup();
+                        Some(AssetReferenceItem {
+                            depth: 1,
+                            asset_id: format!("{:016X}", asset.asset_id),
+                            filename: None,
+                            referenced_in: sources,
+                            in_toc: true,
+                            archive_name: archive_names
+                                .get(asset.archive_index as usize)
+                                .cloned(),
+                            size: Some(asset.size),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+
+            let hits: Vec<AssetReferenceItem> = if let Some(pool) = &scoped_pool {
+                pool.install(scan_body)
+            } else {
+                scan_body()
+            };
+
+            // Stop the reporter and wait for it to flush a final tick.
+            progress_done.store(true, Ordering::Relaxed);
+            let _ = reporter_handle.join();
+            if !scan_id_str.is_empty() {
+                cancel_unregister(&scan_id_str);
+            }
+
+            cancelled = cancel_flag.load(Ordering::Relaxed);
+            scanned = progress_counter.load(Ordering::Relaxed).min(total_to_scan);
+            if !cancelled {
+                scanned = total_to_scan;
+            }
+
+            if cancelled {
+                notes.push(format!(
+                    "Cancelled after scanning {}/{} assets ({} hits so far).",
+                    scanned,
+                    total_to_scan,
+                    hits.len()
+                ));
+            } else {
+                notes.push(format!(
+                    "Scanned {} span-0 assets in parallel; {} reference the target. Mmapped {} archive(s).",
+                    total_to_scan,
+                    hits.len(),
+                    cache.len()
+                ));
+            }
+            if max_depth > 1 {
+                notes.push(
+                    "Inbound search only supports depth=1; ignoring higher depth.".to_string(),
+                );
+            }
+            result_items = hits;
+        }
+        other => {
+            return Err(ToolkitError::Parse(format!(
+                "invalid direction '{other}' (expected 'to' or 'from')"
+            )));
+        }
+    }
+
+    let total = result_items.len();
+    info!(
+        "get_asset_references({dir}, depth={max_depth}, target={asset_id}): \
+         {} refs, scanned {} assets, {} ms",
+        total,
+        scanned,
+        start.elapsed().as_millis()
+    );
+
+    Ok(ReferenceResult {
+        asset_id,
+        direction: dir,
+        depth: max_depth,
+        references: result_items,
+        total_found: total,
+        scanned,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+        notes,
+        cancelled,
     })
 }

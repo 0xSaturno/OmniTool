@@ -1,10 +1,12 @@
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use byteorder::{ReadBytesExt, LE};
+use dashmap::DashMap;
 use flate2::read::ZlibDecoder;
 use log::{debug, info, warn};
+use memmap2::Mmap;
 
 use crate::core::dat1::Dat1;
 use crate::core::error::{Result, ToolkitError};
@@ -271,8 +273,29 @@ impl Toc {
             ))
         })?;
 
+        self.extract_asset_from_bytes(asset, &archive_data)
+    }
+
+    /// Extract an asset using a pre-loaded archive buffer (typically from
+    /// an [`ArchiveCache`]). Identical to [`Self::extract_asset`] but skips
+    /// the per-call `std::fs::read`, which is the dominant cost when
+    /// scanning the whole TOC for inbound references.
+    pub fn extract_asset_with_cache(
+        &self,
+        asset: &TocAsset,
+        cache: &ArchiveCache,
+    ) -> Result<Vec<u8>> {
+        let mmap = cache.get(asset.archive_index)?;
+        self.extract_asset_from_bytes(asset, &mmap[..])
+    }
+
+    fn extract_asset_from_bytes(
+        &self,
+        asset: &TocAsset,
+        archive_data: &[u8],
+    ) -> Result<Vec<u8>> {
         let mut raw =
-            extract_from_archive(&archive_data, asset.offset as u64, asset.size as usize)?;
+            extract_from_archive(archive_data, asset.offset as u64, asset.size as usize)?;
 
         if asset.header_offset >= 0 {
             let header_index = (asset.header_offset as usize) / ASSET_HEADER_LEN;
@@ -291,6 +314,78 @@ impl Toc {
         }
 
         Ok(raw)
+    }
+
+    /// Build a per-scan archive buffer cache rooted at `archives_dir`. The
+    /// cache mmaps each archive lazily on first access and shares it across
+    /// callers via `Arc<Mmap>`. Drop the cache at the end of a scan to
+    /// release the mappings.
+    pub fn archive_cache(&self, archives_dir: &Path) -> ArchiveCache {
+        ArchiveCache::new(archives_dir.to_path_buf(), self.archive_names.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ArchiveCache — shared, lazy, mmap-backed archive buffer pool
+// ---------------------------------------------------------------------------
+
+/// Reference-counted, lazily-populated cache of memory-mapped archive
+/// files keyed by archive index. Designed to live for the duration of a
+/// single inbound scan: the first asset out of each archive triggers an
+/// `mmap`; every subsequent asset reuses the mapping with no I/O. The
+/// underlying `Arc<Mmap>` is cheap to clone and safe to share across
+/// rayon workers.
+pub struct ArchiveCache {
+    archives_dir: PathBuf,
+    archive_names: Vec<String>,
+    mmaps: DashMap<u32, Arc<Mmap>>,
+}
+
+impl ArchiveCache {
+    fn new(archives_dir: PathBuf, archive_names: Vec<String>) -> Self {
+        Self {
+            archives_dir,
+            archive_names,
+            mmaps: DashMap::new(),
+        }
+    }
+
+    /// Get the mmap for `archive_index`, opening it on first access.
+    pub fn get(&self, archive_index: u32) -> Result<Arc<Mmap>> {
+        if let Some(existing) = self.mmaps.get(&archive_index) {
+            return Ok(existing.clone());
+        }
+
+        let name = self
+            .archive_names
+            .get(archive_index as usize)
+            .ok_or_else(|| {
+                ToolkitError::Parse(format!(
+                    "archive index {} out of range ({})",
+                    archive_index,
+                    self.archive_names.len()
+                ))
+            })?;
+        let path = self.archives_dir.join(name);
+        let file = std::fs::File::open(&path).map_err(|e| {
+            ToolkitError::Parse(format!("failed to open archive {}: {e}", path.display()))
+        })?;
+        // SAFETY: the archive files are read-only data; we never mutate
+        // through the mapping. Concurrent readers are safe.
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+            ToolkitError::Parse(format!("failed to mmap archive {}: {e}", path.display()))
+        })?;
+
+        let arc = Arc::new(mmap);
+        // Insert may race with another worker; either inserts the same
+        // semantic mapping. Re-fetch to share whichever won.
+        self.mmaps.insert(archive_index, arc.clone());
+        Ok(arc)
+    }
+
+    /// Number of archives currently held in the cache (for diagnostics).
+    pub fn len(&self) -> usize {
+        self.mmaps.len()
     }
 }
 

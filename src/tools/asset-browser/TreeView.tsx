@@ -1,4 +1,4 @@
-import { useState, useCallback, memo } from "react";
+import { useState, useCallback, useEffect, useRef, memo } from "react";
 import styles from "./AssetBrowser.module.css";
 
 export interface AssetSpan {
@@ -21,6 +21,9 @@ interface TreeViewProps {
   onContextMenu?: (node: TreeNodeData, event: React.MouseEvent) => void;
   filter: string;
   depth?: number;
+  /** Optional path that the tree should reveal: every ancestor folder of
+   *  this path will auto-expand, and the leaf row scrolls into view. */
+  revealPath?: string | null;
 }
 
 const TreeNode = memo(function TreeNode({
@@ -30,6 +33,7 @@ const TreeNode = memo(function TreeNode({
   onContextMenu,
   filter,
   depth,
+  revealPath,
 }: {
   node: TreeNodeData;
   selectedPaths: Set<string>;
@@ -37,10 +41,31 @@ const TreeNode = memo(function TreeNode({
   onContextMenu?: (node: TreeNodeData, event: React.MouseEvent) => void;
   filter: string;
   depth: number;
+  revealPath?: string | null;
 }) {
   const isFolder = node.children.size > 0;
   const [expanded, setExpanded] = useState(false);
   const forceExpand = filter.length > 0;
+  const rowRef = useRef<HTMLDivElement | null>(null);
+
+  // Is this node an ancestor of (or equal to) the reveal target?
+  const onRevealPath =
+    !!revealPath &&
+    (revealPath === node.fullPath ||
+      revealPath.startsWith(node.fullPath + "/"));
+
+  // When asked to reveal, auto-expand ancestors and scroll the leaf into view.
+  useEffect(() => {
+    if (!revealPath) return;
+    if (isFolder && onRevealPath) {
+      setExpanded(true);
+    }
+    if (!isFolder && revealPath === node.fullPath) {
+      requestAnimationFrame(() => {
+        rowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }
+  }, [revealPath, isFolder, onRevealPath, node.fullPath]);
 
   const handleClick = useCallback((event: React.MouseEvent) => {
     if (isFolder) {
@@ -58,7 +83,7 @@ const TreeNode = memo(function TreeNode({
     }
   }, [isFolder, node, onSelect, onContextMenu]);
 
-  const isOpen = forceExpand || expanded;
+  const isOpen = forceExpand || expanded || (isFolder && onRevealPath);
   const isSelected = !isFolder && selectedPaths.has(node.fullPath);
 
   const sortedChildren = Array.from(node.children.values()).sort((a, b) => {
@@ -79,6 +104,7 @@ const TreeNode = memo(function TreeNode({
   return (
     <div className={styles.treeNode}>
       <div
+        ref={rowRef}
         className={`${styles.treeRow} ${isSelected ? styles.selected : ""}`}
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
         onClick={handleClick}
@@ -110,6 +136,7 @@ const TreeNode = memo(function TreeNode({
               onContextMenu={onContextMenu}
               filter={filter}
               depth={depth + 1}
+              revealPath={revealPath}
             />
           ))}
         </div>
@@ -126,7 +153,7 @@ function matchesFilter(node: TreeNodeData, filter: string): boolean {
   return false;
 }
 
-export default function TreeView({ root, selectedPaths, onSelect, onContextMenu, filter, depth = 0 }: TreeViewProps) {
+export default function TreeView({ root, selectedPaths, onSelect, onContextMenu, filter, depth = 0, revealPath }: TreeViewProps) {
   const lowerFilter = filter.toLowerCase();
 
   // Flat filtered results when searching
@@ -187,6 +214,7 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
           onContextMenu={onContextMenu}
           filter=""
           depth={depth}
+          revealPath={revealPath}
         />
       ))}
     </>

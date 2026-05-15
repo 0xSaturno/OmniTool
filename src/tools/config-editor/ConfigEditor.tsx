@@ -22,6 +22,7 @@ export default function ConfigEditor() {
   const location = useLocation();
   const [configPath, setConfigPath] = useState("");
   const [outPath, setOutPath] = useState("");
+  const [overwriteInput, setOverwriteInput] = useState(false);
   const [sendToStager, setSendToStager] = useState<string | null>(null);
   const [assetPath, setAssetPath] = useState<string | null>(null);
 
@@ -36,13 +37,14 @@ export default function ConfigEditor() {
 
   // Measure the border div after the editor renders so CodeMirror gets a
   useEffect(() => {
+    if (location.pathname !== "/tools/config-editor") return;
     const params = new URLSearchParams(location.search);
     const s = location.state as { filePath?: string; assetPath?: string } | null;
     const filePath = s?.filePath ?? params.get("filePath") ?? undefined;
     const incomingAssetPath = s?.assetPath ?? params.get("assetPath") ?? undefined;
     if (filePath) setConfigPath(filePath);
     if (incomingAssetPath) setAssetPath(incomingAssetPath);
-  }, [location.state, location.search]);
+  }, [location.pathname, location.state, location.search]);
 
   // concrete pixel height — required for its internal scroller to activate.
   const borderRef = useRef<HTMLDivElement>(null);
@@ -187,7 +189,7 @@ export default function ConfigEditor() {
         configPath,
         configType,
         contentJson: jsonText,
-        outPath: outPath || null,
+        outPath: overwriteInput ? configPath : (outPath || null),
       });
       pushLog("success", `Saved → ${result}`);
     } catch (e) {
@@ -210,11 +212,11 @@ export default function ConfigEditor() {
   return (
     <div className={styles.page}>
       <h2 className={styles.title}>Config Editor</h2>
-      <p className={styles.subtitle}>Read and edit .config files</p>
+      <p className={styles.subtitle}>Read and edit .config .actor .conduit files</p>
 
       <div className={styles.panel}>
         <FilePickerInput
-          label="Source .config file"
+          label="Source file"
           value={configPath}
           onChange={handleConfigPathChange}
           mode="open"
@@ -269,7 +271,7 @@ export default function ConfigEditor() {
               </button>
               <button
                 className={styles.secondaryBtn}
-                onClick={() => setSendToStager(outPath || configPath)}
+                onClick={() => setSendToStager(overwriteInput ? configPath : (outPath || configPath))}
                 disabled={running || !!jsonError || !canSave}
                 title="Send output to a Stager project"
               >
@@ -282,6 +284,14 @@ export default function ConfigEditor() {
               >
                 {running ? "Saving…" : "Save Config"}
               </button>
+              <label className={styles.overwriteToggle}>
+                <input
+                  type="checkbox"
+                  checked={overwriteInput}
+                  onChange={(e) => setOverwriteInput(e.target.checked)}
+                />
+                <span>Overwrite input file</span>
+              </label>
             </div>
           </div>
         </>

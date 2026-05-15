@@ -88,11 +88,12 @@ export default function ZoneLightBinModule() {
   const [log, setLog] = useState<LogEntry[]>([]);
 
   useEffect(() => {
+    if (location.pathname !== "/tools/zonelightbin-module") return;
     const params = new URLSearchParams(location.search);
     const s = location.state as { filePath?: string } | null;
     const filePath = s?.filePath ?? params.get("filePath") ?? undefined;
     if (filePath) setBasePath(filePath);
-  }, [location.state, location.search]);
+  }, [location.pathname, location.state, location.search]);
 
   function pushLog(type: LogEntry["type"], message: string) {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);

@@ -1,6 +1,39 @@
-/// CRC64 hashing used by Insomniac Games' DAT1 format.
+/// CRC64 hashing used by Insomniac Games' DAT1 / TOC format.
 ///
-/// Ported from Overstrike/DAT1/CRC64.cs.
+/// # Algorithm
+///
+/// - Polynomial: `0xC96C5795D7870F42` (ECMA polynomial)
+/// - **Initial value: `0xC96C5795D7870F42`** (NOT zero!)
+/// - **Final value: NOT inverted/reflected**
+///
+/// # Path normalization (always applied before hashing)
+///
+/// 1. lowercase
+/// 2. replace `\\` with `/`
+/// 3. trim leading `/`
+/// 4. (OmniTool extra) collapse consecutive slashes
+///
+/// # Post-processing (`>>2 | flags<<62`)
+///
+/// After computing the raw 64-bit CRC, the engine packs an `AssetIdFlags` value
+/// into the top 2 bits and shifts the payload right by 2:
+///
+/// ```text
+/// asset_id = (raw_hash >> 2) | (flags << 62)
+/// ```
+///
+/// The top 2 bits encode `AssetIdFlags`:
+///
+/// | Bit 64 | Bit 63 | Meaning                                          |
+/// |--------|--------|--------------------------------------------------|
+/// | 1      | 0      | **Shipped** — normal 64-bit shipped asset id     |
+/// | 1      | 1      | **Ext** — id is actually a 32-bit external hash  |
+/// | 1      | 1      | + bit 62 set → **Wwise FNV** id                  |
+///
+/// `hash_raw` always emits the `Shipped` variant
+/// (`(raw >> 2) | 0x8000_0000_0000_0000`), which is what every shipped DAT1
+/// path-derived id uses. For introspection and the `Ext`/`Wwise` variants see
+/// [`crate::core::asset_id::AssetIdFlags`].
 
 const TABLE: [u64; 256] = [
     0x0000000000000000, 0xB32E4CBE03A75F6F, 0xF4843657A840A05B, 0x47AA7AE9ABE7FF34,
@@ -94,6 +127,18 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 /// Compute the DAT1 CRC64 hash from raw bytes (no normalization).
+///
+/// The returned value is the **packed** asset id for a shipped asset:
+/// the raw 62-bit CRC payload OR'd with the `Shipped` flag in the top bit:
+///
+/// ```text
+/// asset_id = (raw_crc >> 2) | (Shipped << 62)
+///          = (raw_crc >> 2) | 0x8000_0000_0000_0000
+/// ```
+///
+/// To recover the raw 62-bit payload from a packed id, mask with
+/// `0x3FFF_FFFF_FFFF_FFFF`. To inspect the flag bits, use
+/// [`crate::core::asset_id::AssetIdFlags::from_id`].
 pub fn hash_raw(data: &[u8]) -> u64 {
     let mut crc: u64 = 0xC96C5795D7870F42;
     for &byte in data {

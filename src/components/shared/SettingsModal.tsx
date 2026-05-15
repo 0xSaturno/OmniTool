@@ -81,6 +81,20 @@ export default function SettingsModal() {
           </div>
 
           <div className={styles.field}>
+            <label className={styles.toggleRow}>
+              <input
+                type="checkbox"
+                checked={settings.experimentalTiffExport}
+                onChange={(e) => updateSettings({ experimentalTiffExport: e.target.checked })}
+              />
+              <span>Experimental: TIFF export for HDR textures</span>
+            </label>
+            <p className={styles.hint}>
+              When enabled, BC6H and other HDR formats export as 32-bit float TIFF.
+            </p>
+          </div>
+
+          <div className={styles.field}>
             <label>Asset Hashes</label>
             <div className={styles.hashesRow}>
               <span className={styles.hashesPath}>{hashesPath || "…"}</span>

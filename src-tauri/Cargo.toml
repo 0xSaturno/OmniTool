@@ -1,6 +1,6 @@
 [package]
 name = "omnitool"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 default-run = "OmniTool"
 
@@ -40,6 +40,21 @@ name = "sections"
 path = "src/bin/sections.rs"
 required-features = ["dev-tools"]
 
+[[bin]]
+name = "check_actor_hashes"
+path = "src/bin/check_actor_hashes.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "roundtrip_actor"
+path = "src/bin/roundtrip_actor.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "toc_asset_diag"
+path = "src/bin/toc_asset_diag.rs"
+required-features = ["dev-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -63,6 +78,11 @@ ureq           = { version = "2", features = ["tls"] }
 texture2ddecoder = "0.1.2"
 image = "0.25.10"
 base64 = "0.22.1"
+dirs = "5"
+rayon = "1"
+memmap2 = "0.9"
+dashmap = "6"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 [profile.release]
 opt-level    = 3

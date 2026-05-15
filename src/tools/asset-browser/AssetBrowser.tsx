@@ -1,24 +1,16 @@
 import { useState, useCallback, useRef, useDeferredValue, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
+import AssetReferencesModal from "../../components/shared/AssetReferencesModal";
 import TreeView, { type TreeNodeData } from "./TreeView";
 import { useSettings } from "../../contexts/SettingsContext";
 import { openToolWindow } from "../../utils/openToolWindow";
+import { SEND_TO_ROUTES } from "../../utils/sendToRoutes";
 import styles from "./AssetBrowser.module.css";
-
-const SEND_TO_ROUTES: Record<string, { label: string; route: string }> = {
-  config: { label: "Config Editor", route: "/tools/config-editor" },
-  actor: { label: "Config Editor", route: "/tools/config-editor" },
-  conduit: { label: "Config Editor", route: "/tools/config-editor" },
-  performanceset: { label: "Config Editor", route: "/tools/config-editor" },
-  model: { label: "Model Converter", route: "/tools/model-converter" },
-  material: { label: "Material Remapper", route: "/tools/material-remapper" },
-  atmosphere: { label: "Atmosphere Editor", route: "/tools/atmosphere-editor" },
-  zonelightbin: { label: "ZoneLightBin Module", route: "/tools/zonelightbin-module" },
-};
+import { TocTextureViewer } from "../../components/shared/TextureViewer";
 
 function extOf(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
@@ -124,6 +116,20 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/// Mirror of the backend `is_mod_archive` helper — case-insensitive check
+/// for the `d\mods\*` (or `d/mods/*`) override prefix used at runtime.
+function isModArchive(name: string | undefined): boolean {
+  if (!name) return false;
+  return name.replace(/\//g, "\\").toLowerCase().startsWith("d\\mods\\");
+}
+
+type SourceMode = "live" | "require_toc_bak";
+
+const SOURCE_MODE_LABELS: Record<SourceMode, string> = {
+  live: "Live TOC (default)",
+  require_toc_bak: "Require toc.BAK (clean, fail if missing)",
+};
+
 export default function AssetBrowser() {
   const { settings } = useSettings();
   const archivesDir = settings.archivesDir;
@@ -144,6 +150,7 @@ export default function AssetBrowser() {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [selectedProject, setSelectedProject] = useState("");
   const [extracting, setExtracting] = useState(false);
+  const [sourceMode, setSourceMode] = useState<SourceMode>("live");
 
   // New-project inline form
   const [showNewProject, setShowNewProject] = useState(false);
@@ -157,6 +164,10 @@ export default function AssetBrowser() {
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; node: TreeNodeData } | null>(null);
   const [sendToStager, setSendToStager] = useState<{ file: string; defaultPath: string } | null>(null);
+  const [refsModal, setRefsModal] = useState<{ assetId: string; assetPath: string } | null>(null);
+  const [revealPath, setRevealPath] = useState<string | null>(null);
+  const hashMapRef = useRef<Map<string, string>>(new Map());
+  const byIdRef = useRef<Map<string, string>>(new Map()); // asset_id -> tree fullPath
 
   useEffect(() => {
     const dismiss = () => setCtxMenu(null);
@@ -221,6 +232,7 @@ export default function AssetBrowser() {
           hashMap.set(hex, path);
         }
         setHashCount(hashMap.size);
+        hashMapRef.current = hashMap;
         pushLog("success", `Loaded ${hashMap.size} hashes`);
       } catch (e) {
         pushLog("warning", `Could not load hashes — all assets will be [UNKNOWN]. (${e})`);
@@ -233,6 +245,12 @@ export default function AssetBrowser() {
       const { assetMap, flatLeafOrder } = buildAssetIndex(treeRoot);
       assetMapRef.current = assetMap;
       flatLeafOrderRef.current = flatLeafOrder;
+
+      const byId = new Map<string, string>();
+      for (const [path, node] of assetMap) {
+        if (node.asset) byId.set(node.asset.id.toUpperCase(), path);
+      }
+      byIdRef.current = byId;
 
       setTree(treeRoot);
       pushLog("success", `Tree built with ${assets.length} assets`);
@@ -290,6 +308,7 @@ export default function AssetBrowser() {
             archivesDir,
             projectName: selectedProject,
             assetPath: path,
+            sourceMode,
           });
           pushLog("success", `→ ${path}: ${result}`);
           ok++;
@@ -315,6 +334,7 @@ export default function AssetBrowser() {
         author: newProjAuthor.trim(),
       });
       await refreshProjects();
+      await emit("projects-changed");
       setSelectedProject(newProjName.trim());
       pushLog("success", `Project "${newProjName.trim()}" created.`);
       setShowNewProject(false);
@@ -342,6 +362,7 @@ export default function AssetBrowser() {
         assetId: node.asset.id,
         archivesDir,
         filename: node.fullPath,
+        sourceMode,
       });
       openToolWindow(route, { filePath: tempPath, assetPath: node.fullPath }, settings.launchToolsInNewWindows);
     } catch (e) {
@@ -368,12 +389,41 @@ export default function AssetBrowser() {
         archivesDir,
         outputDir: selected,
         assetPath: node.fullPath,
+        sourceMode,
       });
       pushLog("success", `Extracted ${node.fullPath} → ${result}`);
     } catch (e) {
       pushLog("error", `Extract to path failed: ${e}`);
     }
   }
+
+  function openReferencesFor(node: TreeNodeData) {
+    setCtxMenu(null);
+    if (!node.asset) return;
+    if (!tocPathRef.current || !archivesDir) {
+      pushLog("error", "Load a TOC first.");
+      return;
+    }
+    setRefsModal({ assetId: node.asset.id, assetPath: node.fullPath });
+  }
+
+  const handleJumpToAsset = useCallback((assetId: string, _resolvedPath: string | null) => {
+    const path = byIdRef.current.get(assetId.toUpperCase());
+    if (!path) {
+      pushLog("warning", `Asset ${assetId} is not in the loaded TOC.`);
+      return;
+    }
+    setSelectedPaths(new Set([path]));
+    lastClickedPathRef.current = path;
+    setRefsModal(null);
+    // Force a state change even if the same path is jumped-to twice in a
+    // row, so TreeNode `useEffect`s re-fire and scroll/expand again.
+    setRevealPath(null);
+    requestAnimationFrame(() => setRevealPath(path));
+    // Clear the marker after the scroll animation so manual collapses
+    // aren't immediately undone.
+    window.setTimeout(() => setRevealPath(null), 1500);
+  }, []);
 
   async function handleCopyAssetPath(node: TreeNodeData) {
     setCtxMenu(null);
@@ -405,6 +455,7 @@ export default function AssetBrowser() {
         archivesDir,
         outputDir: selected,
         assetPath: node.fullPath,
+        sourceMode,
       });
 
       pushLog("success", `Exported to DDS: ${result}`);
@@ -420,6 +471,16 @@ export default function AssetBrowser() {
     ? [...selectedPaths].reduce((sum, p) => {
       const n = assetMapRef.current.get(p);
       return sum + (n?.asset?.spans.reduce((s, sp) => s + sp.size, 0) ?? 0);
+    }, 0)
+    : 0;
+  // How many selected assets have at least one span sourced from `d\mods\*`.
+  const modSourceCount = tocInfo
+    ? [...selectedPaths].reduce((count, p) => {
+      const n = assetMapRef.current.get(p);
+      const hit = n?.asset?.spans.some((s) =>
+        isModArchive(tocInfo.archive_names[s.archiveIndex])
+      );
+      return count + (hit ? 1 : 0);
     }, 0)
     : 0;
 
@@ -472,6 +533,7 @@ export default function AssetBrowser() {
                   onSelect={handleSelect}
                   onContextMenu={handleContextMenu}
                   filter={deferredFilter}
+                  revealPath={revealPath}
                 />
               </div>
             </>
@@ -519,6 +581,58 @@ export default function AssetBrowser() {
                         })}
                       </div>
                     </div>
+                    {tocInfo && (
+                      <div className={styles.detailGroup}>
+                        <label>Extraction Source</label>
+                        <div className={styles.spansList}>
+                          {singleNode.asset.spans.map((s, idx) => {
+                            const archiveName =
+                              tocInfo.archive_names[s.archiveIndex] ?? `archive_${s.archiveIndex}`;
+                            const fromMod = isModArchive(archiveName);
+                            const isTexture = singleNode.fullPath.toLowerCase().endsWith(".texture");
+                            const spanLabel = isTexture
+                              ? (s.span === 0 ? "SD" : s.span === 1 ? "HD" : `S${s.span}`)
+                              : `S${s.span}`;
+                            return (
+                              <div
+                                key={idx}
+                                className={`${styles.spanItem} ${fromMod ? styles.sourceWarning : ""}`}
+                                title={fromMod ? "This span resolves to a mod override archive — extracted bytes may differ from clean game data." : archiveName}
+                              >
+                                <span className={styles.spanTag}>{spanLabel}</span>
+                                <span className={styles.sourcePath}>{archiveName}</span>
+                                {fromMod && <span className={styles.modBadge}>MOD</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {singleNode.asset.spans.some((s) =>
+                          isModArchive(tocInfo.archive_names[s.archiveIndex])
+                        ) && (
+                          <div className={styles.sourceWarningNote}>
+                            Mod override — extract using <code>Require toc.BAK</code> mode for clean assets.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className={styles.detailGroup}>
+                      <button
+                        className={styles.newProjBtnSmall}
+                        style={{ alignSelf: "flex-start", padding: "0.35rem 0.75rem" }}
+                        onClick={() => openReferencesFor(singleNode)}
+                        title="Discover assets referenced by, or referencing, this asset"
+                      >
+                        View References
+                      </button>
+                    </div>
+                    {singleNode.fullPath.toLowerCase().endsWith(".texture") && tocPathRef.current && archivesDir && (
+                      <TocTextureViewer
+                        assetPath={singleNode.fullPath}
+                        tocPath={tocPathRef.current}
+                        assetId={singleNode.asset.id}
+                        archivesDir={archivesDir}
+                      />
+                    )}
                   </>
                 ) : (
                   <>
@@ -530,6 +644,11 @@ export default function AssetBrowser() {
                       <label>Total Size</label>
                       <span className={styles.detailValue}>{formatSize(totalSize)}</span>
                     </div>
+                    {tocInfo && modSourceCount > 0 && (
+                      <div className={styles.sourceWarningNote}>
+                        {modSourceCount}/{selectionCount} from <code>d\mods\*</code>.
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -591,6 +710,19 @@ export default function AssetBrowser() {
                           + New
                         </button>
                       </div>
+                      <div className={styles.detailGroup}>
+                        <label>Source mode</label>
+                        <select
+                          className={styles.projectSelectFull}
+                          value={sourceMode}
+                          onChange={(e) => setSourceMode(e.target.value as SourceMode)}
+                          title="Controls which TOC the extraction commands read. Affects context-menu Extract / Send To / Stager (extract) too."
+                        >
+                          {(Object.keys(SOURCE_MODE_LABELS) as SourceMode[]).map((m) => (
+                            <option key={m} value={m}>{SOURCE_MODE_LABELS[m]}</option>
+                          ))}
+                        </select>
+                      </div>
                       <button
                         className={styles.extractBtnFull}
                         onClick={handleExtract}
@@ -622,7 +754,7 @@ export default function AssetBrowser() {
 
       {ctxMenu && (() => {
         const ext = extOf(ctxMenu.node.fullPath);
-        const targets = Object.entries(SEND_TO_ROUTES).filter(([e]) => e === ext);
+        const targets = SEND_TO_ROUTES[ext] ?? [];
         return (
           <div
             style={{
@@ -645,13 +777,16 @@ export default function AssetBrowser() {
               <div className={styles.ctxItem} onClick={() => handleCopyAssetPath(ctxMenu.node)}>
                 Copy Asset Path
               </div>
+              <div className={styles.ctxItem} onClick={() => openReferencesFor(ctxMenu.node)}>
+                View References
+              </div>
               {targets.length > 0 && (
                 <>
                   <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                   <div style={{ padding: "3px 16px 2px", fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--text-muted)" }}>
                     Send To
                   </div>
-                  {targets.map(([, t]) => (
+                  {targets.map((t) => (
                     <div key={t.route} className={styles.ctxItem} onClick={() => handleSendToTool(ctxMenu.node, t.route)}>
                       {t.label}
                     </div>
@@ -667,6 +802,7 @@ export default function AssetBrowser() {
                           assetId: ctxMenu.node.asset.id,
                           archivesDir,
                           filename: ctxMenu.node.fullPath,
+                          sourceMode,
                         });
                         setSendToStager({ file: tempPath, defaultPath: `0/${ctxMenu.node.fullPath}` });
                       } catch (e) {
@@ -687,6 +823,20 @@ export default function AssetBrowser() {
           </div>
         );
       })()}
+
+      {refsModal && tocPathRef.current && archivesDir && (
+        <AssetReferencesModal
+          tocPath={tocPathRef.current}
+          archivesDir={archivesDir}
+          assetId={refsModal.assetId}
+          assetPath={refsModal.assetPath}
+          sourceMode={sourceMode}
+          hashMap={hashMapRef.current}
+          onClose={() => setRefsModal(null)}
+          onJumpToAsset={handleJumpToAsset}
+          onLog={pushLog}
+        />
+      )}
 
       {sendToStager && (
         <SendToStagerModal

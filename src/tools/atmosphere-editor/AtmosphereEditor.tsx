@@ -44,11 +44,12 @@ export default function AtmosphereEditor() {
   const [log, setLog] = useState<LogEntry[]>([]);
 
   useEffect(() => {
+    if (location.pathname !== "/tools/atmosphere-editor") return;
     const params = new URLSearchParams(location.search);
     const s = location.state as { filePath?: string } | null;
     const filePath = s?.filePath ?? params.get("filePath") ?? undefined;
     if (filePath) setAtmospherePath(filePath);
-  }, [location.state, location.search]);
+  }, [location.pathname, location.state, location.search]);
 
   function pushLog(type: LogEntry["type"], message: string) {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);
@@ -161,7 +162,7 @@ export default function AtmosphereEditor() {
           mode="open"
           filters={ATM_FILTER}
         />
-        <button className={styles.runBtn} onClick={loadAtmosphere} disabled={running}>
+        <button className={styles.runBtn} onClick={loadAtmosphere} disabled={running || !atmospherePath}>
           {running ? "Loading..." : "Load Atmosphere"}
         </button>
       </div>

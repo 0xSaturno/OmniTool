@@ -59,7 +59,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     id: "config-editor",
     label: "Config Editor",
-    description: "Read and edit .config files as JSON",
+    description: "Read and edit .config .actor .conduit files as JSON",
     path: "/tools/config-editor",
     icon: <VscJson />,
     category: "config",
