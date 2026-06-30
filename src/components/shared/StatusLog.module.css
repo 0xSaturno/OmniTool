@@ -1,15 +1,118 @@
+.logHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  z-index: 10;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.logHeader:hover {
+  background: var(--bg-elevated);
+}
+
+.logTitle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.collapseIcon {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  transition: color 0.15s;
+}
+
+.logHeader:hover .collapseIcon {
+  color: var(--text-primary);
+}
+
+.pillContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem 0;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 0.35rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
+}
+
+.pill:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+.pillPrefix {
+  font-weight: bold;
+}
+
+.pillMessage {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pillIcon {
+  color: var(--text-muted);
+  margin-left: 0.25rem;
+  font-size: 1.1em;
+}
+
+.pill-success { border-color: var(--success); }
+.pill-success .pillPrefix { color: var(--success); }
+
+.pill-error { border-color: var(--error); }
+.pill-error .pillPrefix { color: var(--error); }
+
+.pill-warning { border-color: var(--warning); }
+.pill-warning .pillPrefix { color: var(--warning); }
+
+.pill-info { border-color: var(--border); }
+.pill-info .pillPrefix { color: var(--text-secondary); }
+
 .log {
   background: var(--bg-base);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 0.75rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
   font-family: var(--font-mono);
   font-size: 0.8rem;
   max-height: 200px;
   overflow-y: auto;
+  position: relative;
+}
+
+.logEntries {
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .entry {

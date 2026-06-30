@@ -10,3 +10,4 @@ pub mod filesystem;
 pub mod math;
 pub mod references;
 pub mod toc;
+pub mod fnv;

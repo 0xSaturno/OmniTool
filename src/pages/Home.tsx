@@ -16,7 +16,7 @@ export default function Home() {
 
       <div className={styles.grid}>
         {TOOLS.map((tool) => {
-          const isWIP = tool.id === "atmosphere-editor" || tool.id === "zonelightbin-module";
+          const isWIP = ["atmosphere-editor", "zonelightbin-module", "wwise-patcher", "bnk-explorer"].includes(tool.id);
           const isDisabled = tool.id === "zonelightbin-module";
           return (
             <button

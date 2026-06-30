@@ -210,6 +210,23 @@ impl SourceTex {
                 let s = filename.replace(".texture", "_hd.texture");
                 if Path::new(&s).exists() {
                     hdfilename = s;
+                } else {
+                    let s_span1 = filename
+                        .replace("span 0", "span 1")
+                        .replace("span0", "span1")
+                        .replace("Span 0", "Span 1")
+                        .replace("Span0", "Span1");
+                    
+                    if s_span1 != filename {
+                        let mut span1_hd = PathBuf::from(&s_span1);
+                        span1_hd.set_extension("hd.texture");
+                        
+                        if Path::new(&s_span1).exists() {
+                            hdfilename = s_span1;
+                        } else if span1_hd.exists() {
+                            hdfilename = span1_hd.to_string_lossy().to_string();
+                        }
+                    }
                 }
             }
         }
@@ -445,10 +462,9 @@ pub fn extract_texture(
         "png" => "png",
         "dds" => "dds",
         fmt => {
-            // auto / auto-notiff: TIFF for single 2D HDR (unless notiff), PNG for simple 2D LDR, DDS for multi/cubemap
+            // auto / auto-notiff: TIFF for single 2D HDR (unless notiff), DDS for LDR / fallback
             let tiff_ok = fmt != "auto-notiff";
             if is_hdr && !is_multi && !is_cubemap && tiff_ok { "tiff" }
-            else if !is_hdr && !is_multi && !is_cubemap { "png" }
             else { "dds" }
         }
     };
@@ -511,16 +527,35 @@ pub fn extract_texture(
 
     // ── TIFF export for HDR single-surface textures ─────────────────────────
     if effective_fmt == "tiff" && !is_cubemap && tex.images == 1 {
-        let width = tex.sd_width as usize;
-        let height = tex.sd_height as usize;
-        let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
-            .map(|v| v as usize)
-            .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
-
-        if tex.mipmaps[0].len() < mip_size {
-            return Err("Not enough SD data for TIFF export".into());
+        let mut width = tex.sd_width as usize;
+        let mut height = tex.sd_height as usize;
+        
+        let mut use_hd = false;
+        let mut hd_mip_size = 0;
+        if tex.hdsize > 0 && !tex.hdfilename.is_empty() {
+            if let Some(size) = mip_level_size(tex.width as u32, tex.height as u32, tex.format as u32) {
+                if hd_data.len() >= size as usize {
+                    width = tex.width as usize;
+                    height = tex.height as usize;
+                    hd_mip_size = size as usize;
+                    use_hd = true;
+                }
+            }
         }
-        let tiff_bytes = decode_to_tiff_bytes(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32)?;
+
+        let tiff_bytes = if use_hd {
+            decode_to_tiff_bytes(&hd_data[..hd_mip_size], width, height, tex.format as u32)?
+        } else {
+            let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
+                .map(|v| v as usize)
+                .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
+
+            if tex.mipmaps[0].len() < mip_size {
+                return Err("Not enough SD data for TIFF export".into());
+            }
+            decode_to_tiff_bytes(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32)?
+        };
+
         std::fs::write(&out_base, &tiff_bytes).map_err(|e| e.to_string())?;
         logs.push_str(&format!("Wrote {} ({}x{} TIFF HDR)\n", out_base.display(), width, height));
         return Ok(logs);
@@ -528,17 +563,37 @@ pub fn extract_texture(
 
     // ── Simple PNG export for non-HDR 2D single-surface textures ────────────
     if effective_fmt == "png" && !is_cubemap && tex.images == 1 {
-        let width = tex.sd_width as usize;
-        let height = tex.sd_height as usize;
-        let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
-            .map(|v| v as usize)
-            .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
-
-        if tex.mipmaps[0].len() < mip_size {
-            return Err("Not enough SD data for PNG export".into());
+        let mut width = tex.sd_width as usize;
+        let mut height = tex.sd_height as usize;
+        
+        let mut use_hd = false;
+        let mut hd_mip_size = 0;
+        if tex.hdsize > 0 && !tex.hdfilename.is_empty() {
+            if let Some(size) = mip_level_size(tex.width as u32, tex.height as u32, tex.format as u32) {
+                if hd_data.len() >= size as usize {
+                    width = tex.width as usize;
+                    height = tex.height as usize;
+                    hd_mip_size = size as usize;
+                    use_hd = true;
+                }
+            }
         }
-        let png_b64 = decode_to_base64_png(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32, tex.content_type)?;
-        let png_bytes = base64::prelude::BASE64_STANDARD.decode(png_b64.as_bytes()).map_err(|e| e.to_string())?;
+
+        let png_bytes = if use_hd {
+            let png_b64 = decode_to_base64_png(&hd_data[..hd_mip_size], width, height, tex.format as u32, tex.content_type)?;
+            base64::prelude::BASE64_STANDARD.decode(png_b64.as_bytes()).map_err(|e| e.to_string())?
+        } else {
+            let mip_size = mip_level_size(width as u32, height as u32, tex.format as u32)
+                .map(|v| v as usize)
+                .unwrap_or_else(|| (width as f64 * height as f64 * tex.bytes_per_pixel).ceil() as usize);
+
+            if tex.mipmaps[0].len() < mip_size {
+                return Err("Not enough SD data for PNG export".into());
+            }
+            let png_b64 = decode_to_base64_png(&tex.mipmaps[0][..mip_size], width, height, tex.format as u32, tex.content_type)?;
+            base64::prelude::BASE64_STANDARD.decode(png_b64.as_bytes()).map_err(|e| e.to_string())?
+        };
+
         std::fs::write(&out_base, &png_bytes).map_err(|e| e.to_string())?;
         logs.push_str(&format!("Wrote {} ({}x{} PNG)\n", out_base.display(), width, height));
         return Ok(logs);
@@ -675,7 +730,7 @@ pub fn replace_texture(
         }
     }
 
-    let mut out_base = if let Some(out_sd) = explicit_out_sd {
+    let out_base = if let Some(out_sd) = explicit_out_sd {
         PathBuf::from(out_sd)
     } else {
         let mut base = PathBuf::from(dds_path);
@@ -703,12 +758,11 @@ pub fn replace_texture(
         scale
     };
 
-    let mut width = dds.width;
-    let mut height = dds.height;
+    let width = dds.width;
+    let height = dds.height;
     let mut sd_width = tex.sd_width as u32;
     let mut sd_height = tex.sd_height as u32;
     let mut size = tex.size;
-    let mut hdsize = tex.hdsize;
     let mut mipmaps = tex.mipmaps_count as u32;
     let mut hdmipmaps = tex.hdmipmaps as u32;
 
@@ -723,15 +777,16 @@ pub fn replace_texture(
         sizeincrease += tex.basemipsize << (2 * i);
     }
 
-    if tex.hdsize > 0 {
+    let hdsize = if tex.hdsize > 0 {
         hdmipmaps = extrasdmipmaps - actual_extra_sd;
         extrasdmipmaps = actual_extra_sd;
-        hdsize = sizeincrease * tex.images as u32;
+        let val = sizeincrease * tex.images as u32;
         sizeincrease = 0;
+        val
     } else {
-        hdsize = 0;
         hdmipmaps = 0;
-    }
+        0
+    };
 
     for i in (1..=extrasdmipmaps).rev() {
         sizeincrease += tex.basemipsize << (2 * i);
@@ -741,8 +796,13 @@ pub fn replace_texture(
     sd_height <<= extrasdmipmaps;
 
     for i in 0..ddss.len() {
-        if ddss[i].mipmaps < hdmipmaps + extrasdmipmaps + tex.mipmaps_count as u32 {
-            return Err(format!("Not enough mipmaps in DDS file A{} to replace", i));
+        let needed = hdmipmaps + extrasdmipmaps + tex.mipmaps_count as u32;
+        if ddss[i].mipmaps < needed {
+            let label = if ddss.len() > 1 { format!("A{} ", i) } else { "".to_string() };
+            return Err(format!(
+                "Not enough mipmaps in DDS file {}to replace this texture (needs {})",
+                label, needed
+            ));
         }
     }
 
@@ -751,22 +811,23 @@ pub fn replace_texture(
     let mut sdmips_list = Vec::new();
 
     for i in 0..ddss.len() {
-        let mut fs = File::open(&ddss[i].filename).unwrap();
-        fs.seek(SeekFrom::Start(ddss[i].dataoffset)).unwrap();
+        let mut fs = File::open(&ddss[i].filename).map_err(|e| format!("Failed to open DDS file: {}", e))?;
+        fs.seek(SeekFrom::Start(ddss[i].dataoffset))
+            .map_err(|e| format!("Failed to seek to DDS data offset: {}", e))?;
 
         let mut hd_part = vec![0u8; (hdsize / tex.images as u32) as usize];
-        let read_len = fs.read(&mut hd_part).unwrap_or(0);
-        hd_part.truncate(read_len);
+        fs.read_exact(&mut hd_part)
+            .map_err(|e| format!("Failed to read HD mipmaps: {}", e))?;
         hdmips_list.push(hd_part);
 
         let mut ex_part = vec![0u8; (extrasdmipsize / tex.images as u32) as usize];
-        let read_len = fs.read(&mut ex_part).unwrap_or(0);
-        ex_part.truncate(read_len);
+        fs.read_exact(&mut ex_part)
+            .map_err(|e| format!("Failed to read extra SD mipmaps: {}", e))?;
         extrasdmips_list.push(ex_part);
 
         let mut sd_part = vec![0u8; (tex.size / tex.images as u32) as usize];
-        let read_len = fs.read(&mut sd_part).unwrap_or(0);
-        sd_part.truncate(read_len);
+        fs.read_exact(&mut sd_part)
+            .map_err(|e| format!("Failed to read SD mipmaps: {}", e))?;
         sdmips_list.push(sd_part);
     }
 

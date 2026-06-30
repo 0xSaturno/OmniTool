@@ -1,12 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useProjects } from "../../contexts/ProjectsContext";
 import { invoke } from "@tauri-apps/api/core";
 import styles from "./SendToStagerModal.module.css";
-
-interface Project {
-  name: string;
-  game: string;
-  author: string;
-}
 
 interface Props {
   sourceFile: string;
@@ -16,18 +11,31 @@ interface Props {
 }
 
 export default function SendToStagerModal({ sourceFile, defaultTargetPath, onClose, onSent }: Props) {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState("");
+  const { projects, selectedProject, setSelectedProject, createProject } = useProjects();
   const [targetPath, setTargetPath] = useState(defaultTargetPath);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    invoke<Project[]>("list_projects").then((list) => {
-      setProjects(list);
-      if (list.length > 0) setSelectedProject(list[0].name);
-    });
-  }, []);
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [newProjName, setNewProjName] = useState("");
+  const [newProjAuthor, setNewProjAuthor] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  async function handleCreateProject() {
+    if (!newProjName.trim()) return;
+    setCreatingProject(true);
+    setError("");
+    try {
+      await createProject(newProjName.trim(), newProjAuthor.trim());
+      setShowNewProject(false);
+      setNewProjName("");
+      setNewProjAuthor("");
+    } catch (e) {
+      setError(`Failed to create project: ${e}`);
+    } finally {
+      setCreatingProject(false);
+    }
+  }
 
   async function handleSend() {
     if (!selectedProject || !targetPath.trim()) return;
@@ -59,18 +67,65 @@ export default function SendToStagerModal({ sourceFile, defaultTargetPath, onClo
 
         <div className={styles.field}>
           <label className={styles.label}>Project</label>
-          {projects.length === 0 ? (
-            <span className={styles.empty}>No projects — create one in Stager first.</span>
+          {showNewProject ? (
+            <div className={styles.newProjectForm}>
+              <input
+                className={styles.newProjInputFull}
+                placeholder="Project name"
+                value={newProjName}
+                onChange={(e) => setNewProjName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+                autoFocus
+              />
+              <input
+                className={styles.newProjInputFull}
+                placeholder="Author"
+                value={newProjAuthor}
+                onChange={(e) => setNewProjAuthor(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+              />
+              <div className={styles.formActions}>
+                <button
+                  className={styles.sendBtn}
+                  style={{ padding: "0.4rem", flex: 1 }}
+                  onClick={handleCreateProject}
+                  disabled={creatingProject || !newProjName.trim()}
+                >
+                  {creatingProject ? "Creating…" : "Create"}
+                </button>
+                <button
+                  className={styles.cancelProjBtn}
+                  onClick={() => { setShowNewProject(false); setNewProjName(""); setNewProjAuthor(""); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           ) : (
-            <select
-              className={styles.select}
-              value={selectedProject}
-              onChange={(e) => setSelectedProject(e.target.value)}
-            >
-              {projects.map((p) => (
-                <option key={p.name} value={p.name}>{p.name}</option>
-              ))}
-            </select>
+            <div className={styles.projectPickerRow}>
+              {projects.length === 0 ? (
+                <span className={styles.empty} style={{ flex: 1 }}>No projects found.</span>
+              ) : (
+                <select
+                  className={styles.select}
+                  style={{ flex: 1 }}
+                  value={selectedProject}
+                  onChange={(e) => setSelectedProject(e.target.value)}
+                >
+                  {projects.map((p) => (
+                    <option key={p.name} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                className={styles.newProjBtnSmall}
+                onClick={() => setShowNewProject(true)}
+                title="Create a new project"
+                type="button"
+              >
+                + New
+              </button>
+            </div>
           )}
         </div>
 

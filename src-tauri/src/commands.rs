@@ -4,6 +4,63 @@ use std::time::Instant;
 use log::{debug, info, warn};
 use walkdir::WalkDir;
 
+fn clean_path<P: AsRef<Path>>(p: P) -> PathBuf {
+    let p_str = p.as_ref().to_string_lossy().into_owned();
+    let mut cleaned = p_str;
+    if cleaned.starts_with(r"\\?\") {
+        cleaned = cleaned[4..].to_string();
+    }
+    PathBuf::from(cleaned.replace('/', "\\"))
+}
+
+fn strip_prefix_case_insensitive(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let clean_p = clean_path(path);
+    let clean_prefix = clean_path(prefix);
+    
+    let mut p_comps = clean_p.components();
+    let mut pre_comps = clean_prefix.components();
+    
+    loop {
+        match (p_comps.next(), pre_comps.next()) {
+            (Some(p_c), Some(pre_c)) => {
+                let p_str = p_c.as_os_str().to_string_lossy().to_lowercase();
+                let pre_str = pre_c.as_os_str().to_string_lossy().to_lowercase();
+                if p_str != pre_str {
+                    return None;
+                }
+            }
+            (Some(p_c), None) => {
+                let mut rest = PathBuf::new();
+                rest.push(p_c.as_os_str());
+                for c in p_comps {
+                    rest.push(c.as_os_str());
+                }
+                return Some(rest);
+            }
+            (None, Some(_)) => {
+                return None;
+            }
+            (None, None) => {
+                return Some(PathBuf::new());
+            }
+        }
+    }
+}
+
+
+fn strip_leading_digit_component(path: PathBuf) -> PathBuf {
+    let mut comps = path.components();
+    if let Some(first) = comps.next() {
+        let first_str = first.as_os_str().to_string_lossy();
+        if first_str.chars().all(|c| c.is_ascii_digit()) {
+            return comps.as_path().to_path_buf();
+        }
+    }
+    path
+}
+
+
+
 use crate::core::config::ConfigFile;
 use crate::core::dat1::Dat1;
 use crate::core::error::ToolkitError;
@@ -99,6 +156,106 @@ fn resolve_toc_path(requested: &str, mode: SourceMode) -> Result<PathBuf, Toolki
     }
 }
 
+const LANGUAGE_CODES: &[&str] = &[
+    "us", "gb", "dk", "nl", "fi", "fr", "de", "it", "jp", "kr", "no", "pl", "pt", "ru", "es", "se",
+    "br", "ar", "tr", "la", "cs", "ct", "fc", "cz", "hu", "el", "ro", "th", "vi", "id", "hr"
+];
+
+fn extract_language_from_path(path_str: &str) -> Option<String> {
+    let path = Path::new(path_str);
+    if let Some(parent) = path.parent() {
+        if let Some(dir_name) = parent.file_name().and_then(|n| n.to_str()) {
+            let dir_lower = dir_name.to_lowercase();
+            if LANGUAGE_CODES.contains(&dir_lower.as_str()) {
+                return Some(dir_lower);
+            }
+        }
+    }
+    None
+}
+
+fn extract_language_from_archive(archive_name: &str) -> Option<String> {
+    let normalized = archive_name.replace('\\', "/");
+    if let Some(ext) = Path::new(&normalized).extension().and_then(|e| e.to_str()) {
+        let ext_lower = ext.to_lowercase();
+        if LANGUAGE_CODES.contains(&ext_lower.as_str()) {
+            return Some(ext_lower);
+        }
+    }
+    None
+}
+
+fn get_asset_virtual_path(asset_id: u64, archive_name: &str) -> Option<String> {
+    if (asset_id >> 32) == 0xE0000000 {
+        let wem_id = asset_id as u32;
+        let normalized = archive_name.replace('\\', "/");
+        if let Some(ext) = Path::new(&normalized).extension().and_then(|e| e.to_str()) {
+            let ext_lower = ext.to_lowercase();
+            if LANGUAGE_CODES.contains(&ext_lower.as_str()) {
+                return Some(format!("sound/streamed/{}/{}.wem", ext_lower, wem_id));
+            }
+        }
+        return Some(format!("sound/streamed/{}.wem", wem_id));
+    }
+    None
+}
+
+fn find_toc_asset_candidate(
+    toc: &Toc,
+    id: u64,
+    filename: Option<&str>,
+) -> Option<TocAsset> {
+    let candidates: Vec<TocAsset> = toc
+        .assets()
+        .into_iter()
+        .filter(|a| a.asset_id == id)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    if candidates.len() == 1 {
+        return Some(candidates[0].clone());
+    }
+
+    // If filename is provided, try to match by virtual path
+    if let Some(target_path) = filename {
+        let normalized_target = target_path.replace('\\', "/").to_lowercase();
+        
+        for candidate in &candidates {
+            if let Some(archive_name) = toc.archive_filenames().get(candidate.archive_index as usize) {
+                if let Some(vpath) = get_asset_virtual_path(candidate.asset_id, archive_name) {
+                    if vpath.to_lowercase() == normalized_target {
+                        return Some(candidate.clone());
+                    }
+                }
+            }
+        }
+
+        // Second pass: match language code
+        let target_lang = extract_language_from_path(&normalized_target);
+        if let Some(ref lang) = target_lang {
+            for candidate in &candidates {
+                if let Some(archive_name) = toc.archive_filenames().get(candidate.archive_index as usize) {
+                    let archive_lang = extract_language_from_archive(archive_name);
+                    if Some(lang.clone()) == archive_lang {
+                        return Some(candidate.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback 1: Prefer span_index == 0
+    if let Some(span0) = candidates.iter().find(|c| c.span_index == 0) {
+        return Some(span0.clone());
+    }
+
+    // Fallback 2: Just return the first one
+    Some(candidates[0].clone())
+}
+
 #[tauri::command]
 pub async fn tauri_get_texture_info(path: String) -> Result<TextureInfo, ToolkitError> {
     get_texture_info(&path).map_err(|e| ToolkitError::Parse(e))
@@ -168,17 +325,18 @@ pub async fn tauri_scan_stager_textures(
     }
 
     let mut map: HashMap<String, JobEntry> = HashMap::new();
+    let clean_proj_dir = clean_path(&project_dir);
 
-    for entry in WalkDir::new(&project_dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&clean_proj_dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_file() {
             let name_lower = path.to_string_lossy().to_lowercase();
             if name_lower.ends_with(".hd.texture") {
                 let stem = path.file_stem().unwrap().to_string_lossy().to_lowercase().replace(".hd", "");
-                map.entry(stem).or_default().textures.push(path.to_path_buf());
+                map.entry(stem).or_default().textures.push(clean_path(path));
             } else if name_lower.ends_with(".texture") {
                 let stem = path.file_stem().unwrap().to_string_lossy().to_lowercase();
-                map.entry(stem).or_default().textures.push(path.to_path_buf());
+                map.entry(stem).or_default().textures.push(clean_path(path));
             } else if name_lower.ends_with(".dds") && dds_dir.is_none() {
                 if name_lower.contains(".a") && name_lower.len() > 6 {
                     let parts: Vec<&str> = name_lower.split('.').collect();
@@ -187,7 +345,7 @@ pub async fn tauri_scan_stager_textures(
                     }
                 }
                 let stem = path.file_stem().unwrap().to_string_lossy().to_lowercase();
-                map.entry(stem).or_default().dds = Some(path.to_path_buf());
+                map.entry(stem).or_default().dds = Some(clean_path(path));
             }
         }
     }
@@ -205,7 +363,7 @@ pub async fn tauri_scan_stager_textures(
                         }
                     }
                     let stem = path.file_stem().unwrap().to_string_lossy().to_lowercase();
-                    map.entry(stem).or_default().dds = Some(path.to_path_buf());
+                    map.entry(stem).or_default().dds = Some(clean_path(path));
                 }
             }
         }
@@ -236,10 +394,17 @@ pub async fn tauri_scan_stager_textures(
         }
 
         let mut rel_base = base_name.clone();
-        if let Some(ref sd) = sd_path {
-            let sd_path_obj = Path::new(sd);
-            if let Ok(rel) = sd_path_obj.strip_prefix(&project_dir) {
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let path_to_strip = sd_path.as_deref().or(hd_path.as_deref());
+        if let Some(ref p) = path_to_strip {
+            let clean_p = clean_path(p);
+            if let Some(rel) = strip_prefix_case_insensitive(&clean_p, &clean_proj_dir) {
+                let mut rel_str = rel.to_string_lossy().replace('\\', "/");
+                if let Some(slash_idx) = rel_str.find('/') {
+                    let first_part = &rel_str[..slash_idx];
+                    if first_part.chars().all(|c| c.is_ascii_digit()) {
+                        rel_str = rel_str[slash_idx + 1..].to_string();
+                    }
+                }
                 if rel_str.to_lowercase().ends_with(".texture") {
                     rel_base = rel_str[..rel_str.len() - 8].to_string();
                 } else {
@@ -286,7 +451,7 @@ pub async fn tauri_batch_replace_textures(
 
         if let Some(ref out_dir) = output_dir {
             let base_path = Path::new(&project_dir);
-            let sd_relative = Path::new(&sd).strip_prefix(base_path).unwrap_or(Path::new(""));
+            let sd_relative = strip_prefix_case_insensitive(Path::new(&sd), base_path).unwrap_or_default();
             out_sd_path = Path::new(out_dir).join(sd_relative);
             if let Some(parent) = out_sd_path.parent() {
                 std::fs::create_dir_all(parent).unwrap_or(());
@@ -294,7 +459,7 @@ pub async fn tauri_batch_replace_textures(
             explicit_out_sd = Some(out_sd_path.to_str().unwrap().to_string());
 
             if let Some(ref hd_p) = job.hd_path {
-                let hd_relative = Path::new(hd_p).strip_prefix(base_path).unwrap_or(Path::new(""));
+                let hd_relative = strip_prefix_case_insensitive(Path::new(hd_p), base_path).unwrap_or_default();
                 out_hd_path = Path::new(out_dir).join(hd_relative);
                 if let Some(parent) = out_hd_path.parent() {
                     std::fs::create_dir_all(parent).unwrap_or(());
@@ -348,13 +513,14 @@ pub async fn tauri_batch_extract_textures(
 
         if let Some(ref out_dir) = output_dir {
             let base_path = Path::new(&project_dir);
-            let sd_relative = Path::new(&sd).strip_prefix(base_path).unwrap_or(Path::new(""));
+            let sd_relative = strip_prefix_case_insensitive(Path::new(&sd), base_path).unwrap_or_default();
+            let clean_relative = strip_leading_digit_component(sd_relative);
             let out_ext = match output_format.as_deref().unwrap_or("auto") {
                 "png" => "png",
                 "tiff" => "tiff",
                 _ => "dds",
             };
-            out_dds_path = Path::new(out_dir).join(sd_relative).with_extension(out_ext);
+            out_dds_path = Path::new(out_dir).join(clean_relative).with_extension(out_ext);
             if let Some(parent) = out_dds_path.parent() {
                 std::fs::create_dir_all(parent).unwrap_or(());
                 explicit_out_dir = parent.to_str().map(|s| s.to_string());
@@ -1860,10 +2026,7 @@ pub async fn extract_to_temp(
     let data = std::fs::read(&resolved_toc)?;
     let toc = Toc::parse(&data)?;
 
-    let asset = toc
-        .assets()
-        .into_iter()
-        .find(|a| a.asset_id == id && a.span_index == 0)
+    let asset = find_toc_asset_candidate(&toc, id, Some(&filename))
         .ok_or_else(|| ToolkitError::Parse(format!("asset {asset_id} not found in TOC")))?;
 
     warn_if_mod_source(&toc, &asset);
@@ -3118,3 +3281,537 @@ pub async fn get_asset_references(
         cancelled,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Wwise Soundbank & Lookup Patching commands
+// ---------------------------------------------------------------------------
+use std::fs;
+use std::collections::HashMap;
+use crate::tools::wwise::bnk::{parse_bnk, parse_bnk_full, extract_wem_bytes, repack_bnk_wems, BnkFullInfo, detect_wem_codec, codec_name};
+use crate::tools::wwise::xml_import::parse_soundbanks_info_xml;
+use crate::tools::wwise::soundbank::{build_soundbank, parse_soundbank, SoundbankMetadata};
+use crate::tools::wwise::wwiselookup::{parse_wwiselookup, patch_wwiselookup, WwiseLookupMetadata};
+use crate::tools::wwise::wem;
+
+#[tauri::command]
+pub async fn soundbank_build(
+    bnk_path: String,
+    xml_path: String,
+    asset_path: String,
+    output_path: String,
+) -> Result<(), ToolkitError> {
+    let bnk_bytes = fs::read(&bnk_path)?;
+    let xml_str = fs::read_to_string(&xml_path)?;
+
+    // Parse BNK to find ID
+    let bnk_info = parse_bnk(&bnk_bytes)?;
+
+    // Parse XML
+    let xml_banks = parse_soundbanks_info_xml(&xml_str)?;
+
+    // Find the matching XML bank by ID
+    let matching_bank = xml_banks
+        .iter()
+        .find(|b| b.id == bnk_info.bank_id)
+        .or_else(|| {
+            // Fallback: match by file name basename (case insensitive)
+            let bnk_file_name = Path::new(&bnk_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            xml_banks.iter().find(|b| b.name.to_lowercase() == bnk_file_name)
+        });
+
+    let event_names: Vec<String> = match matching_bank {
+        Some(bank) => bank.events.iter().map(|e| e.name.clone()).collect(),
+        None => {
+            return Err(ToolkitError::Parse(format!(
+                "Could not find soundbank metadata in SoundBanksInfo.xml for BNK ID {} or name matching {:?}",
+                bnk_info.bank_id,
+                Path::new(&bnk_path).file_stem()
+            )));
+        }
+    };
+
+
+    let soundbank_bytes = build_soundbank(&bnk_bytes, &asset_path, &event_names)?;
+    if let Some(parent) = Path::new(&output_path).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output_path, soundbank_bytes)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn soundbank_parse(path: String) -> Result<SoundbankMetadata, ToolkitError> {
+    let bytes = fs::read(&path)?;
+    let metadata = parse_soundbank(&bytes)?;
+    Ok(metadata)
+}
+
+#[tauri::command]
+pub async fn tauri_get_soundbank_info(path: String) -> Result<SoundbankMetadata, ToolkitError> {
+    let bytes = fs::read(&path)?;
+    let metadata = parse_soundbank(&bytes)?;
+    Ok(metadata)
+}
+
+#[tauri::command]
+pub async fn wwiselookup_parse(path: String) -> Result<WwiseLookupMetadata, ToolkitError> {
+    let bytes = fs::read(&path)?;
+    let metadata = parse_wwiselookup(&bytes)?;
+    Ok(metadata)
+}
+
+#[tauri::command]
+pub async fn wwiselookup_patch(
+    vanilla_path: String,
+    output_path: String,
+    new_assets: Vec<(String, Vec<String>)>,
+) -> Result<(), ToolkitError> {
+    let vanilla_bytes = fs::read(&vanilla_path)?;
+    let patched_bytes = patch_wwiselookup(&vanilla_bytes, &new_assets)?;
+    if let Some(parent) = Path::new(&output_path).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output_path, patched_bytes)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// BNK Explorer Commands
+// ---------------------------------------------------------------------------
+
+/// Parse a BNK file (or the inner BNK from a .soundbank) and return full info:
+/// header metadata, WEM list with codec info, and event→WEM chain mapping.
+#[tauri::command]
+pub async fn bnk_parse_full(path: String) -> Result<BnkFullInfo, ToolkitError> {
+    let raw_bytes = fs::read(&path)?;
+    
+    // Check if this is a .soundbank wrapper (magic 0xC2841216)
+    let is_soundbank = raw_bytes.len() >= 4
+        && u32::from_le_bytes(raw_bytes[0..4].try_into().unwrap()) == 0xC2841216;
+
+    let bnk_bytes = if is_soundbank {
+        extract_bnk_from_soundbank(&raw_bytes)?
+    } else {
+        raw_bytes.clone()
+    };
+
+    let mut info = parse_bnk_full(&bnk_bytes)?;
+
+    // If it's a .soundbank, merge event names from the wrapper metadata
+    if is_soundbank {
+        if let Ok(metadata) = parse_soundbank(&raw_bytes) {
+            let mut name_map = std::collections::HashMap::new();
+            for ev in metadata.events {
+                name_map.insert(ev.id, ev.name);
+            }
+
+            for event in &mut info.events {
+                if let Some(name) = name_map.get(&event.id) {
+                    event.name = Some(name.clone());
+                }
+            }
+
+            // Re-sort events by name since we now have strings
+            info.events.sort_by(|a, b| {
+                match (&a.name, &b.name) {
+                    (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.id.cmp(&b.id),
+                }
+            });
+        }
+    }
+
+    Ok(info)
+}
+
+/// Extract selected (or all) WEMs from a BNK file to an output directory.
+#[tauri::command]
+pub async fn bnk_extract_wems(
+    path: String,
+    output_dir: String,
+    wem_ids: Option<Vec<u32>>,
+    archives_dir: Option<String>,
+) -> Result<String, ToolkitError> {
+    let raw_bytes = fs::read(&path)?;
+    
+    let bnk_bytes = if raw_bytes.len() >= 4
+        && u32::from_le_bytes(raw_bytes[0..4].try_into().unwrap()) == 0xC2841216
+    {
+        extract_bnk_from_soundbank(&raw_bytes)?
+    } else {
+        raw_bytes
+    };
+
+    fs::create_dir_all(&output_dir)?;
+    let mut extracted = 0;
+
+    if let Some(ids) = wem_ids {
+        // Specific IDs requested (could be embedded or streamed)
+        for wem_id in ids {
+            let wem_bytes = match extract_wem_bytes(&bnk_bytes, wem_id) {
+                Ok(bytes) => Some(bytes),
+                Err(e) => {
+                    if let Some(ref arch_dir) = archives_dir {
+                        let asset_id_val = 0xE000000000000000u64 | (wem_id as u64);
+                        let toc_path = Path::new(arch_dir).join("toc");
+                        if toc_path.exists() {
+                            let toc_bytes = std::fs::read(&toc_path)?;
+                            let toc = Toc::parse(&toc_bytes)?;
+                            let bnk_lang = extract_language_from_path(&path);
+                            let filename = if let Some(ref lang) = bnk_lang {
+                                format!("sound/streamed/{}/{}.wem", lang, wem_id)
+                            } else {
+                                format!("sound/streamed/{}.wem", wem_id)
+                            };
+                            if let Some(asset) = find_toc_asset_candidate(&toc, asset_id_val, Some(&filename)) {
+                                Some(toc.extract_asset(&asset, Path::new(arch_dir))?)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(bytes) = wem_bytes {
+                let out_path = Path::new(&output_dir).join(format!("{}.wem", wem_id));
+                fs::write(&out_path, &bytes)?;
+                extracted += 1;
+            } else {
+                return Err(ToolkitError::Parse(format!(
+                    "WEM ID {} not found in soundbank or game archives",
+                    wem_id
+                )));
+            }
+        }
+    } else {
+        // Extract all embedded WEMs
+        let info = parse_bnk_full(&bnk_bytes)?;
+        for wem_info in &info.wems {
+            let wem_bytes = extract_wem_bytes(&bnk_bytes, wem_info.id)?;
+            let out_path = Path::new(&output_dir).join(format!("{}.wem", wem_info.id));
+            fs::write(&out_path, &wem_bytes)?;
+            extracted += 1;
+        }
+
+        // Also extract referenced streamed WEMs if we have archives_dir
+        if let Some(ref arch_dir) = archives_dir {
+            let toc_path = Path::new(arch_dir).join("toc");
+            if toc_path.exists() {
+                let toc_bytes = std::fs::read(&toc_path)?;
+                let toc = Toc::parse(&toc_bytes)?;
+                let bnk_lang = extract_language_from_path(&path);
+
+                // Collect all referenced WEM IDs that are not embedded
+                let embedded_ids: std::collections::HashSet<u32> = info.wems.iter().map(|w| w.id).collect();
+                let mut streamed_ids = std::collections::HashSet::new();
+                for event in &info.events {
+                    for &wem_id in &event.wem_ids {
+                        if !embedded_ids.contains(&wem_id) {
+                            streamed_ids.insert(wem_id);
+                        }
+                    }
+                }
+
+                for wem_id in streamed_ids {
+                    let asset_id_val = 0xE000000000000000u64 | (wem_id as u64);
+                    let filename = if let Some(ref lang) = bnk_lang {
+                        format!("sound/streamed/{}/{}.wem", lang, wem_id)
+                    } else {
+                        format!("sound/streamed/{}.wem", wem_id)
+                    };
+                    if let Some(asset) = find_toc_asset_candidate(&toc, asset_id_val, Some(&filename)) {
+                        if let Ok(bytes) = toc.extract_asset(&asset, Path::new(arch_dir)) {
+                            let out_path = Path::new(&output_dir).join(format!("{}.wem", wem_id));
+                            fs::write(&out_path, &bytes)?;
+                            extracted += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(format!("Extracted {} WEM files to {}", extracted, output_dir))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BnkWemPreview {
+    pub audio_src: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub avg_bitrate: u32,
+    pub size: u32,
+}
+
+/// Decode a WEM from a BNK and return base64 OGG for frontend audio playback.
+#[tauri::command]
+pub async fn wem_preview_audio(
+    bnk_path: String,
+    wem_id: u32,
+    archives_dir: Option<String>,
+) -> Result<BnkWemPreview, ToolkitError> {
+    let raw_bytes = fs::read(&bnk_path)?;
+    
+    let bnk_bytes = if raw_bytes.len() >= 4
+        && u32::from_le_bytes(raw_bytes[0..4].try_into().unwrap()) == 0xC2841216
+    {
+        extract_bnk_from_soundbank(&raw_bytes)?
+    } else {
+        raw_bytes
+    };
+
+    let wem_bytes = match extract_wem_bytes(&bnk_bytes, wem_id) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            if let Some(ref arch_dir) = archives_dir {
+                let asset_id_val = 0xE000000000000000u64 | (wem_id as u64);
+                let toc_path = Path::new(arch_dir).join("toc");
+                if toc_path.exists() {
+                    let toc_bytes = std::fs::read(&toc_path)?;
+                    let toc = Toc::parse(&toc_bytes)?;
+                    let bnk_lang = extract_language_from_path(&bnk_path);
+                    let filename = if let Some(ref lang) = bnk_lang {
+                        format!("sound/streamed/{}/{}.wem", lang, wem_id)
+                    } else {
+                        format!("sound/streamed/{}.wem", wem_id)
+                    };
+                    if let Some(asset) = find_toc_asset_candidate(&toc, asset_id_val, Some(&filename)) {
+                        toc.extract_asset(&asset, Path::new(arch_dir))?
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    let (codec_id, sample_rate, channels, avg_bitrate) = detect_wem_codec(&wem_bytes);
+    let audio_src = wem::decode_wem_to_base64_ogg(&wem_bytes)?;
+
+    Ok(BnkWemPreview {
+        audio_src,
+        codec: codec_name(codec_id).to_string(),
+        sample_rate,
+        channels,
+        avg_bitrate,
+        size: wem_bytes.len() as u32,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WemFullInfo {
+    pub codec: String,
+    pub codec_id: u16,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub avg_bitrate: u32,
+    pub size: u32,
+    pub audio_src: Option<String>,
+}
+
+#[tauri::command]
+pub async fn wem_get_info_and_preview(
+    toc_path: String,
+    asset_id: String,
+    archives_dir: String,
+    source_mode: Option<String>,
+    filename: Option<String>,
+) -> Result<WemFullInfo, ToolkitError> {
+    let id = u64::from_str_radix(&asset_id, 16)
+        .map_err(|e| ToolkitError::Parse(format!("invalid asset id hex: {e}")))?;
+
+    let mode = SourceMode::parse(source_mode.as_deref())?;
+    let resolved_toc = resolve_toc_path(&toc_path, mode)?;
+    let data = std::fs::read(&resolved_toc)?;
+    let toc = Toc::parse(&data)?;
+
+    let asset = find_toc_asset_candidate(&toc, id, filename.as_deref())
+        .ok_or_else(|| ToolkitError::Parse(format!("asset {asset_id} not found in TOC")))?;
+
+    let raw = toc.extract_asset(&asset, Path::new(&archives_dir))?;
+
+    let (codec_id, sample_rate, channels, avg_bitrate) = detect_wem_codec(&raw);
+    
+    let audio_src = match wem::decode_wem_to_base64_ogg(&raw) {
+        Ok(base64) => Some(base64),
+        Err(e) => {
+            info!("wem_get_info_and_preview: failed to decode to base64 OGG: {e}");
+            None
+        }
+    };
+
+    Ok(WemFullInfo {
+        codec: codec_name(codec_id).to_string(),
+        codec_id,
+        sample_rate,
+        channels,
+        avg_bitrate,
+        size: raw.len() as u32,
+        audio_src,
+    })
+}
+
+/// Extract the raw .bnk from a .soundbank wrapper and save to disk.
+#[tauri::command]
+pub async fn soundbank_extract_bnk(
+    soundbank_path: String,
+    output_path: String,
+) -> Result<(), ToolkitError> {
+    let raw_bytes = fs::read(&soundbank_path)?;
+    let bnk_bytes = extract_bnk_from_soundbank(&raw_bytes)?;
+    if let Some(parent) = Path::new(&output_path).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output_path, bnk_bytes)?;
+    Ok(())
+}
+
+/// Helper: Extract the raw BNK bytes from a .soundbank wrapper.
+/// The BNK lives in the Wwise Bank Container section (tag 0x53F25238).
+fn extract_bnk_from_soundbank(soundbank_bytes: &[u8]) -> Result<Vec<u8>, ToolkitError> {
+    use crate::core::dat1::Dat1;
+
+    if soundbank_bytes.len() < 40 {
+        return Err(ToolkitError::Parse("Soundbank file too small".into()));
+    }
+    
+    // Skip the 36-byte wrapper to get to DAT1
+    let dat1_bytes = &soundbank_bytes[36..];
+    let dat1 = Dat1::parse(dat1_bytes)?;
+    
+    // Find the Wwise Bank Container section (tag 0x53F25238)
+    const BNK_CONTAINER_TAG: u32 = 0x53F25238;
+    let section = dat1.sections.iter()
+        .find(|s| s.tag == BNK_CONTAINER_TAG)
+        .ok_or_else(|| ToolkitError::Parse("No Wwise Bank Container section found in soundbank".into()))?;
+
+    let start = section.offset as usize;
+    let end = start + section.size as usize;
+    if end > dat1_bytes.len() {
+        return Err(ToolkitError::Parse("BNK container section extends beyond file bounds".into()));
+    }
+
+    Ok(dat1_bytes[start..end].to_vec())
+}
+
+/// Tauri command to inject one or more WEM replacement files into a .bnk or .soundbank file.
+/// Updates the soundbank wrapper and metadata matching the original if it's a .soundbank.
+#[tauri::command]
+pub async fn bnk_batch_inject_wems(
+    path: String,
+    replacements: HashMap<u32, String>,
+) -> Result<(), ToolkitError> {
+    // 1. Read all replacement files into memory
+    let mut wem_replacements = HashMap::new();
+    for (wem_id, filepath) in replacements {
+        let bytes = fs::read(&filepath).map_err(|e| {
+            ToolkitError::Parse(format!(
+                "Failed to read replacement WEM file for ID {} from path '{}': {}",
+                wem_id, filepath, e
+            ))
+        })?;
+        wem_replacements.insert(wem_id, bytes);
+    }
+
+    if wem_replacements.is_empty() {
+        return Ok(());
+    }
+
+    // 2. Read the source file
+    let raw_bytes = fs::read(&path)?;
+
+    // 3. Detect soundbank vs raw BNK
+    let is_soundbank = raw_bytes.len() >= 4
+        && u32::from_le_bytes(raw_bytes[0..4].try_into().unwrap()) == 0xC2841216;
+
+    let bnk_bytes = if is_soundbank {
+        extract_bnk_from_soundbank(&raw_bytes)?
+    } else {
+        raw_bytes.clone()
+    };
+
+    // 4. Repack the inner BNK payload
+    let repacked_bnk = repack_bnk_wems(&bnk_bytes, &wem_replacements)?;
+
+    // 5. If soundbank: parse original metadata, re-serialize using build_soundbank
+    let final_bytes = if is_soundbank {
+        let metadata = parse_soundbank(&raw_bytes)?;
+        let event_names: Vec<String> = metadata.events.iter().map(|e| e.name.clone()).collect();
+        build_soundbank(&repacked_bnk, &metadata.bank_name, &event_names)?
+    } else {
+        repacked_bnk
+    };
+
+    // 6. Overwrite the original file (using a tmp file to prevent corruption)
+    let path_obj = Path::new(&path);
+    let temp_path = path_obj.with_extension("tmp_repack");
+    fs::write(&temp_path, &final_bytes)?;
+    if let Err(e) = fs::rename(&temp_path, path_obj) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(ToolkitError::Io(e));
+    }
+
+    Ok(())
+}
+
+/// Tauri command to scan a local directory for any file named '<id>.wem' (case-insensitive).
+/// Returns a map of WEM ID -> absolute file path.
+#[tauri::command]
+pub async fn bnk_scan_wem_folder(
+    folder_path: String,
+) -> Result<HashMap<u32, String>, ToolkitError> {
+    let mut matched = HashMap::new();
+    let dir = Path::new(&folder_path);
+    if !dir.is_dir() {
+        return Err(ToolkitError::Parse("Selected path is not a directory".into()));
+    }
+    
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext.to_ascii_lowercase() == "wem" {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(wem_id) = stem.parse::<u32>() {
+                            matched.insert(wem_id, path.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(matched)
+}
+
+#[tauri::command]
+pub fn tauri_get_files_modified_times(paths: Vec<String>) -> Result<HashMap<String, u64>, String> {
+    let mut mtimes = HashMap::new();
+    for path in paths {
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+                    mtimes.insert(path, duration.as_secs());
+                }
+            }
+        }
+    }
+    Ok(mtimes)
+}
+

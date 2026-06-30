@@ -83,6 +83,7 @@ rayon = "1"
 memmap2 = "0.9"
 dashmap = "6"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+ww2ogg = "0.1"
 
 [profile.release]
 opt-level    = 3

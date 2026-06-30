@@ -9,4 +9,9 @@ export const SEND_TO_ROUTES: Record<string, { label: string; route: string }[]> 
   ],
   atmosphere: [{ label: "Atmosphere Editor", route: "/tools/atmosphere-editor" }],
   zonelightbin: [{ label: "ZoneLightBin Module", route: "/tools/zonelightbin-module" }],
+  soundbank: [
+    { label: "Wwise Soundbank Patcher", route: "/tools/wwise-patcher" },
+    { label: "BNK Explorer", route: "/tools/bnk-explorer" },
+  ],
+  bnk: [{ label: "BNK Explorer", route: "/tools/bnk-explorer" }],
 };

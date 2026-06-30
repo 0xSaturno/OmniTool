@@ -11,6 +11,7 @@ const CATEGORIES: { id: ToolDefinition["category"]; label: string }[] = [
   { id: "asset", label: "Asset" },
   { id: "model", label: "Model" },
   { id: "texture", label: "Texture" },
+  { id: "audio", label: "Audio" },
   { id: "config", label: "Config" },
   { id: "misc", label: "Misc" },
 ];
@@ -55,7 +56,7 @@ export default function Sidebar() {
         <div key={cat.id} className={styles.group}>
           <span className={styles.groupLabel}>{cat.label}</span>
           {TOOLS.filter((t) => t.category === cat.id).map((tool) => {
-            const isWIP = tool.id === "atmosphere-editor" || tool.id === "zonelightbin-module";
+            const isWIP = ["atmosphere-editor", "zonelightbin-module", "wwise-patcher", "bnk-explorer"].includes(tool.id);
             const isDisabled = tool.id === "zonelightbin-module";
             return (
               <NavLink

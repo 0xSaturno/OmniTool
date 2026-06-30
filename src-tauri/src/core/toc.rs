@@ -260,10 +260,17 @@ impl Toc {
                 ))
             })?;
 
-        let archive_path = archives_dir.join(archive_name);
+        let mut archive_path = archives_dir.join(archive_name);
+        if !archive_path.exists() {
+            let span_path = archives_dir.join(asset.span_index.to_string()).join(archive_name);
+            if span_path.exists() {
+                archive_path = span_path;
+            }
+        }
+
         debug!(
-            "Extracting asset {:#018X}: archive={}, offset={}, size={}",
-            asset.asset_id, archive_name, asset.offset, asset.size
+            "Extracting asset {:#018X}: archive={}, offset={}, size={}, span={}",
+            asset.asset_id, archive_path.display(), asset.offset, asset.size, asset.span_index
         );
 
         let archive_data = std::fs::read(&archive_path).map_err(|e| {
@@ -285,7 +292,7 @@ impl Toc {
         asset: &TocAsset,
         cache: &ArchiveCache,
     ) -> Result<Vec<u8>> {
-        let mmap = cache.get(asset.archive_index)?;
+        let mmap = cache.get_with_span(asset.archive_index, asset.span_index)?;
         self.extract_asset_from_bytes(asset, &mmap[..])
     }
 
@@ -330,7 +337,7 @@ impl Toc {
 // ---------------------------------------------------------------------------
 
 /// Reference-counted, lazily-populated cache of memory-mapped archive
-/// files keyed by archive index. Designed to live for the duration of a
+/// files keyed by resolved path. Designed to live for the duration of a
 /// single inbound scan: the first asset out of each archive triggers an
 /// `mmap`; every subsequent asset reuses the mapping with no I/O. The
 /// underlying `Arc<Mmap>` is cheap to clone and safe to share across
@@ -338,7 +345,7 @@ impl Toc {
 pub struct ArchiveCache {
     archives_dir: PathBuf,
     archive_names: Vec<String>,
-    mmaps: DashMap<u32, Arc<Mmap>>,
+    mmaps: DashMap<PathBuf, Arc<Mmap>>,
 }
 
 impl ArchiveCache {
@@ -350,12 +357,13 @@ impl ArchiveCache {
         }
     }
 
-    /// Get the mmap for `archive_index`, opening it on first access.
+    /// Get the mmap for `archive_index` (assumes span 0), opening it on first access.
     pub fn get(&self, archive_index: u32) -> Result<Arc<Mmap>> {
-        if let Some(existing) = self.mmaps.get(&archive_index) {
-            return Ok(existing.clone());
-        }
+        self.get_with_span(archive_index, 0)
+    }
 
+    /// Get the mmap for `archive_index` and `span_index`, opening it on first access.
+    pub fn get_with_span(&self, archive_index: u32, span_index: u8) -> Result<Arc<Mmap>> {
         let name = self
             .archive_names
             .get(archive_index as usize)
@@ -366,7 +374,19 @@ impl ArchiveCache {
                     self.archive_names.len()
                 ))
             })?;
-        let path = self.archives_dir.join(name);
+
+        let mut path = self.archives_dir.join(name);
+        if !path.exists() {
+            let span_path = self.archives_dir.join(span_index.to_string()).join(name);
+            if span_path.exists() {
+                path = span_path;
+            }
+        }
+
+        if let Some(existing) = self.mmaps.get(&path) {
+            return Ok(existing.clone());
+        }
+
         let file = std::fs::File::open(&path).map_err(|e| {
             ToolkitError::Parse(format!("failed to open archive {}: {e}", path.display()))
         })?;
@@ -379,7 +399,7 @@ impl ArchiveCache {
         let arc = Arc::new(mmap);
         // Insert may race with another worker; either inserts the same
         // semantic mapping. Re-fetch to share whichever won.
-        self.mmaps.insert(archive_index, arc.clone());
+        self.mmaps.insert(path, arc.clone());
         Ok(arc)
     }
 

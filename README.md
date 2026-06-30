@@ -40,4 +40,4 @@ Built with Tauri + React + Rust.
 
 **[InsomniacArchive](https://github.com/team-waldo/InsomniacArchive)** — archive format research reference.
 
-**[Rivet](https://github.com/neptuwunium/rivet)** — asset id packing, TOC layout, DDL, and locale logic draws from Rivet's research and implementation.
+**[Rivet](https://github.com/neptuwunium/rivet)** — asset id packing, TOC layout, DDL, and locale logic draws from Rivet's research.

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useDeferredValue, useEffect } from "react";
+import { useProjects } from "../../contexts/ProjectsContext";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
@@ -11,9 +11,36 @@ import { openToolWindow } from "../../utils/openToolWindow";
 import { SEND_TO_ROUTES } from "../../utils/sendToRoutes";
 import styles from "./AssetBrowser.module.css";
 import { TocTextureViewer } from "../../components/shared/TextureViewer";
+import { TocSoundbankViewer } from "../../components/shared/SoundbankViewer";
+import { TocWemViewer } from "../../components/shared/WemViewer";
 
 function extOf(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
+}
+
+const LANGUAGE_CODES = new Set([
+  "us", "gb", "dk", "nl", "fi", "fr", "de", "it", "jp", "kr", "no", "pl", "pt", "ru", "es", "se",
+  "br", "ar", "tr", "la", "cs", "ct", "fc", "cz", "hu", "el", "ro", "th", "vi", "id", "hr"
+]);
+
+function resolveWwisePath(assetId: string, archiveName: string): string | null {
+  const cleanId = assetId.toUpperCase();
+  if (cleanId.startsWith("E0000000") && cleanId.length === 16) {
+    const hexPart = cleanId.substring(8);
+    const wemId = parseInt(hexPart, 16);
+    if (!isNaN(wemId)) {
+      const normalizedArchive = archiveName.replace(/\\/g, "/");
+      const match = normalizedArchive.match(/\.([a-z]{2})$/i);
+      if (match) {
+        const lang = match[1].toLowerCase();
+        if (LANGUAGE_CODES.has(lang)) {
+          return `sound/streamed/${lang}/${wemId}.wem`;
+        }
+      }
+      return `sound/streamed/${wemId}.wem`;
+    }
+  }
+  return null;
 }
 
 interface TocInfo {
@@ -31,11 +58,6 @@ interface AssetInfo {
   span: number;
 }
 
-interface ProjectInfo {
-  name: string;
-  game: string;
-  author: string;
-}
 
 function buildTree(
   assets: AssetInfo[],
@@ -147,8 +169,7 @@ export default function AssetBrowser() {
   const [filter, setFilter] = useState("");
   const deferredFilter = useDeferredValue(filter);
 
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [selectedProject, setSelectedProject] = useState("");
+  const { projects, selectedProject, setSelectedProject, createProject, refreshProjects } = useProjects();
   const [extracting, setExtracting] = useState(false);
   const [sourceMode, setSourceMode] = useState<SourceMode>("live");
 
@@ -178,29 +199,6 @@ export default function AssetBrowser() {
   function pushLog(type: LogEntry["type"], message: string) {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);
   }
-
-  const refreshProjects = useCallback(async () => {
-    try {
-      const projectList: ProjectInfo[] = await invoke("list_projects");
-      setProjects(projectList);
-      setSelectedProject((prev) => {
-        if (projectList.length === 0) return "";
-        if (prev && projectList.some((p) => p.name === prev)) return prev;
-        return projectList[0].name;
-      });
-    } catch (e) {
-      pushLog("error", `Failed to refresh projects: ${e}`);
-    }
-  }, []);
-
-  useEffect(() => {
-    const unlisten = listen("projects-changed", () => {
-      refreshProjects();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [refreshProjects]);
 
   const handleLoad = useCallback(async () => {
     if (!archivesDir) {
@@ -232,7 +230,6 @@ export default function AssetBrowser() {
           hashMap.set(hex, path);
         }
         setHashCount(hashMap.size);
-        hashMapRef.current = hashMap;
         pushLog("success", `Loaded ${hashMap.size} hashes`);
       } catch (e) {
         pushLog("warning", `Could not load hashes — all assets will be [UNKNOWN]. (${e})`);
@@ -240,6 +237,19 @@ export default function AssetBrowser() {
 
       pushLog("info", "Listing assets…");
       const assets: AssetInfo[] = await invoke("list_toc_assets", { tocPath });
+
+      // Automatically resolve streamed WEM assets from unhashed Wwise IDs
+      for (const asset of assets) {
+        if (!hashMap.has(asset.id)) {
+          const archiveName = info.archive_names[asset.archive_index] ?? `archive_${asset.archive_index}`;
+          const wwisePath = resolveWwisePath(asset.id, archiveName);
+          if (wwisePath) {
+            hashMap.set(asset.id, wwisePath);
+          }
+        }
+      }
+
+      hashMapRef.current = hashMap;
 
       const treeRoot = buildTree(assets, hashMap, info.archive_names);
       const { assetMap, flatLeafOrder } = buildAssetIndex(treeRoot);
@@ -328,14 +338,7 @@ export default function AssetBrowser() {
     if (!newProjName.trim()) return;
     setCreatingProject(true);
     try {
-      await invoke("create_project", {
-        name: newProjName.trim(),
-        game: "RCRA",
-        author: newProjAuthor.trim(),
-      });
-      await refreshProjects();
-      await emit("projects-changed");
-      setSelectedProject(newProjName.trim());
+      await createProject(newProjName.trim(), newProjAuthor.trim());
       pushLog("success", `Project "${newProjName.trim()}" created.`);
       setShowNewProject(false);
       setNewProjName("");
@@ -631,6 +634,23 @@ export default function AssetBrowser() {
                         tocPath={tocPathRef.current}
                         assetId={singleNode.asset.id}
                         archivesDir={archivesDir}
+                      />
+                    )}
+                    {singleNode.fullPath.toLowerCase().endsWith(".soundbank") && tocPathRef.current && archivesDir && (
+                      <TocSoundbankViewer
+                        assetPath={singleNode.fullPath}
+                        tocPath={tocPathRef.current}
+                        assetId={singleNode.asset.id}
+                        archivesDir={archivesDir}
+                      />
+                    )}
+                    {singleNode.fullPath.toLowerCase().endsWith(".wem") && tocPathRef.current && archivesDir && (
+                      <TocWemViewer
+                        assetPath={singleNode.fullPath}
+                        tocPath={tocPathRef.current}
+                        assetId={singleNode.asset.id}
+                        archivesDir={archivesDir}
+                        sourceMode={sourceMode}
                       />
                     )}
                   </>

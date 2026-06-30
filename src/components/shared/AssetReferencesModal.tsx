@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useProjects } from "../../contexts/ProjectsContext";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FaArrowRight } from "react-icons/fa";
 import styles from "./AssetReferencesModal.module.css";
-
-interface ProjectInfo {
-  name: string;
-  game?: string;
-  author?: string;
-}
 
 export interface AssetReferenceItem {
   depth: number;
@@ -148,8 +143,7 @@ export default function AssetReferencesModal({
   const [result, setResult] = useState<ReferenceResult | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [selectedProject, setSelectedProject] = useState("");
+  const { projects, selectedProject, setSelectedProject } = useProjects();
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const activeScanIdRef = useRef<string | null>(null);
@@ -178,15 +172,7 @@ export default function AssetReferencesModal({
     };
   }, []);
 
-  // Load Stager projects once for the bulk "Extract to project" picker.
-  useEffect(() => {
-    invoke<ProjectInfo[]>("list_projects")
-      .then((list) => {
-        setProjects(list);
-        if (list.length > 0) setSelectedProject((cur) => cur || list[0].name);
-      })
-      .catch(() => {});
-  }, []);
+  // Cleaned up local project loading, handled by useProjects context
 
   // Auto-run outbound scan on first open.
   useEffect(() => {

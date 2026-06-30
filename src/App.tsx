@@ -10,6 +10,8 @@ import AtmosphereEditor from "./tools/atmosphere-editor/AtmosphereEditor";
 import ZoneLightBinModule from "./tools/zonelightbin-module/ZoneLightBinModule";
 import TextureConverter from "./tools/texture-converter/TextureConverter";
 import SettingsModal from "./components/shared/SettingsModal";
+import WwisePatcher from "./tools/wwise-patcher/WwisePatcher";
+import BnkExplorer from "./tools/bnk-explorer/BnkExplorer";
 
 import Titlebar from "./components/layout/Titlebar";
 
@@ -22,6 +24,8 @@ const TOOL_PATHS = [
   "/tools/config-editor",
   "/tools/atmosphere-editor",
   "/tools/zonelightbin-module",
+  "/tools/wwise-patcher",
+  "/tools/bnk-explorer",
 ] as const;
 
 type ToolPath = (typeof TOOL_PATHS)[number];
@@ -60,6 +64,12 @@ export default function App() {
           </div>
           <div style={{ display: show("/tools/atmosphere-editor", pathname) }}>
             <AtmosphereEditor />
+          </div>
+          <div style={{ display: show("/tools/wwise-patcher", pathname) }}>
+            <WwisePatcher />
+          </div>
+          <div style={{ display: show("/tools/bnk-explorer", pathname) }}>
+            <BnkExplorer />
           </div>
           <div style={{ display: show("/tools/zonelightbin-module", pathname) }}>
             <ZoneLightBinModule />

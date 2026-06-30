@@ -1,23 +1,15 @@
 import { useEffect, useState } from "react";
+import { useProjects } from "../../contexts/ProjectsContext";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useLocation } from "react-router-dom";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import StagerTreeView from "./StagerTreeView";
 import styles from "./Stager.module.css";
 
-interface Project {
-  name: string;
-  game: string;
-  author: string;
-  version: string;
-}
-
 export default function Stager() {
   const location = useLocation();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const { projects, selectedProject: selected, setSelectedProject: setSelected, createProject, deleteProject, refreshProjects } = useProjects();
   const [assets, setAssets] = useState<string[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -35,15 +27,6 @@ export default function Stager() {
     setLog((prev) => [...prev, { type, message, ts: Date.now() }]);
   }
 
-  async function loadProjects() {
-    try {
-      const list: Project[] = await invoke("list_projects");
-      setProjects(list);
-    } catch (e) {
-      pushLog("error", `Failed to list projects: ${e}`);
-    }
-  }
-
   async function loadAssets(name: string) {
     try {
       const list: string[] = await invoke("list_project_assets", { name });
@@ -56,25 +39,10 @@ export default function Stager() {
 
   const [editingVersion, setEditingVersion] = useState<string>("");
 
-  useEffect(() => {
-    loadProjects();
-  }, []);
-
-  // Listen for projects-changed from other modules (e.g., Asset Browser creating projects)
-  useEffect(() => {
-    const unlisten = listen("projects-changed", () => {
-      loadProjects();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
   // Refresh when navigating back to stager
   useEffect(() => {
-    if (location.pathname === "/tools/stager") {
-      loadProjects();
-      if (selected) loadAssets(selected);
+    if (location.pathname === "/tools/stager" && selected) {
+      loadAssets(selected);
     }
   }, [location.pathname, selected]);
 
@@ -87,18 +55,11 @@ export default function Stager() {
     if (!formName.trim()) return;
     setCreating(true);
     try {
-      await invoke("create_project", {
-        name: formName.trim(),
-        game: "RCRA",
-        author: formAuthor.trim(),
-      });
+      await createProject(formName.trim(), formAuthor.trim());
       pushLog("success", `Project "${formName.trim()}" created.`);
       setShowForm(false);
       setFormName("");
       setFormAuthor("");
-      await loadProjects();
-      setSelected(formName.trim());
-      await emit("projects-changed");
     } catch (e) {
       pushLog("error", `Failed to create project: ${e}`);
     } finally {
@@ -108,15 +69,13 @@ export default function Stager() {
 
   async function handleDelete(name: string) {
     try {
-      await invoke("delete_project", { name });
+      await deleteProject(name);
       pushLog("info", `Project "${name}" deleted.`);
       if (selected === name) {
-        setSelected(null);
+        setSelected("");
         setAssets([]);
       }
       setConfirmDelete(null);
-      await loadProjects();
-      await emit("projects-changed");
     } catch (e) {
       pushLog("error", `Failed to delete project: ${e}`);
     }
@@ -168,7 +127,7 @@ export default function Stager() {
     if (!selected) return;
     try {
       await invoke("update_project_version", { name: selected, version: editingVersion });
-      await loadProjects();
+      await refreshProjects();
     } catch(e) {
       pushLog("error", `Failed saving version: ${e}`);
     }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { LuPackagePlus, LuLightbulb } from "react-icons/lu";
+import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
 import { TbHexagon3D } from "react-icons/tb";
 import { MdTexture } from "react-icons/md";
@@ -12,7 +12,7 @@ export interface ToolDefinition {
   description: string;
   path: string;
   icon: ReactNode;
-  category: "asset" | "model" | "texture" | "config" | "misc";
+  category: "asset" | "model" | "texture" | "audio" | "config" | "misc";
 }
 
 export const TOOLS: ToolDefinition[] = [
@@ -55,6 +55,22 @@ export const TOOLS: ToolDefinition[] = [
     path: "/tools/texture-converter",
     icon: <PiImageSquareBold />,
     category: "texture",
+  },
+  {
+    id: "wwise-patcher",
+    label: "Soundbank Patcher",
+    description: "Build custom soundbanks and patch events.wwiselookup",
+    path: "/tools/wwise-patcher",
+    icon: <LuMusic />,
+    category: "audio",
+  },
+  {
+    id: "bnk-explorer",
+    label: "BNK Explorer",
+    description: "Inspect Wwise soundbanks, preview audio, and extract WEMs",
+    path: "/tools/bnk-explorer",
+    icon: <LuFileAudio />,
+    category: "audio",
   },
   {
     id: "config-editor",

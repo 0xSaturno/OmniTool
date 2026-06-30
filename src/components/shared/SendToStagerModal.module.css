@@ -110,3 +110,69 @@
 .sendBtn:hover { opacity: 0.85; }
 .sendBtn:disabled { opacity: 0.45; cursor: not-allowed; }
 .cancelBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.projectPickerRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.newProjBtnSmall {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 0.45rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.newProjBtnSmall:hover {
+  background: var(--bg-elevated);
+  border-color: var(--text-secondary);
+}
+
+.newProjectForm {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--bg-surface);
+}
+
+.newProjInputFull {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.newProjInputFull:focus {
+  border-color: var(--accent);
+}
+
+.formActions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cancelProjBtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.cancelProjBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}

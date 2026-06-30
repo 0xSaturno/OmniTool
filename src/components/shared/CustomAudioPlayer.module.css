@@ -1,0 +1,324 @@
+.audioPlayer {
+  display: flex;
+  flex-direction: column;
+  background: #121214;
+  border: 1px solid var(--border, #2d2d30);
+  border-radius: 12px;
+  overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0; /* Prevent flex squishing */
+}
+
+/* Top Section: Dynamic Waveform and bottom timestamps */
+.topSection {
+  position: relative;
+  height: 128px; /* Taller top section for better visual breathing room */
+  background: #121214;
+  padding: 1rem 1.25rem 2rem 1.25rem; /* Space at bottom for absolute timestamps */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.playedGlow {
+  position: absolute;
+  left: 0;
+  top: -10px; /* Bloom slightly outside the waveform boundary */
+  bottom: -10px;
+  background: radial-gradient(circle at 100% 50%, rgba(77, 124, 255, 0.22) 0%, rgba(77, 124, 255, 0.05) 60%, transparent 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.timeLabel {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary, #b3b3b3);
+  position: absolute;
+  bottom: 8px;
+  user-select: none;
+  z-index: 4;
+}
+
+.currentTime {
+  left: 1.25rem;
+}
+
+.duration {
+  right: 1.25rem;
+}
+
+.waveformContainer {
+  width: 100%;
+  height: 76px; /* High fidelity waveform height */
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+}
+
+.waveformSvg {
+  width: 100%;
+  height: 76px;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Vertical Capsule Seek Handle */
+.seekHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  margin-left: -5px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 5px;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-shadow: 0 0 10px rgba(77, 124, 255, 0.4);
+  z-index: 3;
+}
+
+.seekHandleLine {
+  width: 2px;
+  height: 75%;
+  background: #ffffff;
+  border-radius: 1px;
+}
+
+/* Bottom Controls Section */
+.bottomSection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1a1a1e;
+  border-top: 1px solid var(--border, #2d2d30);
+  padding: 0.65rem 1.25rem;
+  height: 44px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.playbackControls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.ctrlBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-primary, #ffffff);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color 0.2s, color 0.2s;
+  padding: 0;
+}
+
+.ctrlBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rightControls {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.volumeContainer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.volumeBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #b3b3b3);
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: color 0.2s, background-color 0.2s;
+  padding: 0;
+}
+
+.volumeBtn:hover {
+  color: var(--text-primary, #ffffff);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.volumeSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 75px;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.volumeSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s;
+}
+
+.volumeSlider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.volumeSlider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s;
+}
+
+.volumeSlider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* Dropdown Menu styling */
+.menuContainer {
+  position: relative;
+  display: inline-block;
+}
+
+.menuBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #b3b3b3);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: color 0.2s, background-color 0.2s;
+  padding: 0;
+}
+
+.menuBtn:hover {
+  color: var(--text-primary, #ffffff);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.optionsDropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: #1e1e22;
+  border: 1px solid var(--border, #2d2d30);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  padding: 6px;
+  z-index: 100;
+  min-width: 170px;
+}
+
+.dropdownItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary, #ffffff);
+  font-size: 0.8rem;
+  text-align: left;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.dropdownItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dropdownSeparator {
+  height: 1px;
+  background: var(--border, #2d2d30);
+  margin: 6px 4px;
+}
+
+.dropdownLabel {
+  font-size: 0.7rem;
+  color: var(--text-muted, #7c7c80);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 4px 10px;
+  margin-bottom: 4px;
+}
+
+.activeCheck {
+  color: var(--accent, #4d7cff);
+  font-weight: bold;
+}
+
+/* Speed selector options inside menu */
+.speedSection {
+  padding: 2px 4px;
+}
+
+.speedGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 0 6px 4px;
+}
+
+.speedBtn {
+  background: #252528;
+  border: 1px solid transparent;
+  color: var(--text-secondary, #b3b3b3);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  padding: 4px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.speedBtn:hover {
+  background: #323236;
+  color: var(--text-primary, #ffffff);
+}
+
+.speedBtnActive {
+  background: var(--accent, #4d7cff);
+  color: #ffffff;
+  font-weight: 600;
+}

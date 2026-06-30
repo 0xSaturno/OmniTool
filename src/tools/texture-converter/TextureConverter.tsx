@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useSettings } from "../../contexts/SettingsContext";
+import { useProjects } from "../../contexts/ProjectsContext";
 import { invoke } from "@tauri-apps/api/core";
 import { type TextureInfo, FORMAT_MAP, DIMENSION_MAP, TextureBadges, useTextureInfo } from "../../components/shared/TextureViewer";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -23,13 +24,6 @@ interface TextureJob {
   hd_path: string | null;
   dds_path: string | null;
   selected?: boolean;
-}
-
-interface ProjectInfo {
-  name: string;
-  game: string;
-  author: string;
-  version: string;
 }
 
 class AsyncSemaphore {
@@ -57,7 +51,7 @@ class AsyncSemaphore {
 const PREVIEW_LIMIT = Math.max(1, Math.floor(navigator.hardwareConcurrency * 0.75));
 const previewSemaphore = new AsyncSemaphore(PREVIEW_LIMIT);
 
-function JobPreview({ path, type }: { path: string, type: "texture" | "dds" }) {
+function JobPreview({ path, type, mtime }: { path: string, type: "texture" | "dds", mtime?: number }) {
   const [preview, setPreview] = useState<string | null>(null);
 
   useEffect(() => {
@@ -81,7 +75,7 @@ function JobPreview({ path, type }: { path: string, type: "texture" | "dds" }) {
       }
     })();
     return () => { active = false; };
-  }, [path, type]);
+  }, [path, type, mtime]);
 
   if (!preview) return <div style={{ width: "100%", height: "100%", background: "var(--surface-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: "0.8rem", borderRadius: "6px" }}>...</div>;
 
@@ -208,7 +202,7 @@ function SimpleTree({ node, depth, onToggle, visibleJobs }: { node: TreeNode, de
   );
 }
 
-function DdsDropzonePreview({ path, onDropPath }: { path: string | null, onDropPath: (path: string) => void }) {
+function DdsDropzonePreview({ path, onDropPath, mtime }: { path: string | null, onDropPath: (path: string) => void, mtime?: number }) {
   const [dragOver, setDragOver] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -252,7 +246,7 @@ function DdsDropzonePreview({ path, onDropPath }: { path: string | null, onDropP
 
   return (
     <div ref={containerRef} style={{ width: "100%", height: "100%", position: "relative" }}>
-      {path ? <JobPreview path={path} type="dds" /> : <div style={{ width: "100%", height: "100%", background: "var(--surface-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: "0.75rem", borderRadius: "6px", textAlign: "center", padding: "0.5rem", border: "1px dashed var(--border)" }}>Drop DDS Here</div>}
+      {path ? <JobPreview path={path} type="dds" mtime={mtime} /> : <div style={{ width: "100%", height: "100%", background: "var(--surface-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: "0.75rem", borderRadius: "6px", textAlign: "center", padding: "0.5rem", border: "1px dashed var(--border)" }}>Drop DDS Here</div>}
       {dragOver && <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0, 255, 0, 0.15)", border: "2px dashed #4ade80", borderRadius: "6px", zIndex: 10, pointerEvents: "none" }} />}
     </div>
   );
@@ -269,8 +263,7 @@ export default function TextureConverter() {
   const [projectDir, setProjectDir] = useState("");
   const [ddsDir, setDdsDir] = useState("");
   const [jobs, setJobs] = useState<TextureJob[]>([]);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [selectedProject, setSelectedProject] = useState("");
+  const { projects, selectedProject, setSelectedProject, createProject } = useProjects();
   const [projectSource, setProjectSource] = useState<"stager" | "custom">("stager");
   const [visibleJobs, setVisibleJobs] = useState<Set<string>>(new Set());
 
@@ -278,10 +271,6 @@ export default function TextureConverter() {
   const [newProjName, setNewProjName] = useState("");
   const [newProjAuthor, setNewProjAuthor] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
-
-  useEffect(() => {
-    invoke<ProjectInfo[]>("list_projects").then(setProjects).catch(console.error);
-  }, []);
 
   useEffect(() => {
     if (projectSource === "stager") {
@@ -318,14 +307,7 @@ export default function TextureConverter() {
     if (!newProjName.trim()) return;
     setCreatingProject(true);
     try {
-      await invoke("create_project", {
-        name: newProjName.trim(),
-        game: "RCRA",
-        author: newProjAuthor.trim(),
-      });
-      const projs = await invoke<ProjectInfo[]>("list_projects");
-      setProjects(projs);
-      setSelectedProject(newProjName.trim());
+      await createProject(newProjName.trim(), newProjAuthor.trim());
       pushLog("success", `Project "${newProjName.trim()}" created.`);
       setShowNewProject(false);
       setNewProjName("");
@@ -434,6 +416,58 @@ export default function TextureConverter() {
       });
   }, [sourcePath]);
 
+  const [fileMtimes, setFileMtimes] = useState<Record<string, number>>({});
+
+  const activeDdsPaths = JSON.stringify([
+    tab === "replace" ? ddsPath : null,
+    tab === "batch" ? jobs.filter(j => j.dds_path && visibleJobs.has(j.base_name)).map(j => j.dds_path) : []
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: any;
+
+    const checkMtimes = async () => {
+      try {
+        const parsed = JSON.parse(activeDdsPaths);
+        const pathsToWatch = new Set<string>();
+        if (parsed[0]) pathsToWatch.add(parsed[0]);
+        if (parsed[1] && parsed[1].length > 0) {
+          parsed[1].forEach((p: string) => pathsToWatch.add(p));
+        }
+
+        if (pathsToWatch.size === 0) return;
+
+        const res = await invoke<Record<string, number>>("tauri_get_files_modified_times", {
+          paths: Array.from(pathsToWatch)
+        });
+        if (!active) return;
+
+        setFileMtimes(prev => {
+          let changed = false;
+          const next = { ...prev };
+          for (const [path, newTime] of Object.entries(res)) {
+            if (prev[path] !== newTime) {
+              next[path] = newTime;
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      } catch (err) {
+        console.warn("Failed to fetch modified times", err);
+      }
+    };
+
+    timer = setInterval(checkMtimes, 1500);
+    checkMtimes();
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [activeDdsPaths]);
+
   useEffect(() => {
     if (!ddsPath) {
       setDdsInfo(null);
@@ -460,7 +494,7 @@ export default function TextureConverter() {
         setIsDdsPreviewLoading(false);
         console.warn("Failed to get DDS preview", e);
       });
-  }, [ddsPath]);
+  }, [ddsPath, fileMtimes[ddsPath]]);
 
   async function handleBatchRun(mode: "replace" | "extract") {
     const selectedJobs = jobs.filter(j => j.sd_path && visibleJobs.has(j.base_name));
@@ -913,7 +947,7 @@ export default function TextureConverter() {
                                   <div style={{ position: "absolute", bottom: 0, left: 0, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "0.6rem", padding: "0.1rem 0.3rem", borderTopRightRadius: "4px", pointerEvents: "none" }}>Original</div>
                                 </div>
                                 <div style={{ flex: 1, height: "100%", position: "relative" }} onClick={e => e.stopPropagation()}>
-                                  <DdsDropzonePreview path={job.dds_path} onDropPath={(path) => handleDropDds(idx, path)} />
+                                  <DdsDropzonePreview path={job.dds_path} onDropPath={(path) => handleDropDds(idx, path)} mtime={job.dds_path ? fileMtimes[job.dds_path] : undefined} />
                                   <div style={{ position: "absolute", bottom: 0, right: 0, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: "0.6rem", padding: "0.1rem 0.3rem", borderTopLeftRadius: "4px", pointerEvents: "none" }}>New</div>
                                 </div>
                               </div>
@@ -921,8 +955,14 @@ export default function TextureConverter() {
                               <div style={{ fontSize: "0.85rem", fontWeight: 600, wordBreak: "break-all", lineHeight: 1.2 }}>{job.base_name.split("/").pop()}</div>
 
                               <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                <div style={{ color: "var(--text-tertiary)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "0.5rem" }} title="DXGI Format">
-                                  {job.sd_path ? <JobFormat path={job.sd_path} type="texture" /> : "Unknown"}
+                                <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", overflow: "hidden" }}>
+                                  <span style={{ color: "var(--text-tertiary)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="DXGI Format">
+                                    {job.sd_path ? <JobFormat path={job.sd_path} type="texture" /> : "Unknown"}
+                                  </span>
+                                  <div style={{ display: "flex", gap: "0.2rem", flexShrink: 0 }}>
+                                    {job.sd_path && <span style={{ padding: "0.05rem 0.25rem", background: "var(--surface-3)", color: "var(--text-secondary)", fontSize: "0.6rem", borderRadius: "3px", fontWeight: "bold" }}>SD</span>}
+                                    {job.hd_path && <span style={{ padding: "0.05rem 0.25rem", background: "var(--accent-muted)", color: "var(--accent)", fontSize: "0.6rem", borderRadius: "3px", fontWeight: "bold" }}>HD</span>}
+                                  </div>
                                 </div>
                                 <div style={{ color: ddsOk ? "var(--accent)" : "inherit" }}>DDS: {ddsOk ? "Ready" : "Missing"}</div>
                               </div>
