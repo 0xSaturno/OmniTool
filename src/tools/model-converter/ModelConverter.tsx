@@ -7,8 +7,9 @@ import styles from "./ModelConverter.module.css";
 
 import { FaArrowRight } from "react-icons/fa";
 
-const MODEL_FILTER = [{ name: "Insomniac Model", extensions: ["model"] }];
-const ASCII_FILTER = [{ name: "ASCII Model", extensions: ["ascii"] }];
+const MODEL_FILTER = [{ name: "Model Files", extensions: ["model"] }];
+const ASCII_FILTER = [{ name: "ASCII Files", extensions: ["ascii"] }];
+const GLTF_FILTER = [{ name: "GLTF/GLB Files", extensions: ["gltf", "glb"] }];
 
 type Tab = "to-ascii" | "to-model";
 
@@ -20,6 +21,7 @@ interface LookGroupInfo {
 export default function ModelConverter() {
   const location = useLocation();
   const [tab, setTab] = useState<Tab>("to-ascii");
+  const [format, setFormat] = useState<"ascii" | "gltf">("ascii");
 
   const [modelPath, setModelPath] = useState("");
   const [asciiOutPath, setAsciiOutPath] = useState("");
@@ -115,17 +117,19 @@ export default function ModelConverter() {
         const lookIdx = looks[0];
         const groupName = lookGroups?.find((g) => g.index === lookIdx)?.name;
         pushLog("info", `Converting ${modelPath} (look ${lookIdx}${groupName ? ` "${groupName}"` : ""}) …`);
-        const result: string = await invoke("model_to_ascii", {
+        const cmd = format === "gltf" ? "model_to_gltf" : "model_to_ascii";
+        const result: string = await invoke(cmd, {
           modelPath,
-          asciiPath: asciiOutPath || null,
+          [format === "gltf" ? "gltfPath" : "asciiPath"]: asciiOutPath || null,
           look: lookIdx,
         });
         pushLog("success", `Done → ${result}`);
       } else {
-        pushLog("info", `Converting ${modelPath} for ${looks.length} look group(s) into a single ASCII …`);
-        const result: string = await invoke("model_to_ascii", {
+        pushLog("info", `Converting ${modelPath} for ${looks.length} look group(s) into a single ${format.toUpperCase()} …`);
+        const cmd = format === "gltf" ? "model_to_gltf" : "model_to_ascii";
+        const result: string = await invoke(cmd, {
           modelPath,
-          asciiPath: asciiOutPath || null,
+          [format === "gltf" ? "gltfPath" : "asciiPath"]: asciiOutPath || null,
           looks,
         });
         pushLog("success", `Done → ${result}`);
@@ -138,15 +142,16 @@ export default function ModelConverter() {
   }
 
   async function runAsciiToModel() {
-    if (!asciiPath)    { pushLog("error", "Select a .ascii file first."); return; }
+    if (!asciiPath)    { pushLog("error", `Select a .${format} file first.`); return; }
     if (!srcModelPath) { pushLog("error", "Select a source .model file first."); return; }
     const outputPath = overwriteSourceModel ? srcModelPath : (modelOutPath || null);
     setRunning(true);
     setLog([]);
     try {
       pushLog("info", `Injecting ${asciiPath} → ${srcModelPath} …`);
-      const result: string = await invoke("ascii_to_model", {
-        asciiPath,
+      const cmd = format === "gltf" ? "gltf_to_model" : "ascii_to_model";
+      const result: string = await invoke(cmd, {
+        [format === "gltf" ? "gltfPath" : "asciiPath"]: asciiPath,
         srcModelPath,
         outPath: outputPath,
       });
@@ -165,17 +170,25 @@ export default function ModelConverter() {
 
       <div className={styles.tabs}>
         <button className={`${styles.tab} ${tab === "to-ascii" ? styles.active : ""}`} onClick={() => setTab("to-ascii")}>
-          Model <FaArrowRight /> ASCII
+          Model <FaArrowRight /> Editor
         </button>
         <button className={`${styles.tab} ${tab === "to-model" ? styles.active : ""}`} onClick={() => setTab("to-model")}>
-          ASCII <FaArrowRight /> Model
+          Editor <FaArrowRight /> Model
         </button>
       </div>
 
       {tab === "to-ascii" && (
         <div className={styles.panel}>
+          <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
+            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+              <input type="radio" checked={format === "ascii"} onChange={() => setFormat("ascii")} /> ASCII Mode
+            </label>
+            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+              <input type="radio" checked={format === "gltf"} onChange={() => setFormat("gltf")} /> GLTF Mode
+            </label>
+          </div>
           <FilePickerInput label="Source .model" value={modelPath} onChange={setModelPath} mode="open" filters={MODEL_FILTER} />
-          <FilePickerInput label="Output .ascii (optional — defaults to same folder)" value={asciiOutPath} onChange={setAsciiOutPath} mode="save" filters={ASCII_FILTER} placeholder="Leave blank for auto" />
+          <FilePickerInput label={`Output .${format === "gltf" ? "glb" : format} (optional)`} value={asciiOutPath} onChange={setAsciiOutPath} mode="save" filters={format === "gltf" ? GLTF_FILTER : ASCII_FILTER} placeholder="Leave blank for auto" />
           <div className={styles.lookRow}>
             <label className={styles.lookLabel}>Look group</label>
             <input
@@ -233,16 +246,30 @@ export default function ModelConverter() {
             {running
               ? "Converting…"
               : selectedLooks.size > 1
-                ? `Export ${selectedLooks.size} Look Groups to ASCII`
-                : "Export to ASCII"}
+                ? `Export ${selectedLooks.size} Look Groups to ${format.toUpperCase()}`
+                : `Export to ${format.toUpperCase()}`}
           </button>
         </div>
       )}
 
       {tab === "to-model" && (
         <div className={styles.panel}>
-          <FilePickerInput label="Source .ascii" value={asciiPath} onChange={setAsciiPath} mode="open" filters={ASCII_FILTER} />
-          <FilePickerInput label="Base .model (original file to inject into)" value={srcModelPath} onChange={setSrcModelPath} mode="open" filters={MODEL_FILTER} />
+          <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
+            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+              <input type="radio" checked={format === "ascii"} onChange={() => setFormat("ascii")} /> ASCII Mode
+            </label>
+            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+              <input type="radio" checked={format === "gltf"} onChange={() => setFormat("gltf")} /> GLTF Mode
+            </label>
+          </div>
+          <FilePickerInput
+            label={`Source .${format}`}
+            value={asciiPath} 
+            onChange={setAsciiPath} 
+            mode="open" 
+            filters={format === "gltf" ? GLTF_FILTER : ASCII_FILTER} 
+          />
+          <FilePickerInput label="Target .model" value={srcModelPath} onChange={setSrcModelPath} mode="open" filters={MODEL_FILTER} />
           <FilePickerInput
             label="Output .model (optional — defaults to source with _modified suffix)"
             value={modelOutPath}

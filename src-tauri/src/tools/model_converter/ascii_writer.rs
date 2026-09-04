@@ -56,7 +56,7 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
     let built_uv_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv_scale).unwrap_or(1.0 / 16384.0);
 
     // Skin
-    let msmr_skin: Option<Vec<VertexWeights>> = {
+    let batched_skin: Option<Vec<VertexWeights>> = {
         if let (Some(raw), Some(batch_data)) = (dat1.get_section_data(TAG_SKIN_DATA), dat1.get_section_data(TAG_SKIN_BATCH)) {
             let batches = SkinBatch::parse_all(batch_data)?;
             Some(decode_skin_data(raw, &batches))
@@ -101,7 +101,7 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
 
     // Max bone groups across mesh
     let groups_count_for_mesh = |mesh: &MeshDefinition| -> usize {
-        let skin = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { msmr_skin.as_deref() };
+        let skin = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
         let mut gc = 4;
         if let Some(sw) = skin {
             for vi in (mesh.vertex_start as usize)..(mesh.vertex_start as usize + mesh.vertex_count as usize) {
@@ -127,7 +127,7 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
         out.push_str("0\n");   // textures
 
         let gc = groups_count_for_mesh(mesh);
-        let skin_to_use = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { msmr_skin.as_deref() };
+        let skin_to_use = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
         let weight_offset = if mesh.is_rcra_skinned() { mesh.first_weight_index as usize } else { mesh.vertex_start as usize };
 
         out.push_str(&format!("{}\n", mesh.vertex_count));

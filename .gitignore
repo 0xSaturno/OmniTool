@@ -21,3 +21,5 @@ dev_tools/
 *.code-workspace
 *.dll
 docs/
+scripts/
+src-tauri/tests/

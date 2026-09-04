@@ -10,8 +10,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::model_to_ascii,
+            commands::model_to_gltf,
             commands::list_model_lookgroups,
             commands::ascii_to_model,
+            commands::gltf_to_model,
             commands::read_model_materials,
             commands::save_model_materials,
             commands::get_app_dir,

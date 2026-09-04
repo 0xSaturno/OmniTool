@@ -1,6 +1,6 @@
 [package]
 name = "omnitool"
-version = "0.4.0"
+version = "0.6.0"
 edition = "2021"
 default-run = "OmniTool"
 
@@ -84,6 +84,7 @@ memmap2 = "0.9"
 dashmap = "6"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 ww2ogg = "0.1"
+gltf = "1.4"
 
 [profile.release]
 opt-level    = 3

@@ -6,6 +6,7 @@ use crate::core::math::decode_normal;
 pub const TAG_INDEXES:   u32 = 0x0859863D;
 pub const TAG_VERTEXES:  u32 = 0xA98BE69B;
 pub const TAG_UV1:       u32 = 0x6B855EED;
+pub const TAG_COLORS:    u32 = 0x5CBA9DE9;
 
 // Vertex
 
@@ -280,6 +281,37 @@ impl Uv1Section {
         let mut out = Vec::with_capacity(self.uvs.len() * 4);
         for (u, v) in &self.uvs {
             out.extend_from_slice(&u.to_le_bytes());
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+}
+
+// Colors Section — one RGBA8 value per vertex.
+//
+// Indexed by absolute vertex index, so it has to be relaid out and resized in
+// lockstep with VERTEXES. Leaving it stale after a topology change makes every
+// mesh read another mesh's colors (and the tail read out of bounds); in this
+// engine those values feed shell/fur displacement, so the result is stretched
+// geometry rather than a mere tint error.
+pub struct ColorsSection {
+    pub values: Vec<u32>,
+}
+
+impl ColorsSection {
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        let count = data.len() / 4;
+        let mut cur = Cursor::new(data);
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(cur.read_u32::<LE>()?);
+        }
+        Ok(Self { values })
+    }
+
+    pub fn save(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.values.len() * 4);
+        for v in &self.values {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out

@@ -12,9 +12,9 @@ const TAG_BUILT:     u32 = 0x283D0383;
 const TAG_MUSCLEDEF: u32 = 0x380A5744;
 
 
-// ASCII Data structures
+// Gltf Data structures
 
-pub struct AsciiVertex {
+pub struct GltfVertex {
     pub position: (f32, f32, f32),
     pub normal:   (f32, f32, f32),
     pub raw_normal: Option<u32>,
@@ -23,156 +23,120 @@ pub struct AsciiVertex {
     pub weights:  Vec<f32>,
 }
 
-pub struct AsciiMesh {
+pub struct GltfMesh {
     pub name:     String,
-    pub vertexes: Vec<AsciiVertex>,
+    pub vertexes: Vec<GltfVertex>,
     pub faces:    Vec<(u32, u32, u32)>,
+    pub joint_names: Option<Vec<String>>,
 }
 
-pub struct AsciiModel {
+pub struct GltfModel {
     pub bones: Vec<(String, i32, (f32, f32, f32))>,
-    pub meshes: Vec<AsciiMesh>,
+    pub meshes: Vec<GltfMesh>,
 }
 
-// Parser
+pub fn parse_gltf(path: &str) -> Result<GltfModel> {
+    let (document, buffers, _) = gltf::import(path)
+        .map_err(|e| ToolkitError::Parse(e.to_string()))?;
+    
+    let mut meshes = Vec::new();
+    let bones = Vec::new();
 
-pub fn parse_ascii(text: &str) -> Result<AsciiModel> {
-    // Keep both raw lines (for #nrm: tags) and stripped lines (for value parsing).
-    let mut lines: Vec<&str> = Vec::new();
-    let mut raw_lines: Vec<&str> = Vec::new();
-    for l in text.lines() {
-        let stripped = if let Some(i) = l.find('#') { &l[..i] } else { l };
-        let stripped = stripped.trim();
-        if stripped.is_empty() { continue; }
-        lines.push(stripped);
-        raw_lines.push(l.trim());
-    }
+    for mesh in document.meshes() {
+        let name = mesh.name().unwrap_or("mesh").to_string();
+        for primitive in mesh.primitives() {
+            let reader = primitive.reader(|buffer: gltf::Buffer<'_>| Some(&buffers[buffer.index()]));
+            
+            let mut positions: Vec<[f32; 3]> = Vec::new();
+            if let Some(iter) = reader.read_positions() {
+                positions.extend(iter);
+            }
+            let mut normals: Vec<[f32; 3]> = Vec::new();
+            if let Some(iter) = reader.read_normals() {
+                normals.extend(iter);
+            } else {
+                normals.resize(positions.len(), [0.0, 1.0, 0.0]);
+            }
+            let mut uvs: Vec<[f32; 2]> = Vec::new();
+            if let Some(tex_coords) = reader.read_tex_coords(0) {
+                uvs.extend(tex_coords.into_f32());
+            }
+            
+            // The batched skin section (SKIN_DATA + SKIN_BATCH) holds a variable
+            // influence count per vertex — up to 7 in this game — so the
+            // exporter emits JOINTS_1/WEIGHTS_1 as well. Read every set present;
+            // stopping at set 0 silently drops influences and the mesh deforms
+            // wrong.
+            const MAX_SETS: u32 = 2;
+            let mut groups: Vec<Vec<u16>> = vec![Vec::new(); positions.len()];
+            let mut weights: Vec<Vec<f32>> = vec![Vec::new(); positions.len()];
+            for set in 0..MAX_SETS {
+                let (Some(joints), Some(w_reader)) = (reader.read_joints(set), reader.read_weights(set)) else {
+                    break;
+                };
+                for (i, g) in joints.into_u16().enumerate() {
+                    if i < groups.len() { groups[i].extend_from_slice(&g); }
+                }
+                for (i, w) in w_reader.into_f32().enumerate() {
+                    if i < weights.len() { weights[i].extend_from_slice(&w); }
+                }
+            }
+            for g in groups.iter_mut() { g.resize(4.max(g.len()), 0); }
+            for w in weights.iter_mut() { w.resize(4.max(w.len()), 0.0); }
 
-    let mut ptr = 0;
+            let mut vertexes = Vec::with_capacity(positions.len());
+            for i in 0..positions.len() {
+                let pos = positions[i];
+                let nor = normals[i];
+                let uv = uvs.get(i).map(|u| (u[0], u[1]));
+                let g = &groups[i];
+                let w = &weights[i];
+                vertexes.push(GltfVertex {
+                    position: (pos[0], pos[1], pos[2]),
+                    normal: (nor[0], nor[1], nor[2]),
+                    raw_normal: None,
+                    uv,
+                    groups: g.iter().map(|&x| x as u8).collect(),
+                    weights: w.clone(),
+                });
+            }
 
-    let bones = parse_bones(&lines, &mut ptr)?;
-    let meshes = parse_meshes(&lines, &raw_lines, &mut ptr, bones.len())?;
+            let mut faces: Vec<(u32, u32, u32)> = Vec::new();
+            if let Some(indices) = reader.read_indices() {
+                let idxs: Vec<u32> = indices.into_u32().collect();
+                for chunk in idxs.chunks(3) {
+                    if chunk.len() == 3 {
+                        faces.push((chunk[0], chunk[1], chunk[2]));
+                    }
+                }
+            }
 
-    Ok(AsciiModel { bones, meshes })
-}
-
-fn read_int(lines: &[&str], ptr: &mut usize) -> Result<i64> {
-    let line = lines.get(*ptr).ok_or_else(|| ToolkitError::AsciiFormat { line: *ptr, message: "unexpected EOF".into() })?;
-    *ptr += 1;
-    line.parse::<i64>().map_err(|_| ToolkitError::AsciiFormat { line: *ptr - 1, message: format!("expected int, got {:?}", line) })
-}
-
-fn read_split<'a>(lines: &[&'a str], ptr: &mut usize) -> Result<Vec<&'a str>> {
-    let line = lines.get(*ptr).ok_or_else(|| ToolkitError::AsciiFormat { line: *ptr, message: "unexpected EOF".into() })?;
-    *ptr += 1;
-    Ok(line.split_whitespace().collect())
-}
-
-fn read_line<'a>(lines: &[&'a str], ptr: &mut usize) -> Result<&'a str> {
-    let line = lines.get(*ptr).ok_or_else(|| ToolkitError::AsciiFormat { line: *ptr, message: "unexpected EOF".into() })?;
-    *ptr += 1;
-    Ok(line)
-}
-
-fn parse_bones(lines: &[&str], ptr: &mut usize) -> Result<Vec<(String, i32, (f32, f32, f32))>> {
-    let count = read_int(lines, ptr)? as usize;
-    let mut bones = Vec::with_capacity(count);
-    for _ in 0..count {
-        let name = read_line(lines, ptr)?.to_string();
-        let parent = read_int(lines, ptr)? as i32;
-        let parts = read_split(lines, ptr)?;
-        let x = parts.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-        let y = parts.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-        let z = parts.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-        // 4-6 are quaternion, we skip for now (not needed for injection)
-        bones.push((name, parent, (x, y, z)));
-    }
-    Ok(bones)
-}
-
-fn extract_nrm_tag(raw_line: &str) -> Option<u32> {
-    if let Some(pos) = raw_line.find("#nrm:") {
-        let hex = &raw_line[pos + 5..pos + 5 + 8.min(raw_line.len() - pos - 5)];
-        u32::from_str_radix(hex.trim(), 16).ok()
-    } else {
-        None
-    }
-}
-
-fn parse_meshes(lines: &[&str], raw_lines: &[&str], ptr: &mut usize, bones_count: usize) -> Result<Vec<AsciiMesh>> {
-    let count = read_int(lines, ptr)? as usize;
-    let mut meshes = Vec::with_capacity(count);
-    for _ in 0..count {
-        let name = read_line(lines, ptr)?.to_string();
-        let uv_layers = read_int(lines, ptr)? as usize;
-        let textures = read_int(lines, ptr)? as usize;
-        for _ in 0..(textures * 2) { *ptr += 1; }
-
-        let vert_count = read_int(lines, ptr)? as usize;
-        let mut vertexes = Vec::with_capacity(vert_count);
-        for _ in 0..vert_count {
-            let pos_p = read_split(lines, ptr)?;
-            let nor_line_idx = *ptr;
-            let nor_p = read_split(lines, ptr)?;
-            let raw_normal = raw_lines.get(nor_line_idx).and_then(|l| extract_nrm_tag(l));
-            let _col  = read_split(lines, ptr)?;
-
-            let uv = if uv_layers > 0 {
-                let uv_p = read_split(lines, ptr)?;
-                for _ in 1..uv_layers { *ptr += 1; }
-                Some((
-                    uv_p.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                    uv_p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                ))
-            } else { None };
-
-            let (groups, weights) = if bones_count > 0 {
-                let gp = read_split(lines, ptr)?;
-                let wp = read_split(lines, ptr)?;
-                (
-                    gp.iter().filter_map(|s| s.parse::<u8>().ok()).collect(),
-                    wp.iter().filter_map(|s| s.parse::<f32>().ok()).collect(),
-                )
-            } else { (vec![], vec![]) };
-
-            vertexes.push(AsciiVertex {
-                position: (
-                    pos_p.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                    pos_p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                    pos_p.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                ),
-                normal: (
-                    nor_p.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0),
-                    nor_p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                    nor_p.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                ),
-                raw_normal, uv, groups, weights,
-            });
+            let mut joint_names = None;
+            if let Some(mesh_node) = document.nodes().find(|n: &gltf::Node<'_>| n.mesh().map_or(false, |m: gltf::Mesh<'_>| m.index() == mesh.index())) {
+                if let Some(skin) = mesh_node.skin() {
+                    let mut names: Vec<String> = Vec::new();
+                    for joint in skin.joints() {
+                        names.push(joint.name().unwrap_or("").to_string());
+                    }
+                    joint_names = Some(names);
+                }
+            }
+            
+            meshes.push(GltfMesh { name: name.clone(), vertexes, faces, joint_names });
         }
-
-        let face_count = read_int(lines, ptr)? as usize;
-        let mut faces = Vec::with_capacity(face_count);
-        for _ in 0..face_count {
-            let parts = read_split(lines, ptr)?;
-            let a = parts.get(0).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-            let b = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-            let c = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-            faces.push((a, b, c));
-        }
-
-        meshes.push(AsciiMesh { name, vertexes, faces });
     }
-    Ok(meshes)
+
+    Ok(GltfModel { bones, meshes })
 }
 
 // Injector
 
-pub fn inject_ascii(model: &mut ModelFile, ascii: &AsciiModel) -> Result<()> {
+pub fn inject_gltf(model: &mut ModelFile, Gltf: &GltfModel) -> Result<()> {
     clear_muscle_deformation(model);
     change_lod_distances(model);
     update_look_groups(model)?;
 
-    let mesh_updates = inject_vertexes(model, ascii)?;
+    let mesh_updates = inject_vertexes(model, Gltf)?;
     update_meshes(model, &mesh_updates)?;
 
     Ok(())
@@ -252,7 +216,7 @@ struct MeshUpdate {
     strip_flags: bool,
 }
 
-fn parse_mesh_index_from_ascii_name(name: &str) -> Option<usize> {
+fn parse_mesh_index_from_Gltf_name(name: &str) -> Option<usize> {
     // Expected names include "smNN_...", but Blender edits may prepend prefixes
     // (for example "5_sm08_..."). Parse the first "sm<digits>" token anywhere.
     let bytes = name.as_bytes();
@@ -270,50 +234,111 @@ fn parse_mesh_index_from_ascii_name(name: &str) -> Option<usize> {
     None
 }
 
-fn build_ascii_mesh_index_map(ascii: &AsciiModel, mesh_count: usize) -> Result<std::collections::HashMap<usize, usize>> {
-    let mut ascii_by_index: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::with_capacity(ascii.meshes.len());
-    for (ascii_i, mesh_ascii) in ascii.meshes.iter().enumerate() {
-        let mesh_index = parse_mesh_index_from_ascii_name(&mesh_ascii.name).unwrap_or(ascii_i);
+fn build_Gltf_mesh_index_map(Gltf: &GltfModel, mesh_count: usize) -> Result<std::collections::HashMap<usize, usize>> {
+    let mut Gltf_by_index: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::with_capacity(Gltf.meshes.len());
+    for (Gltf_i, mesh_Gltf) in Gltf.meshes.iter().enumerate() {
+        let mesh_index = parse_mesh_index_from_Gltf_name(&mesh_Gltf.name).unwrap_or(Gltf_i);
         if mesh_index >= mesh_count {
             return Err(ToolkitError::Parse(format!(
                 "mesh '{}' resolved to index {} but model has only {} meshes",
-                mesh_ascii.name,
+                mesh_Gltf.name,
                 mesh_index,
                 mesh_count
             )));
         }
-        if let Some(prev_ascii_i) = ascii_by_index.insert(mesh_index, ascii_i) {
+        if let Some(prev_Gltf_i) = Gltf_by_index.insert(mesh_index, Gltf_i) {
             return Err(ToolkitError::Parse(format!(
-                "duplicate ASCII mesh mapping for model mesh #{}: '{}' and '{}'. \
+                "duplicate Gltf mesh mapping for model mesh #{}: '{}' and '{}'. \
                  Export must contain exactly one mesh per smNN index",
                 mesh_index,
-                ascii.meshes[prev_ascii_i].name,
-                mesh_ascii.name
+                Gltf.meshes[prev_Gltf_i].name,
+                mesh_Gltf.name
             )));
         }
     }
-    Ok(ascii_by_index)
+    Ok(Gltf_by_index)
 }
 
-fn should_rebuild_skin(meshes: &[MeshDefinition], ascii: &AsciiModel) -> Result<bool> {
-    for (i, mesh_data_ascii) in ascii.meshes.iter().enumerate() {
-        let mesh_index = parse_mesh_index_from_ascii_name(&mesh_data_ascii.name).unwrap_or(i);
+fn should_rebuild_skin(meshes: &[MeshDefinition], Gltf: &GltfModel) -> Result<bool> {
+    for (i, mesh_data_Gltf) in Gltf.meshes.iter().enumerate() {
+        let mesh_index = parse_mesh_index_from_Gltf_name(&mesh_data_Gltf.name).unwrap_or(i);
         let mesh = meshes.get(mesh_index).ok_or_else(|| {
             ToolkitError::Parse(format!(
                 "mesh '{}' resolved to index {} but model has only {} meshes",
-                mesh_data_ascii.name,
+                mesh_data_Gltf.name,
                 mesh_index,
                 meshes.len()
             ))
         })?;
 
         // Preserve original skin blobs unless topology changed on a skinned mesh.
-        if mesh.is_skinned() && mesh.vertex_count as usize != mesh_data_ascii.vertexes.len() {
+        if mesh.is_skinned() && mesh.vertex_count as usize != mesh_data_Gltf.vertexes.len() {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Warns when an incoming mesh carries fewer bone influences per vertex than
+/// the mesh it replaces. Blender's glTF exporter caps influences at 4 unless
+/// "Include All Bone Influences" (Data > Skinning) is enabled, which silently
+/// discards the 5th-7th influences this game's batched skin section uses. The
+/// weights still sum to 1.0 afterwards, so nothing downstream looks wrong —
+/// the mesh just deforms incorrectly in game.
+fn warn_on_influence_loss(
+    meshes: &[MeshDefinition],
+    gltf: &GltfModel,
+    original_skin_data: &Option<Vec<u8>>,
+    original_skin_batches: &Option<Vec<SkinBatch>>,
+    original_rcra_entries: &Option<Vec<RcraSkinEntry>>,
+) {
+    use crate::tools::model_converter::sections::skin::{decode_rcra_skin, decode_skin_data};
+
+    let vanilla_batched = match (original_skin_data, original_skin_batches) {
+        (Some(raw), Some(batches)) => decode_skin_data(raw, batches),
+        _ => Vec::new(),
+    };
+    let vanilla_rcra = original_rcra_entries.as_ref().map(|e| decode_rcra_skin(e)).unwrap_or_default();
+
+    for (i, gm) in gltf.meshes.iter().enumerate() {
+        let mesh_index = parse_mesh_index_from_Gltf_name(&gm.name).unwrap_or(i);
+        let Some(mesh) = meshes.get(mesh_index) else { continue };
+        if !mesh.is_skinned() || mesh.vertex_count as usize == gm.vertexes.len() {
+            continue; // only rebuilt meshes take weights from the glTF
+        }
+
+        let (src, start) = if mesh.is_rcra_skinned() {
+            (&vanilla_rcra, mesh.first_weight_index as usize)
+        } else {
+            (&vanilla_batched, mesh.vertex_start as usize)
+        };
+        let end = (start + mesh.vertex_count as usize).min(src.len());
+        if start >= end {
+            continue;
+        }
+        let vanilla_max = src[start..end]
+            .iter()
+            .map(|w| w.iter().filter(|x| x.1 > 0.0).count())
+            .max()
+            .unwrap_or(0);
+        let incoming_max = gm
+            .vertexes
+            .iter()
+            .map(|v| v.weights.iter().filter(|&&w| w > 0.0).count())
+            .max()
+            .unwrap_or(0);
+
+        if incoming_max < vanilla_max {
+            eprintln!(
+                "[inject_gltf] WARNING: mesh '{}' (#{}) came back with at most {} bone influences \
+                 per vertex, but the original uses up to {}. Influences were dropped somewhere in \
+                 the DCC round-trip — in Blender, enable 'Include All Bone Influences' under \
+                 Data > Skinning when exporting glTF. This mesh will deform incorrectly.",
+                gm.name, mesh_index, incoming_max, vanilla_max
+            );
+        }
+    }
 }
 
 fn align_skin_data_16(skin_data: &mut Option<Vec<u8>>, cur_offset: &mut usize) -> Result<()> {
@@ -328,7 +353,20 @@ fn align_skin_data_16(skin_data: &mut Option<Vec<u8>>, cur_offset: &mut usize) -
     Ok(())
 }
 
-fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<MeshUpdate>> {
+fn inject_vertexes(model: &mut ModelFile, Gltf: &GltfModel) -> Result<Vec<MeshUpdate>> {
+    use crate::tools::model_converter::sections::joints::{TAG_JOINTS, Joint};
+    
+    let mut bone_map = std::collections::HashMap::new();
+    if let Some(joint_data) = model.dat1.get_section_data(TAG_JOINTS) {
+        if let Ok(joints) = Joint::parse_all(joint_data) {
+            for (i, j) in joints.iter().enumerate() {
+                if let Some(name) = model.dat1.get_string(j.string_offset) {
+                    bone_map.insert(name, i as u8);
+                }
+            }
+        }
+    }
+
     let mesh_data = model.dat1.get_section_data(TAG_MESHES)
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_MESHES))?.to_vec();
     let meshes = MeshDefinition::parse_all(&mesh_data)?;
@@ -366,7 +404,10 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     let original_skin_data = skin_data.clone();
     let original_skin_batches = skin_batches.clone();
     let original_rcra_entries = rcra_entries.clone();
-    let rebuild_skin = should_rebuild_skin(&meshes, ascii)?;
+    let rebuild_skin = should_rebuild_skin(&meshes, Gltf)?;
+    if rebuild_skin {
+        warn_on_influence_loss(&meshes, Gltf, &original_skin_data, &original_skin_batches, &original_rcra_entries);
+    }
     let skin_batch_templates = if rebuild_skin { skin_batches.clone() } else { None };
     if rebuild_skin {
         if let Some(ref mut sd) = skin_data {
@@ -385,15 +426,15 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     let mut cur_rcra_weight = 0usize;
 
     // Contiguous relayout pre-pass
-    // Lay out every mesh contiguously at new positions: ASCII-injected meshes
-    // use their ASCII sizes, untouched meshes keep their original sizes.
+    // Lay out every mesh contiguously at new positions: Gltf-injected meshes
+    // use their Gltf sizes, untouched meshes keep their original sizes.
     // A grown mesh's added tail gets its own space instead of overflowing into
     // the next mesh. Untouched meshes' bytes are copied verbatim into the new
     // buffer — their per-mesh data stays identical; only their `vertex_start`
     // pointer shifts. (The old global-repack glitch came from not copying
     // untouched-mesh bytes into the new layout; see HANDOFF_mesh_glitch.md.)
     let n_meshes = meshes.len();
-    let ascii_by_index = build_ascii_mesh_index_map(ascii, n_meshes)?;
+    let Gltf_by_index = build_Gltf_mesh_index_map(Gltf, n_meshes)?;
     let mut new_vstart = vec![0u32; n_meshes];
     let mut new_istart = vec![0u32; n_meshes];
     let mut force_relative = vec![false; n_meshes];
@@ -407,8 +448,8 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 .map_err(|_| ToolkitError::Parse(format!("vertex_start overflow for mesh {}", mi)))?;
             new_istart[mi] = u32::try_from(ci)
                 .map_err(|_| ToolkitError::Parse(format!("index_start overflow for mesh {}", mi)))?;
-            let (vc, ic) = if let Some(&ai) = ascii_by_index.get(&mi) {
-                let am = &ascii.meshes[ai];
+            let (vc, ic) = if let Some(&ai) = Gltf_by_index.get(&mi) {
+                let am = &Gltf.meshes[ai];
                 (am.vertexes.len() as u64, (am.faces.len() * 3) as u64)
             } else {
                 (meshes[mi].vertex_count as u64, meshes[mi].index_count as u64)
@@ -420,8 +461,8 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             if meshes[mi].has_relative_indices() {
                 continue;
             }
-            let vc = if let Some(&ai) = ascii_by_index.get(&mi) {
-                ascii.meshes[ai].vertexes.len() as u64
+            let vc = if let Some(&ai) = Gltf_by_index.get(&mi) {
+                Gltf.meshes[ai].vertexes.len() as u64
             } else {
                 meshes[mi].vertex_count as u64
             };
@@ -432,7 +473,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             if max_abs_index > u16::MAX as u64 {
                 force_relative[mi] = true;
                 eprintln!(
-                    "[inject_ascii] mesh #{} absolute indices would overflow (max_abs_index={}) -> forcing relative indices",
+                    "[inject_Gltf] mesh #{} absolute indices would overflow (max_abs_index={}) -> forcing relative indices",
                     mi,
                     max_abs_index
                 );
@@ -449,10 +490,10 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         let mut new_colors: Option<Vec<u32>> =
             colors_sec.as_ref().map(|_| vec![0xFFFF_FFFFu32; new_vert_total]);
         // Copy untouched meshes' slices from originals into the new layout.
-        // ASCII meshes' slots are left zeroed; the per-mesh loop below fills
-        // them from ASCII data.
+        // Gltf meshes' slots are left zeroed; the per-mesh loop below fills
+        // them from Gltf data.
         for mi in 0..n_meshes {
-            if ascii_by_index.contains_key(&mi) { continue; }
+            if Gltf_by_index.contains_key(&mi) { continue; }
             let om = &meshes[mi];
             let old_vs = om.vertex_start as usize;
             let old_vc = om.vertex_count as usize;
@@ -510,9 +551,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 }
             }
         }
-        // Snapshot originals so ASCII mesh writes below can still read raw_w
+        // Snapshot originals so Gltf mesh writes below can still read raw_w
         // from the mesh's vanilla slot. After the swap below, vert_sec holds
-        // the new buffer (untouched meshes already populated, ASCII slots
+        // the new buffer (untouched meshes already populated, Gltf slots
         // zeroed pending the per-mesh loop).
         orig_vertexes_for_raw_w = std::mem::take(&mut vert_sec.vertexes);
         vert_sec.vertexes = new_vertexes;
@@ -520,30 +561,30 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         if let (Some(uv), Some(nu)) = (uv1_sec.as_mut(), new_uvs) {
             uv.uvs = nu;
         }
-        // Keep the vanilla colors readable while filling ASCII mesh slots below.
+        // Keep the vanilla colors readable while filling glTF mesh slots below.
         if let (Some(cs), Some(nc)) = (colors_sec.as_mut(), new_colors) {
             orig_colors_for_copy = Some(std::mem::replace(&mut cs.values, nc));
         }
     }
 
-    let mut updates = Vec::with_capacity(ascii.meshes.len());
+    let mut updates = Vec::with_capacity(Gltf.meshes.len());
 
-    for (i, mesh_data_ascii) in ascii.meshes.iter().enumerate() {
-        let mesh_index = parse_mesh_index_from_ascii_name(&mesh_data_ascii.name).unwrap_or(i);
+    for (i, mesh_data_Gltf) in Gltf.meshes.iter().enumerate() {
+        let mesh_index = parse_mesh_index_from_Gltf_name(&mesh_data_Gltf.name).unwrap_or(i);
         let mesh = meshes.get(mesh_index).ok_or_else(|| {
             ToolkitError::Parse(format!(
                 "mesh '{}' resolved to index {} but model has only {} meshes",
-                mesh_data_ascii.name,
+                mesh_data_Gltf.name,
                 mesh_index,
                 meshes.len()
             ))
         })?;
         eprintln!(
-            "[inject_ascii] mesh '{}' -> model mesh #{} (verts={}, faces={})",
-            mesh_data_ascii.name,
+            "[inject_Gltf] mesh '{}' -> model mesh #{} (verts={}, faces={})",
+            mesh_data_Gltf.name,
             mesh_index,
-            mesh_data_ascii.vertexes.len(),
-            mesh_data_ascii.faces.len()
+            mesh_data_Gltf.vertexes.len(),
+            mesh_data_Gltf.faces.len()
         );
         let has_skin = mesh.is_skinned();
         let has_rcra_skin = mesh.is_rcra_skinned();
@@ -551,7 +592,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         // For unchanged-count meshes, preserve original skin bytes to avoid
         // introducing deformation from editor-side weight re-normalization.
         let mesh_skin_changed = has_skin
-            && mesh.vertex_count as usize != mesh_data_ascii.vertexes.len();
+            && mesh.vertex_count as usize != mesh_data_Gltf.vertexes.len();
         // Positions come from the contiguous-relayout pre-pass. This is
         // critical for grown meshes — their added tail would otherwise
         // overflow into the next mesh's slot and get clobbered.
@@ -565,7 +606,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             u16::try_from(cur_skin_batch).map_err(|_| {
                 ToolkitError::Parse(format!(
                     "too many skin batches while rebuilding '{}' (index {})",
-                    mesh_data_ascii.name,
+                    mesh_data_Gltf.name,
                     mesh_index
                 ))
             })?
@@ -578,7 +619,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 u32::try_from(cur_rcra_weight).map_err(|_| {
                     ToolkitError::Parse(format!(
                         "rcra weight index overflow while rebuilding '{}' (index {})",
-                        mesh_data_ascii.name,
+                        mesh_data_Gltf.name,
                         mesh_index
                     ))
                 })?
@@ -590,7 +631,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         };
 
         // Start skin batch tracking
-        let batch_vertex_count = mesh_data_ascii.vertexes.len();
+        let batch_vertex_count = mesh_data_Gltf.vertexes.len();
         let mut batch_vertex_index = 0usize;
         let mut sum_batch_vertex_index = 0usize;
         let mut fallback_weight_count = 0usize;
@@ -610,13 +651,13 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             if skin_data.is_none() || skin_batches.is_none() {
                 return Err(ToolkitError::Parse(format!(
                     "mesh '{}' is skinned but model is missing skin_data/skin_batch sections",
-                    mesh_data_ascii.name
+                    mesh_data_Gltf.name
                 )));
             }
             if has_rcra_skin && rcra_entries.is_none() {
                 return Err(ToolkitError::Parse(format!(
                     "mesh '{}' uses rcra skin but model is missing rcra_skin section",
-                    mesh_data_ascii.name
+                    mesh_data_Gltf.name
                 )));
             }
             if mesh_skin_changed {
@@ -643,13 +684,13 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 let orig_skin_data_ref = original_skin_data.as_ref().ok_or_else(|| {
                     ToolkitError::Parse(format!(
                         "mesh '{}' is skinned but source model has no skin_data",
-                        mesh_data_ascii.name
+                        mesh_data_Gltf.name
                     ))
                 })?;
                 let orig_skin_batches_ref = original_skin_batches.as_ref().ok_or_else(|| {
                     ToolkitError::Parse(format!(
                         "mesh '{}' is skinned but source model has no skin_batch",
-                        mesh_data_ascii.name
+                        mesh_data_Gltf.name
                     ))
                 })?;
 
@@ -659,7 +700,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 if end_batch > orig_skin_batches_ref.len() {
                     return Err(ToolkitError::Parse(format!(
                         "mesh '{}' skin batch range out of bounds: {}..{} of {}",
-                        mesh_data_ascii.name,
+                        mesh_data_Gltf.name,
                         start_batch,
                         end_batch,
                         orig_skin_batches_ref.len()
@@ -678,7 +719,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                         if start > end || end > orig_skin_data_ref.len() {
                             return Err(ToolkitError::Parse(format!(
                                 "mesh '{}' has invalid skin_data slice for batch {}: {}..{} of {}",
-                                mesh_data_ascii.name,
+                                mesh_data_Gltf.name,
                                 bi,
                                 start,
                                 end,
@@ -705,7 +746,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                     let orig_rcra_entries_ref = original_rcra_entries.as_ref().ok_or_else(|| {
                         ToolkitError::Parse(format!(
                             "mesh '{}' uses rcra skin but source model has no rcra_skin",
-                            mesh_data_ascii.name
+                            mesh_data_Gltf.name
                         ))
                     })?;
                     let start = mesh.first_weight_index as usize;
@@ -713,7 +754,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                     if end > orig_rcra_entries_ref.len() {
                         return Err(ToolkitError::Parse(format!(
                             "mesh '{}' rcra weight range out of bounds: {}..{} of {}",
-                            mesh_data_ascii.name,
+                            mesh_data_Gltf.name,
                             start,
                             end,
                             orig_rcra_entries_ref.len()
@@ -729,12 +770,12 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
 
         let mut weights_group: Vec<(Vec<u8>, Vec<f32>)> = Vec::new();
 
-        let vertex_count = mesh_data_ascii.vertexes.len();
-        for (vi, av) in mesh_data_ascii.vertexes.iter().enumerate() {
+        let vertex_count = mesh_data_Gltf.vertexes.len();
+        for (vi, av) in mesh_data_Gltf.vertexes.iter().enumerate() {
             // Write vertex
             let mut new_v = Vertex::zero();
             // raw_w is read from the mesh's ORIGINAL vanilla slot (not from
-            // the swapped-in buffer, which is zeroed at ASCII-mesh positions).
+            // the swapped-in buffer, which is zeroed at Gltf-mesh positions).
             // Added tail vertices (vi >= orig_vertex_count) have no vanilla
             // counterpart and keep raw_w=0.
             if vi < orig_vertex_count {
@@ -742,9 +783,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 if src < orig_vertexes_for_raw_w.len() {
                     new_v.raw_w = orig_vertexes_for_raw_w[src].raw_w;
                 }
-                // Carry this vertex's vanilla color to its new slot. The ASCII
-                // format carries no color channel, so the vanilla value is the
-                // only source; added tail verts keep the white default.
+                // Carry this vertex's vanilla color to its new slot. glTF cannot
+                // round-trip these (we export no COLOR_0), so the vanilla value
+                // is the only source; added tail vertices keep the white default.
                 if let (Some(ref orig_colors), Some(ref mut cs)) =
                     (orig_colors_for_copy.as_ref(), colors_sec.as_mut())
                 {
@@ -767,7 +808,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 new_v.v = rv as f32 / 32768.0;
                 if i == 0 && vi < 3 {
                     eprintln!(
-                        "[inject_ascii] uv sample mesh#{} v{}: ascii=({:.6},{:.6}) raw=({}, {}) vertex_uv=({:.6},{:.6}) scale={:.8}",
+                        "[inject_Gltf] uv sample mesh#{} v{}: Gltf=({:.6},{:.6}) raw=({}, {}) vertex_uv=({:.6},{:.6}) scale={:.8}",
                         mesh_index,
                         vi,
                         u,
@@ -791,7 +832,18 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
 
             // Skin weights
             if has_skin && rebuild_skin && mesh_skin_changed {
-                let (mut w, used_fallback) = normalize_weights(&av.groups, &av.weights);
+                let mut mapped_groups = av.groups.clone();
+                if let Some(ref names) = mesh_data_Gltf.joint_names {
+                    for g in mapped_groups.iter_mut() {
+                        if let Some(name) = names.get(*g as usize) {
+                            if let Some(&idx) = bone_map.get(name) {
+                                *g = idx;
+                            }
+                        }
+                    }
+                }
+                
+                let (mut w, used_fallback) = normalize_weights(&mapped_groups, &av.weights);
                 if used_fallback {
                     fallback_weight_count += 1;
                     if let Some(prev) = last_valid_weights.clone() {
@@ -832,7 +884,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
 
         if has_skin && rebuild_skin && mesh_skin_changed {
             eprintln!(
-                "[inject_ascii] mesh #{} fallback_weights={}/{} reused_prev={} unresolved={}",
+                "[inject_Gltf] mesh #{} fallback_weights={}/{} reused_prev={} unresolved={}",
                 mesh_index,
                 fallback_weight_count,
                 vertex_count,
@@ -844,7 +896,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         // Write faces
         let use_relative_indices = mesh.has_relative_indices() || force_relative[mesh_index];
         let vc_offset = if use_relative_indices { 0 } else { vertex_start };
-        for face in &mesh_data_ascii.faces {
+        for face in &mesh_data_Gltf.faces {
             if cur_index + 2 < idx_sec.values.len() {
                 idx_sec.values[cur_index + 0] = (face.2 + vc_offset) as u16;
                 idx_sec.values[cur_index + 1] = (face.1 + vc_offset) as u16;
@@ -858,7 +910,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 let cur_skin_batch_u16 = u16::try_from(cur_skin_batch).map_err(|_| {
                     ToolkitError::Parse(format!(
                         "too many skin batches while rebuilding '{}' (index {})",
-                        mesh_data_ascii.name,
+                        mesh_data_Gltf.name,
                         mesh_index
                     ))
                 })?;
@@ -873,9 +925,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         updates.push(MeshUpdate {
             mesh_index,
             vertex_start,
-            vertex_count: mesh_data_ascii.vertexes.len() as u32,
+            vertex_count: mesh_data_Gltf.vertexes.len() as u32,
             index_start,
-            index_count: (mesh_data_ascii.faces.len() * 3) as u32,
+            index_count: (mesh_data_Gltf.faces.len() * 3) as u32,
             first_skin_batch,
             first_weight_index,
             skin_batches_count,
@@ -885,7 +937,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     }
 
     // When rebuild_skin is true, copy skin data for meshes NOT present in the
-    // ASCII. Without this, untouched meshes (e.g. claws, LODs) lose their
+    // Gltf. Without this, untouched meshes (e.g. claws, LODs) lose their
     // skinning and render with displaced/glitched vertices.
     if rebuild_skin {
         let injected_set: std::collections::HashSet<usize> = updates.iter().map(|u| u.mesh_index).collect();
@@ -1259,7 +1311,7 @@ fn calculate_tangents(
                 bitangents[i][1] as f32,
                 bitangents[i][2] as f32,
             ));
-            // If the ASCII provided a verbatim raw normal (#nrm tag), we
+            // If the Gltf provided a verbatim raw normal (#nrm tag), we
             // trust it over the recomputed tangent. Otherwise drop it so the
             // tangent-aware encoder runs in save_rcra.
             if vert_sec.vertexes[i].raw_normal.is_none() {
@@ -1291,7 +1343,7 @@ fn update_meshes(model: &mut ModelFile, updates: &[MeshUpdate]) -> Result<()> {
             // reference that reportedly works — never touches flags at all.
             if u.force_relative { m.flags |= 0x10; }
             eprintln!(
-                "[inject_ascii] updated mesh #{}: v_start={} v_count={} i_start={} i_count={} first_weight={} skin_batches={}",
+                "[inject_Gltf] updated mesh #{}: v_start={} v_count={} i_start={} i_count={} first_weight={} skin_batches={}",
                 u.mesh_index,
                 u.vertex_start,
                 u.vertex_count,

@@ -68,6 +68,8 @@ use crate::core::filesystem;
 use crate::core::toc::{Toc, TocAsset};
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
+    gltf_reader::{inject_gltf, parse_gltf},
+    gltf_writer::model_to_glb_for_looks as do_model_to_glb_for_looks,
     ascii_writer::model_to_ascii_for_looks as do_model_to_ascii_for_looks,
     model::ModelFile,
     sections::{
@@ -587,6 +589,47 @@ pub async fn model_to_ascii(
     Ok(out_path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+pub async fn model_to_gltf(
+    model_path: String,
+    gltf_path: Option<String>,
+    look: Option<usize>,
+    looks: Option<Vec<usize>>,
+) -> Result<String, ToolkitError> {
+    let start = Instant::now();
+    eprintln!("[model_to_gltf] loading model from {}", model_path);
+    let model_data = std::fs::read(&model_path)?;
+    let model = ModelFile::parse(&model_data)?;
+    
+    let selected_looks: Vec<usize> = if let Some(ls) = looks {
+        if ls.is_empty() {
+            vec![look.unwrap_or(0)]
+        } else {
+            let mut unique = std::collections::BTreeSet::new();
+            for l in ls {
+                unique.insert(l);
+            }
+            unique.into_iter().collect()
+        }
+    } else {
+        vec![look.unwrap_or(0)]
+    };
+    eprintln!("[model_to_gltf] converting model to GLB (looks={:?})", selected_looks);
+    let glb = do_model_to_glb_for_looks(&model, &selected_looks)?;
+
+    let out_path = gltf_path
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let base = Path::new(&model_path);
+            base.with_extension("glb")
+        });
+
+    std::fs::write(&out_path, &glb)?;
+    eprintln!("[model_to_gltf] saved GLB to {} in {:?}", out_path.display(), start.elapsed());
+    Ok(out_path.to_string_lossy().into_owned())
+}
+
 #[derive(serde::Serialize)]
 pub struct LookGroupInfo {
     pub index: usize,
@@ -666,6 +709,40 @@ pub async fn ascii_to_model(
     let out_bytes = model.save();
     std::fs::write(&output_path, &out_bytes)?;
     eprintln!("[ascii_to_model] saved modified model to {} in {:?}", output_path.display(), start.elapsed());
+    Ok(output_path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn gltf_to_model(
+    gltf_path: String,
+    src_model_path: String,
+    out_path: Option<String>,
+) -> Result<String, ToolkitError> {
+    let start = Instant::now();
+    eprintln!("[gltf_to_model] loading gltf from {}", gltf_path);
+    let gltf = parse_gltf(&gltf_path)?;
+    eprintln!("[gltf_to_model] parsed gltf ({} meshes, {} bones)", gltf.meshes.len(), gltf.bones.len());
+
+    eprintln!("[gltf_to_model] loading source model from {}", src_model_path);
+    let model_data = std::fs::read(&src_model_path)?;
+    let mut model = ModelFile::parse(&model_data)?;
+
+    eprintln!("[gltf_to_model] injecting gltf data into model");
+    inject_gltf(&mut model, &gltf)?;
+
+    let output_path = out_path
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let base = Path::new(&src_model_path);
+            let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+            let ext = base.extension().unwrap_or_default().to_string_lossy();
+            base.with_file_name(format!("{}_modified_gltf.{}", stem, ext))
+        });
+
+    let out_bytes = model.save();
+    std::fs::write(&output_path, &out_bytes)?;
+    eprintln!("[gltf_to_model] saved modified model to {} in {:?}", output_path.display(), start.elapsed());
     Ok(output_path.to_string_lossy().into_owned())
 }
 
