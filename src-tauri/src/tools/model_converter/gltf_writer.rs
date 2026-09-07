@@ -1,13 +1,14 @@
 use crate::core::error::{Result, ToolkitError};
 use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::{
-    geo::{TAG_VERTEXES, TAG_UV1, VertexesSection, Uv1Section},
+    geo::{TAG_VERTEXES, TAG_UV1, VertexesSection, Uv1Section, DEFAULT_UV_SCALE},
     meshes::{TAG_MESHES, MeshDefinition},
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
     skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
            decode_skin_data, decode_rcra_skin, VertexWeights},
-    built::{TAG_BUILT, get_uv_scale, get_position_scale},
+    built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
+    morph::{AnimMorphInfo, TAG_ANIM_MORPH_DATA, TAG_ANIM_MORPH_INDICES, TAG_ANIM_MORPH_INFO},
 };
 
 use glam::{Mat4, Quat, Vec3};
@@ -82,6 +83,13 @@ impl Buf {
         (start, self.bytes.len() - start)
     }
 
+    fn push_u32(&mut self, v: &[u32]) -> (usize, usize) {
+        self.align4();
+        let start = self.bytes.len();
+        for c in v { self.bytes.extend_from_slice(&c.to_le_bytes()); }
+        (start, self.bytes.len() - start)
+    }
+
     fn push_mat4(&mut self, v: &[[f32; 16]]) -> (usize, usize) {
         self.align4();
         let start = self.bytes.len();
@@ -141,10 +149,12 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
     let dat1 = &model.dat1;
 
     let built_pos_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_position_scale).unwrap_or(1.0 / 4096.0);
+    let built_uv_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv_scale).unwrap_or(DEFAULT_UV_SCALE);
+    let built_uv1_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv1_scale).unwrap_or(DEFAULT_UV_SCALE);
 
     let vert_data = dat1.get_section_data(TAG_VERTEXES)
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_VERTEXES))?;
-    let vertexes_sec = VertexesSection::parse_scaled(vert_data, built_pos_scale)?;
+    let vertexes_sec = VertexesSection::parse_scaled(vert_data, built_pos_scale, built_uv_scale)?;
     let vertexes = &vertexes_sec.vertexes;
 
     let mesh_data = dat1.get_section_data(TAG_MESHES)
@@ -161,7 +171,15 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
     let look_sec = LookSection::parse(look_data)?;
 
     let uv1_sec: Option<Uv1Section> = dat1.get_section_data(TAG_UV1).map(|d| Uv1Section::parse(d).ok()).flatten();
-    let built_uv_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv_scale).unwrap_or(1.0 / 16384.0);
+
+    // Morph targets, exported as glTF sparse accessors: a morph touches only a
+    // few hundred of a mesh's vertices, so dense targets would balloon the file
+    // (hero_ratchet alone would need hundreds of MB).
+    let morph_info = dat1
+        .get_section_data(TAG_ANIM_MORPH_INFO)
+        .and_then(|d| AnimMorphInfo::parse(d).ok());
+    let morph_data = dat1.get_section_data(TAG_ANIM_MORPH_DATA).unwrap_or(&[]);
+    let morph_idx = dat1.get_section_data(TAG_ANIM_MORPH_INDICES).unwrap_or(&[]);
 
     // Skin
     let batched_skin: Option<Vec<VertexWeights>> = {
@@ -314,6 +332,10 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(vcount);
         let mut normals: Vec<[f32; 3]> = Vec::with_capacity(vcount);
         let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(vcount);
+        // UV0 lives in Model Std Vert and UV1 in Model UV1 Vert. They are not
+        // copies of one another (they diverge on ~17k of hero_rivet's LOD 0
+        // vertices), so both are exported and the reader takes both back.
+        let mut uv1s: Vec<[f32; 2]> = Vec::with_capacity(vcount);
         // The batched skin format (SKIN_DATA + SKIN_BATCH) stores a variable
         // number of influences per vertex — this game's models reach 7 — unlike
         // the RCRA_SKIN compact array, which is fixed at 4. glTF carries 4 per
@@ -339,13 +361,11 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
             }
             normals.push([v.nx, v.ny, v.nz]);
 
-            let (u, vv) = if let Some(ref uv1) = uv1_sec {
+            uvs.push([v.u, v.v]);
+            if let Some(ref uv1) = uv1_sec {
                 let (ru, rv) = uv1.uvs[vi];
-                (ru as f32 * built_uv_scale, rv as f32 * built_uv_scale)
-            } else {
-                (v.u, v.v)
-            };
-            uvs.push([u, vv]);
+                uv1s.push([ru as f32 * built_uv1_scale, rv as f32 * built_uv1_scale]);
+            }
 
             if mesh_has_skin {
                 let wi = vi - vstart + weight_offset;
@@ -385,13 +405,19 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         attributes.insert(Checked::Valid(gj::mesh::Semantic::Positions), pos_accessor);
         attributes.insert(Checked::Valid(gj::mesh::Semantic::Normals), nrm_accessor);
         attributes.insert(Checked::Valid(gj::mesh::Semantic::TexCoords(0)), uv_accessor);
+        if !uv1s.is_empty() {
+            let (uv1_off, uv1_len) = buf.push_vec2(&uv1s);
+            let uv1_view = add_view(&mut root, buffer_index, uv1_off, uv1_len, Some(gj::buffer::Target::ArrayBuffer));
+            let uv1_accessor = add_accessor(&mut root, uv1_view, gj::accessor::ComponentType::F32, gj::accessor::Type::Vec2, uv1s.len(), None, None);
+            attributes.insert(Checked::Valid(gj::mesh::Semantic::TexCoords(1)), uv1_accessor);
+        }
 
         if mesh_has_skin {
             // One glTF set per 4 influences. Every set must cover every vertex
             // (zero-padded), per spec.
             let sets = ((max_influences.max(1) + 3) / 4).min(MAX_INFLUENCES / 4);
             if dropped_influences > 0 {
-                eprintln!(
+                log::warn!(
                     "[model_to_glb] mesh '{}' dropped {} influences beyond {} per vertex",
                     mesh_name, dropped_influences, MAX_INFLUENCES
                 );
@@ -438,6 +464,89 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         let idx_view = add_view(&mut root, buffer_index, idx_off, idx_len, Some(gj::buffer::Target::ElementArrayBuffer));
         let idx_accessor = add_accessor(&mut root, idx_view, gj::accessor::ComponentType::U16, gj::accessor::Type::Scalar, idx_arr.len(), None, None);
 
+        // Morph targets touching this subset. Each becomes a pair of sparse
+        // accessors over the primitive's own vertex range.
+        let mut targets: Vec<gj::mesh::MorphTarget> = Vec::new();
+        let mut target_names: Vec<String> = Vec::new();
+        if let Some(minfo) = &morph_info {
+            for e in &minfo.entries {
+                for si in 0..e.subset_count as usize {
+                    if e.subset_ids[si] as usize != mi {
+                        continue;
+                    }
+                    let deltas = AnimMorphInfo::decode_subset(e, si, morph_data, morph_idx);
+                    let mut ids: Vec<u32> = Vec::with_capacity(deltas.len());
+                    let mut pos: Vec<[f32; 3]> = Vec::with_capacity(deltas.len());
+                    let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(deltas.len());
+                    for d in &deltas {
+                        // Sparse indices must strictly increase; the index
+                        // stream is already ascending, so this only guards
+                        // against a malformed asset.
+                        if ids.last().is_some_and(|&p| p >= d.vertex) || d.vertex >= vcount as u32 {
+                            continue;
+                        }
+                        ids.push(d.vertex);
+                        pos.push(d.elements.first().copied().unwrap_or([0.0; 3]));
+                        nrm.push(d.elements.get(1).copied().unwrap_or([0.0; 3]));
+                    }
+                    if ids.is_empty() {
+                        continue;
+                    }
+                    let mut sparse_accessor = |vals: &[[f32; 3]], buf: &mut Buf, root: &mut gj::Root| {
+                        let (i_off, i_len) = buf.push_u32(&ids);
+                        let i_view = add_view(root, buffer_index, i_off, i_len, None);
+                        let (v_off, v_len) = buf.push_vec3(vals);
+                        let v_view = add_view(root, buffer_index, v_off, v_len, None);
+                        root.push(gj::Accessor {
+                            buffer_view: None,
+                            byte_offset: None,
+                            count: USize64(vcount as u64),
+                            component_type: Checked::Valid(gj::accessor::GenericComponentType(
+                                gj::accessor::ComponentType::F32,
+                            )),
+                            extensions: None,
+                            extras: Default::default(),
+                            type_: Checked::Valid(gj::accessor::Type::Vec3),
+                            min: None,
+                            max: None,
+                            name: None,
+                            normalized: false,
+                            sparse: Some(gj::accessor::sparse::Sparse {
+                                count: USize64(ids.len() as u64),
+                                indices: gj::accessor::sparse::Indices {
+                                    buffer_view: i_view,
+                                    byte_offset: USize64(0),
+                                    component_type: Checked::Valid(gj::accessor::IndexComponentType(
+                                        gj::accessor::ComponentType::U32,
+                                    )),
+                                    extensions: None,
+                                    extras: Default::default(),
+                                },
+                                values: gj::accessor::sparse::Values {
+                                    buffer_view: v_view,
+                                    byte_offset: USize64(0),
+                                    extensions: None,
+                                    extras: Default::default(),
+                                },
+                                extensions: None,
+                                extras: Default::default(),
+                            }),
+                        })
+                    };
+                    let p_acc = sparse_accessor(&pos, &mut buf, &mut root);
+                    let n_acc = sparse_accessor(&nrm, &mut buf, &mut root);
+                    targets.push(gj::mesh::MorphTarget {
+                        positions: Some(p_acc),
+                        normals: Some(n_acc),
+                        tangents: None,
+                    });
+                    target_names.push(
+                        dat1.get_string(e.name_offset).unwrap_or_else(|| format!("{:08X}", e.id)),
+                    );
+                }
+            }
+        }
+
         let primitive = gj::mesh::Primitive {
             attributes,
             extensions: None,
@@ -445,15 +554,25 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
             indices: Some(idx_accessor),
             material: Some(material_index),
             mode: Default::default(),
-            targets: None,
+            targets: if targets.is_empty() { None } else { Some(targets.clone()) },
+        };
+
+        // Blender and friends read morph names from mesh.extras.targetNames.
+        let mesh_extras: gj::Extras = if target_names.is_empty() {
+            Default::default()
+        } else {
+            serde_json::value::RawValue::from_string(
+                serde_json::json!({ "targetNames": target_names }).to_string(),
+            )
+            .ok()
         };
 
         let gltf_mesh_index = root.push(gj::Mesh {
             extensions: None,
-            extras: Default::default(),
+            extras: mesh_extras,
             name: Some(mesh_name.clone()),
             primitives: vec![primitive],
-            weights: None,
+            weights: if targets.is_empty() { None } else { Some(vec![0.0; targets.len()]) },
         });
 
         let node = root.push(gj::scene::Node {

@@ -29,6 +29,13 @@ export default function SettingsModal() {
     }
   }
 
+  async function pickOverstrikeDir() {
+    const result = await open({ directory: true, title: "Select Overstrike Folder" });
+    if (typeof result === "string") {
+      updateSettings({ overstrikeDir: result });
+    }
+  }
+
   async function fetchHashes() {
     setFetchState("fetching");
     setFetchMsg("");
@@ -64,6 +71,23 @@ export default function SettingsModal() {
               <button className={styles.browseBtn} onClick={pickArchivesDir}>Browse</button>
             </div>
             <p className={styles.hint}>Used by Asset Browser to load game files</p>
+          </div>
+
+          <div className={styles.field}>
+            <label>Overstrike Folder</label>
+            <div className={styles.inputGroup}>
+              <input
+                type="text"
+                value={settings.overstrikeDir}
+                readOnly
+                placeholder="Select Overstrike folder (or its Mods Library)"
+              />
+              <button className={styles.browseBtn} onClick={pickOverstrikeDir}>Browse</button>
+            </div>
+            <p className={styles.hint}>
+              Optional. Reads asset names out of the <code>.stage</code> packages so mod-added
+              assets show real paths instead of <code>[UNKNOWN]</code>.
+            </p>
           </div>
 
           <div className={styles.field}>

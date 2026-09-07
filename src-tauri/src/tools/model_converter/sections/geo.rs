@@ -8,6 +8,10 @@ pub const TAG_VERTEXES:  u32 = 0xA98BE69B;
 pub const TAG_UV1:       u32 = 0x6B855EED;
 pub const TAG_COLORS:    u32 = 0x5CBA9DE9;
 
+/// UV quantum when the Built section's shift nibble is 0. Raw components reach
+/// 16384 on such models, i.e. exactly 1.0 — see `built::get_uv_scale`.
+pub const DEFAULT_UV_SCALE: f32 = 1.0 / 16384.0;
+
 // Vertex
 
 #[derive(Debug, Clone)]
@@ -29,10 +33,10 @@ impl Vertex {
     }
 
     pub fn save_rcra(&self) -> [u8; 16] {
-        self.save_rcra_scaled(1.0 / 4096.0)
+        self.save_rcra_scaled(1.0 / 4096.0, DEFAULT_UV_SCALE)
     }
 
-    pub fn save_rcra_scaled(&self, pos_scale: f32) -> [u8; 16] {
+    pub fn save_rcra_scaled(&self, pos_scale: f32, uv_scale: f32) -> [u8; 16] {
         let xi = (self.x / pos_scale).round() as i16;
         let yi = (self.y / pos_scale).round() as i16;
         let zi = (self.z / pos_scale).round() as i16;
@@ -49,8 +53,8 @@ impl Vertex {
             (encode_normal(self.nx, self.ny, self.nz), self.raw_w)
         };
 
-        let ui = (self.u * 32768.0).round() as i16;
-        let vi = (self.v * 32768.0).round() as i16;
+        let ui = (self.u / uv_scale).round() as i16;
+        let vi = (self.v / uv_scale).round() as i16;
 
         let mut out = [0u8; 16];
         out[0..2].copy_from_slice(&xi.to_le_bytes());
@@ -100,10 +104,10 @@ pub struct VertexesSection {
 
 impl VertexesSection {
     pub fn parse(data: &[u8]) -> Result<Self> {
-        Self::parse_scaled(data, 1.0 / 4096.0)
+        Self::parse_scaled(data, 1.0 / 4096.0, DEFAULT_UV_SCALE)
     }
 
-    pub fn parse_scaled(data: &[u8], pos_scale: f32) -> Result<Self> {
+    pub fn parse_scaled(data: &[u8], pos_scale: f32, uv_scale: f32) -> Result<Self> {
         if data.len() % 16 != 0 {
             return Err(ToolkitError::Parse(format!("vertex data size {} not divisible by 16", data.len())));
         }
@@ -125,8 +129,8 @@ impl VertexesSection {
                 y: yi as f32 * pos_scale,
                 z: zi as f32 * pos_scale,
                 nx, ny, nz,
-                u: ui as f32 / 32768.0,
-                v: vi as f32 / 32768.0,
+                u: ui as f32 * uv_scale,
+                v: vi as f32 * uv_scale,
                 tangent: None,
                 bitangent: None,
                 raw_normal: Some(nxyz),
@@ -144,10 +148,10 @@ impl VertexesSection {
         out
     }
 
-    pub fn save_scaled(&self, pos_scale: f32) -> Vec<u8> {
+    pub fn save_scaled(&self, pos_scale: f32, uv_scale: f32) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.vertexes.len() * 16);
         for v in &self.vertexes {
-            out.extend_from_slice(&v.save_rcra_scaled(pos_scale));
+            out.extend_from_slice(&v.save_rcra_scaled(pos_scale, uv_scale));
         }
         out
     }
@@ -268,13 +272,14 @@ impl Uv1Section {
         Ok(Self { uvs })
     }
 
-    pub fn get_uv(&self, index: usize) -> (f32, f32) {
+    /// `uv_scale` is the UV1 scale from the Built section (`get_uv1_scale`).
+    pub fn get_uv(&self, index: usize, uv_scale: f32) -> (f32, f32) {
         let (u, v) = self.uvs[index];
-        (u as f32 / 32768.0, v as f32 / 32768.0)
+        (u as f32 * uv_scale, v as f32 * uv_scale)
     }
 
-    pub fn set_uv(&mut self, index: usize, u: f32, v: f32) {
-        self.uvs[index] = ((u * 32768.0) as i16, (v * 32768.0) as i16);
+    pub fn set_uv(&mut self, index: usize, u: f32, v: f32, uv_scale: f32) {
+        self.uvs[index] = ((u / uv_scale).round() as i16, (v / uv_scale).round() as i16);
     }
 
     pub fn save(&self) -> Vec<u8> {

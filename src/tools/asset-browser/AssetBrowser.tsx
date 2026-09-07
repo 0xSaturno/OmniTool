@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import AssetReferencesModal from "../../components/shared/AssetReferencesModal";
-import TreeView, { type TreeNodeData } from "./TreeView";
+import TreeView, { type TreeNodeData, compareNodes } from "./TreeView";
 import { useSettings } from "../../contexts/SettingsContext";
 import { openToolWindow } from "../../utils/openToolWindow";
 import { SEND_TO_ROUTES } from "../../utils/sendToRoutes";
@@ -16,6 +16,12 @@ import { TocWemViewer } from "../../components/shared/WemViewer";
 
 function extOf(path: string) {
   return path.split(".").pop()?.toLowerCase() ?? "";
+}
+
+/// Real asset path for a node — mods-branch nodes are display copies whose
+/// `fullPath` is prefixed with `[MODS]/<archive>`.
+function assetPathOf(node: TreeNodeData): string {
+  return node.canonicalPath ?? node.fullPath;
 }
 
 const LANGUAGE_CODES = new Set([
@@ -58,15 +64,128 @@ interface AssetInfo {
   span: number;
 }
 
+interface ModHashEntry {
+  asset_id: string;
+  path: string;
+  span: number;
+  mod_file: string;
+  mod_archive: string | null;
+}
+
+interface ModHashResult {
+  entries: ModHashEntry[];
+  mods_read: number;
+  installed: string[];
+  profile: string | null;
+  notes: string[];
+}
+
+
+// Overstrike's profile records the checkbox state at the time it was saved,
+// not what was last written into the game. The TOC is the ground truth: match
+// each .stage against the ids actually present in each `d\mods\modN` archive.
+function verifyModArchives(
+  assets: AssetInfo[],
+  archiveNames: string[],
+  modHashes: ModHashResult,
+): {
+  lines: { type: LogEntry["type"]; message: string }[];
+  labels: Map<number, string>;
+} {
+  const out: { type: LogEntry["type"]; message: string }[] = [];
+  const labels = new Map<number, string>();
+
+  const modArchives = new Map<number, Set<string>>();
+  for (const asset of assets) {
+    if (!isModArchive(archiveNames[asset.archive_index])) continue;
+    let ids = modArchives.get(asset.archive_index);
+    if (!ids) {
+      ids = new Set();
+      modArchives.set(asset.archive_index, ids);
+    }
+    ids.add(asset.id);
+  }
+
+  if (modArchives.size === 0) {
+    out.push({ type: "info", message: "No d\\mods\\* archives in this TOC — nothing to attribute." });
+    return { lines: out, labels };
+  }
+
+  // Per .stage package: how many of its ids landed in each mod archive.
+  const perMod = new Map<string, Map<number, number>>();
+  const totals = new Map<string, number>();
+  for (const entry of modHashes.entries) {
+    totals.set(entry.mod_file, (totals.get(entry.mod_file) ?? 0) + 1);
+    for (const [archiveIndex, ids] of modArchives) {
+      if (!ids.has(entry.asset_id)) continue;
+      let counts = perMod.get(entry.mod_file);
+      if (!counts) {
+        counts = new Map();
+        perMod.set(entry.mod_file, counts);
+      }
+      counts.set(archiveIndex, (counts.get(archiveIndex) ?? 0) + 1);
+    }
+  }
+
+  // Best claimant per archive, so two packages sharing assets don't both win.
+  const claimed = new Map<number, { modFile: string; matched: number }>();
+  for (const [modFile, counts] of perMod) {
+    for (const [archiveIndex, matched] of counts) {
+      const current = claimed.get(archiveIndex);
+      if (!current || matched > current.matched) {
+        claimed.set(archiveIndex, { modFile, matched });
+      }
+    }
+  }
+
+  for (const [archiveIndex, ids] of [...modArchives].sort((a, b) => a[0] - b[0])) {
+    const name = archiveNames[archiveIndex] ?? `archive_${archiveIndex}`;
+    const hit = claimed.get(archiveIndex);
+    const slot = name.split(/[\\/]/).pop() ?? name;
+    if (!hit) {
+      labels.set(archiveIndex, slot);
+      out.push({
+        type: "warning",
+        message: `${name}: no .stage in the library accounts for it — its ${ids.size} assets stay [UNKNOWN].`,
+      });
+      continue;
+    }
+    labels.set(archiveIndex, `${slot} — ${hit.modFile.replace(/\.stage$/i, "")}`);
+    const total = totals.get(hit.modFile) ?? 0;
+    const claimedSlot = modHashes.installed.indexOf(hit.modFile);
+    const profileSlot = claimedSlot >= 0 ? `d\\mods\\mod${claimedSlot}` : null;
+    const disagrees = profileSlot !== null && profileSlot.toLowerCase() !== name.replace(/\//g, "\\").toLowerCase();
+    out.push({
+      type: disagrees ? "warning" : "success",
+      message: disagrees
+        ? `${name} ← ${hit.modFile} (${hit.matched}/${total} ids present) — profile claims ${profileSlot}; trusting the TOC.`
+        : `${name} ← ${hit.modFile} (${hit.matched}/${total} ids present)`,
+    });
+  }
+
+  const matchedFiles = new Set([...claimed.values()].map((c) => c.modFile));
+  for (const modFile of modHashes.installed) {
+    if (matchedFiles.has(modFile)) continue;
+    out.push({
+      type: "warning",
+      message: `Profile lists ${modFile} as installed, but none of its assets are in the TOC — install is stale or was reverted.`,
+    });
+  }
+
+  return { lines: out, labels };
+}
+
+const MODS_ROOT = "[MODS]";
 
 function buildTree(
   assets: AssetInfo[],
   hashMap: Map<string, string>,
   archiveNames: string[],
+  modLabels?: Map<number, string>,
 ): TreeNodeData {
   const root: TreeNodeData = { name: "", fullPath: "", children: new Map() };
 
-  function ensurePath(parts: string[]): TreeNodeData {
+  function ensurePath(parts: string[], pinnedRoot = false): TreeNodeData {
     let current = root;
     let fullPath = "";
     for (const part of parts) {
@@ -74,6 +193,7 @@ function buildTree(
       let child = current.children.get(part);
       if (!child) {
         child = { name: part, fullPath, children: new Map() };
+        if (pinnedRoot && current === root) child.pinned = true;
         current.children.set(part, child);
       }
       current = child;
@@ -81,18 +201,7 @@ function buildTree(
     return current;
   }
 
-  for (const asset of assets) {
-    const resolvedPath = hashMap.get(asset.id);
-    let parts: string[];
-
-    if (resolvedPath) {
-      parts = resolvedPath.split("/").filter(Boolean);
-    } else {
-      const archiveName = archiveNames[asset.archive_index] ?? `archive_${asset.archive_index}`;
-      parts = ["[UNKNOWN]", archiveName, asset.id];
-    }
-
-    const node = ensurePath(parts);
+  function attachSpan(node: TreeNodeData, asset: AssetInfo) {
     const spanEntry = { span: asset.span, size: asset.size, archiveIndex: asset.archive_index };
     if (node.asset) {
       // Same asset ID appearing in a different span (e.g. SD→HD texture pair) — merge.
@@ -100,6 +209,30 @@ function buildTree(
       node.asset.spans.sort((a, b) => a.span - b.span);
     } else {
       node.asset = { id: asset.id, spans: [spanEntry] };
+    }
+  }
+
+  for (const asset of assets) {
+    const resolvedPath = hashMap.get(asset.id);
+    const archiveName = archiveNames[asset.archive_index] ?? `archive_${asset.archive_index}`;
+    const parts = resolvedPath
+      ? resolvedPath.split("/").filter(Boolean)
+      : ["[UNKNOWN]", archiveName, asset.id];
+
+    const node = ensurePath(parts);
+    attachSpan(node, asset);
+
+    // Everything shipped by a mod also gets a pinned copy grouped by archive,
+    // so mod content is browsable without hunting through the game tree.
+    if (isModArchive(archiveName)) {
+      const label =
+        modLabels?.get(asset.archive_index) ?? archiveName.split(/[\\/]/).pop() ?? archiveName;
+      const modNode = ensurePath(
+        [MODS_ROOT, label, ...(resolvedPath ? parts : [asset.id])],
+        true,
+      );
+      modNode.canonicalPath = node.fullPath;
+      attachSpan(modNode, asset);
     }
   }
 
@@ -119,12 +252,7 @@ function buildAssetIndex(root: TreeNodeData): {
       assetMap.set(node.fullPath, node);
       flatLeafOrder.push(node.fullPath);
     }
-    const sorted = Array.from(node.children.values()).sort((a, b) => {
-      const aF = a.children.size > 0;
-      const bF = b.children.size > 0;
-      if (aF !== bF) return aF ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+    const sorted = Array.from(node.children.values()).sort(compareNodes);
     for (const child of sorted) traverse(child);
   }
 
@@ -155,6 +283,7 @@ const SOURCE_MODE_LABELS: Record<SourceMode, string> = {
 export default function AssetBrowser() {
   const { settings } = useSettings();
   const archivesDir = settings.archivesDir;
+  const overstrikeDir = settings.overstrikeDir;
   const [loading, setLoading] = useState(false);
   const [tocInfo, setTocInfo] = useState<TocInfo | null>(null);
   const [tree, setTree] = useState<TreeNodeData | null>(null);
@@ -238,6 +367,34 @@ export default function AssetBrowser() {
       pushLog("info", "Listing assets…");
       const assets: AssetInfo[] = await invoke("list_toc_assets", { tocPath });
 
+      // Mod-added assets are absent from the shipped list; their real paths
+      // live in the .stage packages Overstrike installed them from.
+      let modLabels: Map<number, string> | undefined;
+      if (overstrikeDir) {
+        try {
+          const modHashes: ModHashResult = await invoke("load_mod_hashes", {
+            overstrikeDir,
+            gameDir: archivesDir,
+          });
+          for (const entry of modHashes.entries) {
+            hashMap.set(entry.asset_id, entry.path);
+          }
+          setHashCount(hashMap.size);
+          pushLog(
+            "success",
+            `Mod names: ${modHashes.entries.length} paths from ${modHashes.mods_read} .stage package(s)`
+          );
+          for (const note of modHashes.notes) pushLog("info", note);
+          const verified = verifyModArchives(assets, info.archive_names, modHashes);
+          modLabels = verified.labels;
+          for (const line of verified.lines) {
+            pushLog(line.type, line.message);
+          }
+        } catch (e) {
+          pushLog("warning", `Could not read Overstrike mod names. (${e})`);
+        }
+      }
+
       // Automatically resolve streamed WEM assets from unhashed Wwise IDs
       for (const asset of assets) {
         if (!hashMap.has(asset.id)) {
@@ -251,7 +408,7 @@ export default function AssetBrowser() {
 
       hashMapRef.current = hashMap;
 
-      const treeRoot = buildTree(assets, hashMap, info.archive_names);
+      const treeRoot = buildTree(assets, hashMap, info.archive_names, modLabels);
       const { assetMap, flatLeafOrder } = buildAssetIndex(treeRoot);
       assetMapRef.current = assetMap;
       flatLeafOrderRef.current = flatLeafOrder;
@@ -271,7 +428,7 @@ export default function AssetBrowser() {
     } finally {
       setLoading(false);
     }
-  }, [archivesDir, refreshProjects]);
+  }, [archivesDir, overstrikeDir, refreshProjects]);
 
   const handleSelect = useCallback((node: TreeNodeData, event: React.MouseEvent) => {
     if (!node.asset) return;
@@ -317,10 +474,10 @@ export default function AssetBrowser() {
             assetId: node.asset.id,
             archivesDir,
             projectName: selectedProject,
-            assetPath: path,
+            assetPath: assetPathOf(node),
             sourceMode,
           });
-          pushLog("success", `→ ${path}: ${result}`);
+          pushLog("success", `→ ${assetPathOf(node)}: ${result}`);
           ok++;
         } catch (e) {
           pushLog("error", `✗ ${path}: ${e}`);
@@ -359,15 +516,15 @@ export default function AssetBrowser() {
     setCtxMenu(null);
     if (!node.asset || !tocPathRef.current || !archivesDir) return;
     try {
-      pushLog("info", `Extracting ${node.fullPath} to temp…`);
+      pushLog("info", `Extracting ${assetPathOf(node)} to temp…`);
       const tempPath: string = await invoke("extract_to_temp", {
         tocPath: tocPathRef.current,
         assetId: node.asset.id,
         archivesDir,
-        filename: node.fullPath,
+        filename: assetPathOf(node),
         sourceMode,
       });
-      openToolWindow(route, { filePath: tempPath, assetPath: node.fullPath }, settings.launchToolsInNewWindows);
+      openToolWindow(route, { filePath: tempPath, assetPath: assetPathOf(node) }, settings.launchToolsInNewWindows);
     } catch (e) {
       pushLog("error", `Failed to extract: ${e}`);
     }
@@ -391,10 +548,10 @@ export default function AssetBrowser() {
         assetId: node.asset.id,
         archivesDir,
         outputDir: selected,
-        assetPath: node.fullPath,
+        assetPath: assetPathOf(node),
         sourceMode,
       });
-      pushLog("success", `Extracted ${node.fullPath} → ${result}`);
+      pushLog("success", `Extracted ${assetPathOf(node)} → ${result}`);
     } catch (e) {
       pushLog("error", `Extract to path failed: ${e}`);
     }
@@ -407,7 +564,7 @@ export default function AssetBrowser() {
       pushLog("error", "Load a TOC first.");
       return;
     }
-    setRefsModal({ assetId: node.asset.id, assetPath: node.fullPath });
+    setRefsModal({ assetId: node.asset.id, assetPath: assetPathOf(node) });
   }
 
   const handleJumpToAsset = useCallback((assetId: string, _resolvedPath: string | null) => {
@@ -431,8 +588,8 @@ export default function AssetBrowser() {
   async function handleCopyAssetPath(node: TreeNodeData) {
     setCtxMenu(null);
     try {
-      await navigator.clipboard.writeText(node.fullPath);
-      pushLog("success", `Copied asset path: ${node.fullPath}`);
+      await navigator.clipboard.writeText(assetPathOf(node));
+      pushLog("success", `Copied asset path: ${assetPathOf(node)}`);
     } catch (e) {
       pushLog("error", `Copy path failed: ${e}`);
     }
@@ -451,13 +608,13 @@ export default function AssetBrowser() {
 
       if (!selected || Array.isArray(selected)) return;
 
-      pushLog("info", `Exporting ${node.fullPath} to DDS…`);
+      pushLog("info", `Exporting ${assetPathOf(node)} to DDS…`);
       const result: string = await invoke("extract_asset_as_dds", {
         tocPath: tocPathRef.current,
         assetId: node.asset.id,
         archivesDir,
         outputDir: selected,
-        assetPath: node.fullPath,
+        assetPath: assetPathOf(node),
         sourceMode,
       });
 
@@ -560,7 +717,7 @@ export default function AssetBrowser() {
                   <>
                     <div className={styles.detailGroup}>
                       <label>Path</label>
-                      <span className={styles.detailValuePath}>{singleNode.fullPath}</span>
+                      <span className={styles.detailValuePath}>{assetPathOf(singleNode)}</span>
                     </div>
                     <div className={styles.detailGroup}>
                       <label>Asset ID</label>
@@ -570,7 +727,7 @@ export default function AssetBrowser() {
                       <label>Spans</label>
                       <div className={styles.spansList}>
                         {singleNode.asset.spans.map((s, idx) => {
-                          const isTexture = singleNode.fullPath.toLowerCase().endsWith(".texture");
+                          const isTexture = assetPathOf(singleNode).toLowerCase().endsWith(".texture");
                           const label = isTexture
                             ? (s.span === 0 ? "SD" : s.span === 1 ? "HD" : `S${s.span}`)
                             : `S${s.span}`;
@@ -592,7 +749,7 @@ export default function AssetBrowser() {
                             const archiveName =
                               tocInfo.archive_names[s.archiveIndex] ?? `archive_${s.archiveIndex}`;
                             const fromMod = isModArchive(archiveName);
-                            const isTexture = singleNode.fullPath.toLowerCase().endsWith(".texture");
+                            const isTexture = assetPathOf(singleNode).toLowerCase().endsWith(".texture");
                             const spanLabel = isTexture
                               ? (s.span === 0 ? "SD" : s.span === 1 ? "HD" : `S${s.span}`)
                               : `S${s.span}`;
@@ -628,25 +785,25 @@ export default function AssetBrowser() {
                         View References
                       </button>
                     </div>
-                    {singleNode.fullPath.toLowerCase().endsWith(".texture") && tocPathRef.current && archivesDir && (
+                    {assetPathOf(singleNode).toLowerCase().endsWith(".texture") && tocPathRef.current && archivesDir && (
                       <TocTextureViewer
-                        assetPath={singleNode.fullPath}
+                        assetPath={assetPathOf(singleNode)}
                         tocPath={tocPathRef.current}
                         assetId={singleNode.asset.id}
                         archivesDir={archivesDir}
                       />
                     )}
-                    {singleNode.fullPath.toLowerCase().endsWith(".soundbank") && tocPathRef.current && archivesDir && (
+                    {assetPathOf(singleNode).toLowerCase().endsWith(".soundbank") && tocPathRef.current && archivesDir && (
                       <TocSoundbankViewer
-                        assetPath={singleNode.fullPath}
+                        assetPath={assetPathOf(singleNode)}
                         tocPath={tocPathRef.current}
                         assetId={singleNode.asset.id}
                         archivesDir={archivesDir}
                       />
                     )}
-                    {singleNode.fullPath.toLowerCase().endsWith(".wem") && tocPathRef.current && archivesDir && (
+                    {assetPathOf(singleNode).toLowerCase().endsWith(".wem") && tocPathRef.current && archivesDir && (
                       <TocWemViewer
-                        assetPath={singleNode.fullPath}
+                        assetPath={assetPathOf(singleNode)}
                         tocPath={tocPathRef.current}
                         assetId={singleNode.asset.id}
                         archivesDir={archivesDir}
@@ -773,7 +930,7 @@ export default function AssetBrowser() {
       </div>
 
       {ctxMenu && (() => {
-        const ext = extOf(ctxMenu.node.fullPath);
+        const ext = extOf(assetPathOf(ctxMenu.node));
         const targets = SEND_TO_ROUTES[ext] ?? [];
         return (
           <div
@@ -821,10 +978,10 @@ export default function AssetBrowser() {
                           tocPath: tocPathRef.current,
                           assetId: ctxMenu.node.asset.id,
                           archivesDir,
-                          filename: ctxMenu.node.fullPath,
+                          filename: assetPathOf(ctxMenu.node),
                           sourceMode,
                         });
-                        setSendToStager({ file: tempPath, defaultPath: `0/${ctxMenu.node.fullPath}` });
+                        setSendToStager({ file: tempPath, defaultPath: `0/${assetPathOf(ctxMenu.node)}` });
                       } catch (e) {
                         pushLog("error", `Extract failed: ${e}`);
                       }

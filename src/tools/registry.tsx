@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
-import { TbHexagon3D } from "react-icons/tb";
-import { MdTexture } from "react-icons/md";
+import { TbHexagon3D, TbListSearch } from "react-icons/tb";
+import { MdTexture, MdOutlinePalette } from "react-icons/md";
 import { PiImageSquareBold } from "react-icons/pi";
 import { VscJson } from "react-icons/vsc";
 
@@ -41,11 +41,27 @@ export const TOOLS: ToolDefinition[] = [
     category: "model",
   },
   {
+    id: "model-inspector",
+    label: "Model Inspector",
+    description: "Inspect looks, materials, skeleton, morphs and hair inside .model files",
+    path: "/tools/model-inspector",
+    icon: <TbListSearch />,
+    category: "model",
+  },
+  {
     id: "material-remapper",
     label: "Material Remapper",
     description: "Remap material path references inside .model files",
     path: "/tools/material-remapper",
     icon: <MdTexture />,
+    category: "model",
+  },
+  {
+    id: "material-editor",
+    label: "Material Editor",
+    description: "Edit texture slots, constants and flags inside .material files",
+    path: "/tools/material-editor",
+    icon: <MdOutlinePalette />,
     category: "model",
   },
   {

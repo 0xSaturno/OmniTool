@@ -1,6 +1,6 @@
 [package]
 name = "omnitool"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 default-run = "OmniTool"
 
@@ -55,6 +55,36 @@ name = "toc_asset_diag"
 path = "src/bin/toc_asset_diag.rs"
 required-features = ["dev-tools"]
 
+[[bin]]
+name = "material_dump"
+path = "src/bin/material_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "roundtrip_material"
+path = "src/bin/roundtrip_material.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "material_names_harvest"
+path = "src/bin/material_names_harvest.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "atmosphere_dump"
+path = "src/bin/atmosphere_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "model_audit"
+path = "src/bin/model_audit.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "model_dump"
+path = "src/bin/model_dump.rs"
+required-features = ["dev-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -84,7 +114,7 @@ memmap2 = "0.9"
 dashmap = "6"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 ww2ogg = "0.1"
-gltf = "1.4"
+gltf           = { version = "1.4", features = ["extras"] }
 
 [profile.release]
 opt-level    = 3

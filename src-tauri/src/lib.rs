@@ -1,6 +1,7 @@
 pub mod core;
 pub mod tools;
 mod commands;
+pub mod commands_model_inspector;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,7 +16,11 @@ pub fn run() {
             commands::ascii_to_model,
             commands::gltf_to_model,
             commands::read_model_materials,
+            commands_model_inspector::read_model_info,
             commands::save_model_materials,
+            commands::read_material,
+            commands::save_material,
+            commands::material_hash_name,
             commands::get_app_dir,
             commands::get_hashes_path,
             commands::hashes_exist,
@@ -51,6 +56,7 @@ pub fn run() {
             commands::diff_zonelightbin,
             commands::get_asset_references,
             commands::cancel_asset_references,
+            commands::load_mod_hashes,
             commands::write_text_file,
             commands::tauri_get_texture_info,
             commands::tauri_get_dds_info,

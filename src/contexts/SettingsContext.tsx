@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 
 export interface AppSettings {
   archivesDir: string;
+  // Overstrike folder (or its "Mods Library") used to resolve mod asset names.
+  overstrikeDir: string;
   launchToolsInNewWindows: boolean;
   experimentalTiffExport: boolean;
 }
@@ -15,6 +17,7 @@ interface SettingsContextValue {
 
 const defaultSettings: AppSettings = {
   archivesDir: "",
+  overstrikeDir: "",
   launchToolsInNewWindows: false,
   experimentalTiffExport: false,
 };

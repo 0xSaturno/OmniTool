@@ -1,11 +1,12 @@
 use crate::core::error::{Result, ToolkitError};
 use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::{
-    geo::{TAG_VERTEXES, TAG_UV1, TAG_COLORS, TAG_INDEXES, Vertex, VertexesSection, Uv1Section, ColorsSection, IndexesSection},
+    geo::{TAG_VERTEXES, TAG_UV1, TAG_COLORS, TAG_INDEXES, Vertex, VertexesSection, Uv1Section, ColorsSection, IndexesSection, DEFAULT_UV_SCALE},
     meshes::{TAG_MESHES, MeshDefinition},
     skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry},
     look::{TAG_LOOK, LookSection},
-    built::{get_uv_scale, get_position_scale},
+    built::{get_uv_scale, get_uv1_scale, get_position_scale},
+    morph::TAG_ANIM_MORPH_INFO,
 };
 
 const TAG_BUILT:     u32 = 0x283D0383;
@@ -19,6 +20,9 @@ pub struct AsciiVertex {
     pub normal:   (f32, f32, f32),
     pub raw_normal: Option<u32>,
     pub uv:       Option<(f32, f32)>,
+    /// Second UV layer, matching Model UV1 Vert. `None` when the file declares
+    /// only one layer.
+    pub uv1:      Option<(f32, f32)>,
     pub groups:   Vec<u8>,
     pub weights:  Vec<f32>,
 }
@@ -117,14 +121,16 @@ fn parse_meshes(lines: &[&str], raw_lines: &[&str], ptr: &mut usize, bones_count
             let raw_normal = raw_lines.get(nor_line_idx).and_then(|l| extract_nrm_tag(l));
             let _col  = read_split(lines, ptr)?;
 
-            let uv = if uv_layers > 0 {
-                let uv_p = read_split(lines, ptr)?;
-                for _ in 1..uv_layers { *ptr += 1; }
-                Some((
-                    uv_p.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
-                    uv_p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
+            let read_uv = |lines: &[&str], ptr: &mut usize| -> Result<(f32, f32)> {
+                let p = read_split(lines, ptr)?;
+                Ok((
+                    p.get(0).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
+                    p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
                 ))
-            } else { None };
+            };
+            let uv = if uv_layers > 0 { Some(read_uv(lines, ptr)?) } else { None };
+            let uv1 = if uv_layers > 1 { Some(read_uv(lines, ptr)?) } else { None };
+            for _ in 2..uv_layers { *ptr += 1; }
 
             let (groups, weights) = if bones_count > 0 {
                 let gp = read_split(lines, ptr)?;
@@ -146,7 +152,7 @@ fn parse_meshes(lines: &[&str], raw_lines: &[&str], ptr: &mut usize, bones_count
                     nor_p.get(1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
                     nor_p.get(2).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0),
                 ),
-                raw_normal, uv, groups, weights,
+                raw_normal, uv, uv1, groups, weights,
             });
         }
 
@@ -335,10 +341,15 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
 
     let built_pos_scale: f32 = model.dat1.get_section_data(TAG_BUILT)
         .map(get_position_scale).unwrap_or(1.0 / 4096.0);
+    // Built UV scales — same values the writer uses, so round-trip is exact.
+    let built_uv_scale: f32 = model.dat1.get_section_data(TAG_BUILT)
+        .map(get_uv_scale).unwrap_or(DEFAULT_UV_SCALE);
+    let built_uv1_scale: f32 = model.dat1.get_section_data(TAG_BUILT)
+        .map(get_uv1_scale).unwrap_or(DEFAULT_UV_SCALE);
 
     let vert_data = model.dat1.get_section_data(TAG_VERTEXES)
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_VERTEXES))?.to_vec();
-    let mut vert_sec = VertexesSection::parse_scaled(&vert_data, built_pos_scale)?;
+    let mut vert_sec = VertexesSection::parse_scaled(&vert_data, built_pos_scale, built_uv_scale)?;
 
     let idx_data = model.dat1.get_section_data(TAG_INDEXES)
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_INDEXES))?.to_vec();
@@ -351,10 +362,6 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     // must follow the same relayout or every mesh reads another mesh's colors.
     let colors_data: Option<Vec<u8>> = model.dat1.get_section_data(TAG_COLORS).map(|d| d.to_vec());
     let mut colors_sec: Option<ColorsSection> = colors_data.as_deref().map(|d| ColorsSection::parse(d).ok()).flatten();
-
-    // Built UV scale — same value writer uses, so round-trip is exact.
-    let built_uv_scale: f32 = model.dat1.get_section_data(crate::tools::model_converter::sections::built::TAG_BUILT)
-        .map(get_uv_scale).unwrap_or(1.0 / 16384.0);
 
     // Skin data
     let _has_skin_batch = model.dat1.get_section_data(TAG_SKIN_BATCH).is_some();
@@ -431,7 +438,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             let max_abs_index = new_vstart[mi] as u64 + vc - 1;
             if max_abs_index > u16::MAX as u64 {
                 force_relative[mi] = true;
-                eprintln!(
+                log::warn!(
                     "[inject_ascii] mesh #{} absolute indices would overflow (max_abs_index={}) -> forcing relative indices",
                     mi,
                     max_abs_index
@@ -538,7 +545,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 meshes.len()
             ))
         })?;
-        eprintln!(
+        log::debug!(
             "[inject_ascii] mesh '{}' -> model mesh #{} (verts={}, faces={})",
             mesh_data_ascii.name,
             mesh_index,
@@ -763,10 +770,14 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
             if let Some((u, v)) = av.uv {
                 let ru = (u / built_uv_scale).round() as i16;
                 let rv = (v / built_uv_scale).round() as i16;
-                new_v.u = ru as f32 / 32768.0;
-                new_v.v = rv as f32 / 32768.0;
+                new_v.u = ru as f32 * built_uv_scale;
+                new_v.v = rv as f32 * built_uv_scale;
+                // Fall back to UV0 when the file declares only one layer.
+                let (u1, v1) = av.uv1.unwrap_or((u, v));
+                let ru1 = (u1 / built_uv1_scale).round() as i16;
+                let rv1 = (v1 / built_uv1_scale).round() as i16;
                 if i == 0 && vi < 3 {
-                    eprintln!(
+                    log::debug!(
                         "[inject_ascii] uv sample mesh#{} v{}: ascii=({:.6},{:.6}) raw=({}, {}) vertex_uv=({:.6},{:.6}) scale={:.8}",
                         mesh_index,
                         vi,
@@ -781,7 +792,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
                 }
                 if let Some(ref mut uv1) = uv1_sec {
                     if cur_vertex < uv1.uvs.len() {
-                        uv1.uvs[cur_vertex] = (ru, rv);
+                        uv1.uvs[cur_vertex] = (ru1, rv1);
                     }
                 }
             }
@@ -831,7 +842,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         }
 
         if has_skin && rebuild_skin && mesh_skin_changed {
-            eprintln!(
+            log::warn!(
                 "[inject_ascii] mesh #{} fallback_weights={}/{} reused_prev={} unresolved={}",
                 mesh_index,
                 fallback_weight_count,
@@ -968,7 +979,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
     // Must run *before* vert_sec.save(), because Vertex::save_rcra() reads the
     // computed tangents and packs them into the top bits of the normal u32 and
     // the i16 W field.
-    calculate_tangents(&mut vert_sec, uv1_sec.as_ref(), &idx_sec, &updates, &meshes, built_uv_scale);
+    calculate_tangents(&mut vert_sec, uv1_sec.as_ref(), &idx_sec, &updates, &meshes, built_uv1_scale);
 
     // Refresh BUILT total vertex/index counts to match the rebuilt sections.
     // The game validates section sizes against these — if we grow VERTEXES /
@@ -984,8 +995,29 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<Vec<Mesh
         model.dat1.set_section_data(TAG_BUILT, built)?;
     }
 
+    // Morph targets index vertices relative to their subset's vertex_start, so a
+    // relayout silently points every delta at the wrong vertex. Nothing here
+    // rewrites the morph stream yet, so say so loudly rather than shipping a
+    // model whose face rig is quietly scrambled.
+    if model.dat1.get_section_data(TAG_ANIM_MORPH_INFO).is_some() {
+        let moved: Vec<usize> = updates
+            .iter()
+            .filter(|u| {
+                meshes.get(u.mesh_index).is_some_and(|m| {
+                    m.vertex_start != u.vertex_start || m.vertex_count != u.vertex_count
+                })
+            })
+            .map(|u| u.mesh_index)
+            .collect();
+        if !moved.is_empty() {
+            log::warn!(
+                "model has morph targets and subsets {moved:?} changed vertex layout —                  the existing morph deltas now point at the wrong vertices. Re-importing                  morph-bearing meshes is not supported yet; keep their vertex count and                  order unchanged."
+            );
+        }
+    }
+
     // Save back all modified sections
-    model.dat1.set_section_data(TAG_VERTEXES, vert_sec.save_scaled(built_pos_scale))?;
+    model.dat1.set_section_data(TAG_VERTEXES, vert_sec.save_scaled(built_pos_scale, built_uv_scale))?;
     model.dat1.set_section_data(TAG_INDEXES, idx_sec.save())?;
     if let Some(ref uv1) = uv1_sec {
         model.dat1.set_section_data(TAG_UV1, uv1.save())?;
@@ -1290,7 +1322,7 @@ fn update_meshes(model: &mut ModelFile, updates: &[MeshUpdate]) -> Result<()> {
             // (this game's meshes carry 0x40), and inject_rivet.py — the
             // reference that reportedly works — never touches flags at all.
             if u.force_relative { m.flags |= 0x10; }
-            eprintln!(
+            log::debug!(
                 "[inject_ascii] updated mesh #{}: v_start={} v_count={} i_start={} i_count={} first_weight={} skin_batches={}",
                 u.mesh_index,
                 u.vertex_start,

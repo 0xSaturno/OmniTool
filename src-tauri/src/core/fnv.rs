@@ -26,8 +26,12 @@ mod tests {
     fn test_fnv1a_32() {
         // Test vectors for FNV-1a 32-bit
         assert_eq!(fnv1a_32(b""), FNV_OFFSET_BASIS);
-        // "a"
-        assert_eq!(fnv1a_32(b"a"), 0x050C5D3F);
+        // "a" — canonical FNV-1a 32 vector. The previous value (0x050C5D3F)
+        // was a mistyped FNV-1 vector (FNV-1("a") is 0x050C5D7E), not FNV-1a.
+        assert_eq!(fnv1a_32(b"a"), 0xE40C292C);
+        // Canonical vector from the FNV reference test suite, to pin the
+        // multi-byte path as well.
+        assert_eq!(fnv1a_32(b"foobar"), 0xBF9CF968);
         // Wwise lowercase check
         assert_eq!(hash_string("Play_Sheepinator"), hash_string("play_sheepinator"));
     }

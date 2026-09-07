@@ -451,15 +451,30 @@
 
 .folderIcon {
   flex-shrink: 0;
-  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+/* Icons only under the pinned [MODS] branch — labels keep the normal color. */
+.modRow .folderIcon,
+.modRow .fileIcon {
+  color: var(--warning);
+}
+
+.modRoot {
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .fileIcon {
   flex-shrink: 0;
-  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8em;
   color: var(--text-muted);
   width: 1em;
-  text-align: center;
 }
 
 .nodeName {

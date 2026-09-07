@@ -65,6 +65,12 @@ use crate::core::config::ConfigFile;
 use crate::core::dat1::Dat1;
 use crate::core::error::ToolkitError;
 use crate::core::filesystem;
+use crate::core::material::{
+    MaterialConstant, MaterialFile, MaterialHeaderSection, MaterialSampler, MaterialSerialized,
+    TAG_MATERIAL_FUR, TAG_MATERIAL_HEADER, TAG_MATERIAL_SERIALIZED,
+};
+use crate::core::material_graph::MaterialTemplate;
+use crate::core::material_names;
 use crate::core::toc::{Toc, TocAsset};
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
@@ -911,15 +917,36 @@ pub async fn save_model_materials(
         // Patch matfile_off (first u64 of the pair).
         pairs[edit.index][0..8].copy_from_slice(&new_matfile_off.to_le_bytes());
 
-        // Update crc64 (first u64 of the corresponding triple) so the game's
-        // lookup-by-hash still resolves to the new material path.
-        let new_crc = crc64::hash(&edit.path);
-        triples[edit.index][0..8].copy_from_slice(&new_crc.to_le_bytes());
+        // The id table is sorted by ihash(lower(slot_name)) and is NOT aligned
+        // with the slot order, so the row to patch has to be found by hash.
+        // Writing triples[edit.index] would corrupt an unrelated slot on any
+        // model whose slots are not already in hash order.
+        let slot_name = {
+            let name_off = u64::from_le_bytes(pairs[edit.index][8..16].try_into().unwrap());
+            model.dat1.get_string(name_off as u32).unwrap_or_default()
+        };
+        let want = crate::core::crc32::hash(&slot_name.to_ascii_lowercase());
+        let row = triples
+            .iter()
+            .position(|t| u32::from_le_bytes(t[8..12].try_into().unwrap()) == want);
 
-        eprintln!(
-            "[material_remapper] slot {} -> {:?} (crc64={:016X}, off={})",
-            edit.index, edit.path, new_crc, new_matfile_off
-        );
+        let new_crc = crc64::hash(&edit.path);
+        match row {
+            Some(r) => {
+                triples[r][0..8].copy_from_slice(&new_crc.to_le_bytes());
+                info!(
+                    "material slot {} ({slot_name}) -> {:?} (crc64={new_crc:016X}, id row {r})",
+                    edit.index, edit.path
+                );
+            }
+            None => {
+                warn!(
+                    "material slot {} ({slot_name}) has no id-table row for hash {want:08X}; \
+                     path updated but the asset id was left alone",
+                    edit.index
+                );
+            }
+        }
     }
 
     // Reassemble: all pairs first, then all triples — preserves original layout.
@@ -944,8 +971,8 @@ pub async fn save_model_materials(
 
     let out_bytes = model.save();
     std::fs::write(&output_path, &out_bytes)?;
-    eprintln!(
-        "[material_remapper] saved {} edit(s) to {}",
+    info!(
+        "material remap: saved {} edit(s) to {}",
         materials.len(),
         output_path.display()
     );
@@ -984,25 +1011,28 @@ pub async fn load_hashes() -> Result<Vec<(String, String)>, ToolkitError> {
     let text = std::fs::read_to_string(&path)?;
 
     let mut hashes = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    let parse_into = |text: &str, hashes: &mut Vec<(String, String)>| {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(3, ',');
+            let Some(hex_str) = parts.next() else {
+                continue;
+            };
+            let Some(path_str) = parts.next() else {
+                continue;
+            };
+            // Validate hex but keep as string to avoid u64 precision loss in JS
+            if u64::from_str_radix(hex_str, 16).is_err() {
+                debug!("load_hashes: skipping malformed hex {:?}", hex_str);
+                continue;
+            }
+            hashes.push((hex_str.to_uppercase(), path_str.to_string()));
         }
-        let mut parts = line.splitn(3, ',');
-        let Some(hex_str) = parts.next() else {
-            continue;
-        };
-        let Some(path_str) = parts.next() else {
-            continue;
-        };
-        // Validate hex but keep as string to avoid u64 precision loss in JS
-        if u64::from_str_radix(hex_str, 16).is_err() {
-            debug!("load_hashes: skipping malformed hex {:?}", hex_str);
-            continue;
-        }
-        hashes.push((hex_str.to_uppercase(), path_str.to_string()));
-    }
+    };
+    parse_into(&text, &mut hashes);
 
     eprintln!(
         "[asset_browser] loaded {} hashes in {:?}",
@@ -1010,6 +1040,289 @@ pub async fn load_hashes() -> Result<Vec<(String, String)>, ToolkitError> {
         start.elapsed()
     );
     Ok(hashes)
+}
+
+// ---------------------------------------------------------------------------
+// Overstrike mod names
+// ---------------------------------------------------------------------------
+
+/// One `asset id → path` pairing recovered from a `.stage` mod package.
+#[derive(serde::Serialize)]
+pub struct ModHashEntry {
+    pub asset_id: String,
+    pub path: String,
+    pub span: u8,
+    /// File the entry came from, e.g. `MMS+_V2-4.stage`.
+    pub mod_file: String,
+    /// `d\mods\modN` when this mod is enabled in the matched profile.
+    pub mod_archive: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ModHashResult {
+    pub entries: Vec<ModHashEntry>,
+    pub mods_read: usize,
+    /// Enabled mods in install order — index N maps to `d\mods\modN`.
+    pub installed: Vec<String>,
+    pub profile: Option<String>,
+    pub notes: Vec<String>,
+}
+
+/// Normalize a Windows path for comparison: lowercase, forward slashes, no
+/// trailing separator.
+fn norm_dir(p: &str) -> String {
+    p.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+/// Read asset names out of an Overstrike installation.
+///
+/// `.stage` packages store their assets as `<span>/<asset path>`, and
+/// Overstrike hashes that path with the DAT1 CRC64 to get the id it writes
+/// into the TOC (`StageInstallerHelper.IsAssetFile`). Hashing the entry names
+/// the same way recovers the paths of mod-added assets, which by definition
+/// never appear in the shipped `hashes` list.
+///
+/// `overstrike_dir` may point at the Overstrike folder or straight at its
+/// `Mods Library`. When `game_dir` is given, the profile whose `path` matches
+/// it decides which mods are installed as `mod0`, `mod1`, …
+#[tauri::command]
+pub async fn load_mod_hashes(
+    overstrike_dir: String,
+    game_dir: Option<String>,
+) -> Result<ModHashResult, ToolkitError> {
+    use crate::core::crc64;
+    use std::collections::HashSet;
+
+    let start = Instant::now();
+    let base = PathBuf::from(overstrike_dir.trim());
+    if !base.is_dir() {
+        return Err(ToolkitError::Parse(format!(
+            "Overstrike folder not found: {}",
+            base.display()
+        )));
+    }
+
+    let is_library = base
+        .file_name()
+        .map(|n| n.to_string_lossy().eq_ignore_ascii_case("Mods Library"))
+        .unwrap_or(false);
+    let (root, library) = if is_library {
+        (
+            base.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.clone()),
+            base.clone(),
+        )
+    } else {
+        (base.clone(), base.join("Mods Library"))
+    };
+
+    if !library.is_dir() {
+        return Err(ToolkitError::Parse(format!(
+            "no 'Mods Library' folder under {}",
+            root.display()
+        )));
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+
+    // Pick the profile that targets this game install, so the enabled-mod
+    // order can be attributed to the right `modN` archive.
+    let mut installed: Vec<String> = Vec::new();
+    let mut profile_name: Option<String> = None;
+    let wanted_game = game_dir.as_deref().map(norm_dir);
+
+    if let Ok(dir) = std::fs::read_dir(root.join("Profiles")) {
+        let mut candidates: Vec<(String, String, Vec<String>)> = Vec::new();
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.eq_ignore_ascii_case("Settings.json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                notes.push(format!("Skipped unreadable profile {name}"));
+                continue;
+            };
+            let game_path = json
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let enabled: Vec<String> = json
+                .get("mods")
+                .and_then(|v| v.as_array())
+                .map(|mods| {
+                    mods.iter()
+                        .filter(|m| m.get(1).and_then(|v| v.as_bool()).unwrap_or(false))
+                        .filter_map(|m| m.get(0).and_then(|v| v.as_str()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            candidates.push((name, game_path, enabled));
+        }
+
+        let chosen = match &wanted_game {
+            Some(target) => candidates
+                .iter()
+                .find(|(_, game_path, _)| norm_dir(game_path) == *target)
+                .or_else(|| {
+                    if candidates.len() == 1 {
+                        candidates.first()
+                    } else {
+                        None
+                    }
+                }),
+            None if candidates.len() == 1 => candidates.first(),
+            None => None,
+        };
+
+        match chosen {
+            Some((name, game_path, enabled)) => {
+                notes.push(format!(
+                    "Profile {name} → {} ({} mod(s) installed)",
+                    game_path,
+                    enabled.len()
+                ));
+                profile_name = Some(name.clone());
+                installed = enabled.clone();
+            }
+            None => notes.push(format!(
+                "No profile matched this game folder ({} candidate(s)); mod→archive mapping unavailable.",
+                candidates.len()
+            )),
+        }
+    } else {
+        notes.push(format!("No Profiles folder under {}", root.display()));
+    }
+
+    // Read every package in the library — a disabled mod's names cost
+    // nothing and stay useful if it gets installed later.
+    let mut stage_files: Vec<PathBuf> = std::fs::read_dir(&library)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("stage"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Installed mods last, so their names win when two packages disagree.
+    stage_files.sort_by_key(|p| {
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        match installed.iter().position(|m| m.eq_ignore_ascii_case(&name)) {
+            Some(i) => (1usize, i),
+            None => (0usize, 0),
+        }
+    });
+
+    let mut entries: Vec<ModHashEntry> = Vec::new();
+    let mut seen: HashSet<(u64, String)> = HashSet::new();
+    let mut mods_read = 0usize;
+    let mut literal_ids = 0usize;
+
+    for path in &stage_files {
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mod_archive = installed
+            .iter()
+            .position(|m| m.eq_ignore_ascii_case(&file_name))
+            .map(|i| format!("d\\mods\\mod{i}"));
+
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                notes.push(format!("{file_name}: {e}"));
+                continue;
+            }
+        };
+        let mut zip = match zip::ZipArchive::new(file) {
+            Ok(z) => z,
+            Err(e) => {
+                notes.push(format!("{file_name}: not a readable .stage ({e})"));
+                continue;
+            }
+        };
+        mods_read += 1;
+
+        for i in 0..zip.len() {
+            let Ok(entry) = zip.by_index_raw(i) else {
+                continue;
+            };
+            let name = entry.name().to_string();
+            if entry.is_dir() || name.eq_ignore_ascii_case("info.json") {
+                continue;
+            }
+            // `<span>/<asset path>` — anything else is packaging metadata.
+            let Some(sep) = name.find(['/', '\\']) else {
+                continue;
+            };
+            let Ok(span) = name[..sep].parse::<u8>() else {
+                continue;
+            };
+            let asset_path = &name[sep + 1..];
+            if asset_path.is_empty() {
+                continue;
+            }
+            // Entries already named by id carry no path to recover.
+            if asset_path.len() == 16 && asset_path.bytes().all(|b| b.is_ascii_hexdigit()) {
+                literal_ids += 1;
+                continue;
+            }
+
+            let id = crc64::hash(asset_path);
+            let normalized = crc64::normalize_path(asset_path);
+            if !seen.insert((id, normalized.clone())) {
+                continue;
+            }
+            entries.push(ModHashEntry {
+                asset_id: format!("{id:016X}"),
+                path: normalized,
+                span,
+                mod_file: file_name.clone(),
+                mod_archive: mod_archive.clone(),
+            });
+        }
+    }
+
+    if literal_ids > 0 {
+        notes.push(format!(
+            "{literal_ids} entries were packed by raw id and carry no path."
+        ));
+    }
+    notes.push(format!(
+        "Read {mods_read} .stage package(s) from {} — {} named assets.",
+        library.display(),
+        entries.len()
+    ));
+
+    info!(
+        "load_mod_hashes: {} entries from {} packages in {:?}",
+        entries.len(),
+        mods_read,
+        start.elapsed()
+    );
+
+    Ok(ModHashResult {
+        entries,
+        mods_read,
+        installed,
+        profile: profile_name,
+        notes,
+    })
 }
 
 // ===========================================================================
@@ -1785,6 +2098,66 @@ fn push_f32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off
     }
 }
 
+/// `asset id -> path` from the shipped hash list, loaded once. Empty when the
+/// list is missing — references then show as raw ids.
+fn atmosphere_hash_lookup() -> &'static HashMap<u64, String> {
+    static LOOKUP: OnceLock<HashMap<u64, String>> = OnceLock::new();
+    LOOKUP.get_or_init(|| {
+        let mut map = HashMap::new();
+        if let Ok(path) = filesystem::hashes_path() {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                for line in text.lines() {
+                    let mut parts = line.splitn(3, ',');
+                    let (Some(hex), Some(asset_path)) = (parts.next(), parts.next()) else {
+                        continue;
+                    };
+                    if let Ok(id) = u64::from_str_radix(hex.trim(), 16) {
+                        map.insert(id, asset_path.to_string());
+                    }
+                }
+            }
+        }
+        map
+    })
+}
+
+/// An 8-byte asset reference. Unset slots read `FFFF…`/0 in shipped files;
+/// set ones are packed asset ids, resolved to a path when the hash list has it.
+fn push_asset_ref(
+    values: &mut Vec<AtmosphereKnownValue>,
+    data: &[u8],
+    name: &str,
+    off: usize,
+    hashes: &HashMap<u64, String>,
+) {
+    let Some(bytes) = data.get(off..off + 8) else {
+        return;
+    };
+    let id = u64::from_le_bytes(bytes.try_into().unwrap());
+    let low = (id & 0xFFFF_FFFF) as u32;
+    let high = (id >> 32) as u32;
+    let value = if id == u64::MAX || id == 0 {
+        "<unset>".to_string()
+    } else if low == 0 {
+        // Empty slot that still records the type it expects.
+        match crate::core::references::ext_label(high) {
+            Some(ext) => format!("<unset> ({ext})"),
+            None => format!("<unset> (type {high:08X})"),
+        }
+    } else {
+        match hashes.get(&id) {
+            Some(path) => path.clone(),
+            None => format!("{id:016X}"),
+        }
+    };
+    values.push(AtmosphereKnownValue {
+        name: name.to_string(),
+        offset: off as u32,
+        value_type: "asset".to_string(),
+        value,
+    });
+}
+
 fn push_u32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_u32_at(data, off) {
         values.push(AtmosphereKnownValue {
@@ -1861,7 +2234,9 @@ pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, 
     let mut known_values = Vec::new();
     if let Some(header) = dat1.get_section_data(ATMOSPHERE_SECTION_HEADER) {
         push_u32(&mut known_values, header, "z1", 32);
-        push_f32(&mut known_values, header, "time_of_day", 36);
+        // Was labelled `time_of_day`, but it reads 1000.0 in shipped
+        // atmospheres — the offset is unverified, so don't claim a name.
+        push_f32(&mut known_values, header, "unverified_f36", 36);
         push_u32(&mut known_values, header, "z2", 40);
         push_u32(&mut known_values, header, "z3", 44);
 
@@ -1876,16 +2251,39 @@ pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, 
         push_f32(&mut known_values, header, "curve_pair_4_x", 104);
         push_f32(&mut known_values, header, "curve_pair_4_y", 108);
 
-        push_f32(&mut known_values, header, "sun_rgba_r", 112);
-        push_f32(&mut known_values, header, "sun_rgba_g", 116);
-        push_f32(&mut known_values, header, "sun_rgba_b", 120);
-        push_f32(&mut known_values, header, "sun_rgba_a", 124);
-        push_f32(&mut known_values, header, "sun_rot", 128);
-        push_f32(&mut known_values, header, "sun_elev", 132);
-        push_u32(&mut known_values, header, "sun_a", 136);
-        push_u32(&mut known_values, header, "sun_b", 140);
-        push_f32(&mut known_values, header, "sun_c", 144);
-        push_u32(&mut known_values, header, "sun_radius", 148);
+        // Asset references are grouped at the front of the cooked struct in
+        // schema order, 8 bytes each (strings take 16).
+        let hash_lookup = atmosphere_hash_lookup();
+        push_asset_ref(&mut known_values, header, "IconPath", 0, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "PreviewModel", 8, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "LightGridAtmosphere", 16, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "SkySettings.SkyObjects", 56, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "SkySettings.SkyBoxCubeMap", 64, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "AssetSwap.PlatformSwaps", 72, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "EnvLighting.FillLightCubeMap", 80, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "EnvLighting.LightGridModConfig", 88, &hash_lookup);
+        push_asset_ref(&mut known_values, header, "EnvLighting.KeylightMaterial", 96, &hash_lookup);
+        push_asset_ref(
+            &mut known_values,
+            header,
+            "BloomSettings.BloomDirtinessAsset",
+            104,
+            &hash_lookup,
+        );
+
+        // Names below are the DDL schema's own (`AtmosphereDef`), matched to
+        // these offsets against all 95 shipped atmospheres — see
+        // docs/ATMOSPHERE_LAYOUT.md for the evidence behind each one.
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.X", 112);
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Y", 116);
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Z", 120);
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightIntensity", 124);
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightAzimuth", 128);
+        push_f32(&mut known_values, header, "EnvLighting.KeyLightElevation", 132);
+        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetAzimuth", 136);
+        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetElevation", 140);
+        push_f32(&mut known_values, header, "EnvLighting.ShadowDrawDist", 144);
+        push_u32(&mut known_values, header, "EnvLighting.CsmLodCount", 148);
 
         push_f32(&mut known_values, header, "unk3_f0", 152);
         push_f32(&mut known_values, header, "unk3_f1", 156);
@@ -2025,6 +2423,51 @@ pub async fn write_atmosphere(
                 ))
             })?;
             header_data[off..off + 4].copy_from_slice(&parsed.to_le_bytes());
+        }
+    }
+
+    // The engine resolves assets by the packed id in the header; the strings
+    // section is only the readable form of the same reference. Editing one
+    // without the other either does nothing in game (string alone) or leaves
+    // the file lying to every tool that reads it (id alone), so keep them
+    // together: re-hash each changed path and patch the slot holding its id.
+    if let Some(string_list) = &strings {
+        let old_strings: Vec<String> = dat1
+            .get_section_data(ATMOSPHERE_SECTION_STRINGS)
+            .map(|sec| {
+                sec.split(|&b| b == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut synced = 0usize;
+        for (old, new) in old_strings.iter().zip(string_list.iter()) {
+            if old == new || new.is_empty() {
+                continue;
+            }
+            let old_id = crate::core::crc64::hash(old);
+            let new_id = crate::core::crc64::hash(new);
+            let mut patched_here = 0usize;
+            let mut off = 0usize;
+            while off + 8 <= header_data.len() {
+                if u64::from_le_bytes(header_data[off..off + 8].try_into().unwrap()) == old_id {
+                    header_data[off..off + 8].copy_from_slice(&new_id.to_le_bytes());
+                    patched_here += 1;
+                    info!(
+                        "write_atmosphere: +{off} {old_id:016X} -> {new_id:016X} ({old} -> {new})"
+                    );
+                }
+                off += 4;
+            }
+            if patched_here == 0 {
+                warn!("write_atmosphere: no header slot referenced {old:?}; id not updated");
+            }
+            synced += patched_here;
+        }
+        if synced > 0 {
+            info!("write_atmosphere: synced {synced} asset id(s) with edited strings");
         }
     }
 
@@ -3875,6 +4318,288 @@ pub async fn bnk_scan_wem_folder(
         }
     }
     Ok(matched)
+}
+
+// ---------------------------------------------------------------------------
+// Material Editor
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+pub struct MaterialSamplerView {
+    pub name_hash: u32,
+    pub name: String,
+    pub path: String,
+    pub slot_index: Option<u16>,
+    pub default_path: Option<String>,
+    pub in_template: bool,
+    pub overridden: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialConstantView {
+    pub name_hash: u32,
+    pub name: String,
+    pub values: Vec<f32>,
+    pub default_values: Option<Vec<f32>>,
+    pub in_template: bool,
+    pub overridden: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialDocument {
+    pub path: String,
+    pub template_path: Option<String>,
+    pub template_loaded: bool,
+    pub template_note: Option<String>,
+    pub header: MaterialHeaderSection,
+    pub av_material_name: Option<String>,
+    pub audio_material_name: Option<String>,
+    pub samplers: Vec<MaterialSamplerView>,
+    pub constants: Vec<MaterialConstantView>,
+    pub has_fur_section: bool,
+    pub section_tags: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct MaterialSamplerEdit {
+    pub name_hash: u32,
+    pub path: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct MaterialConstantEdit {
+    pub name_hash: u32,
+    pub values: Vec<f32>,
+}
+
+/// Pull the template out of the TOC; `Err` here is informational, never fatal.
+fn load_material_template(
+    template_path: &str,
+    toc_path: Option<&str>,
+    archives_dir: Option<&str>,
+    source_mode: Option<&str>,
+) -> std::result::Result<MaterialTemplate, String> {
+    let (toc_path, archives_dir) = match (toc_path, archives_dir) {
+        (Some(t), Some(a)) if !t.is_empty() && !a.is_empty() => (t, a),
+        _ => return Err("archives folder not configured".into()),
+    };
+
+    let mode = SourceMode::parse(source_mode).map_err(|e| e.to_string())?;
+    let resolved = resolve_toc_path(toc_path, mode).map_err(|e| e.to_string())?;
+    let toc_bytes = std::fs::read(&resolved).map_err(|e| e.to_string())?;
+    let toc = Toc::parse(&toc_bytes).map_err(|e| e.to_string())?;
+
+    let id = crate::core::crc64::hash(template_path);
+    let asset = find_toc_asset_candidate(&toc, id, Some(template_path))
+        .ok_or_else(|| format!("{template_path} not found in TOC"))?;
+    let raw = toc
+        .extract_asset(&asset, Path::new(archives_dir))
+        .map_err(|e| e.to_string())?;
+    MaterialTemplate::parse(&raw).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_material(
+    material_path: String,
+    toc_path: Option<String>,
+    archives_dir: Option<String>,
+    source_mode: Option<String>,
+) -> Result<MaterialDocument, ToolkitError> {
+    let data = std::fs::read(&material_path)?;
+    let material = MaterialFile::parse(&data)?;
+
+    let header = match material.dat1.get_section_data(TAG_MATERIAL_HEADER) {
+        Some(sec) => MaterialHeaderSection::parse(sec)?,
+        None => return Err(ToolkitError::SectionNotFound(TAG_MATERIAL_HEADER)),
+    };
+    let serialized = match material.dat1.get_section_data(TAG_MATERIAL_SERIALIZED) {
+        Some(sec) => MaterialSerialized::parse(sec)?,
+        None => MaterialSerialized::default(),
+    };
+
+    let template_path = material.template_path();
+    let mut template_note = None;
+    let template = match &template_path {
+        Some(p) => match load_material_template(
+            p,
+            toc_path.as_deref(),
+            archives_dir.as_deref(),
+            source_mode.as_deref(),
+        ) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!("material template {p} unavailable: {e}");
+                template_note = Some(e);
+                None
+            }
+        },
+        None => {
+            template_note = Some("no .materialgraph reference in this material".into());
+            None
+        }
+    };
+
+    let mut samplers: Vec<MaterialSamplerView> = serialized
+        .samplers
+        .iter()
+        .map(|s| {
+            let slot = template
+                .as_ref()
+                .and_then(|t| t.samplers.iter().find(|ts| ts.name_hash == s.name_hash));
+            MaterialSamplerView {
+                name_hash: s.name_hash,
+                name: material_names::label(s.name_hash),
+                path: s.path.clone(),
+                slot_index: slot.map(|t| t.slot_index),
+                default_path: slot.map(|t| t.default_path.clone()),
+                in_template: slot.is_some(),
+                overridden: true,
+            }
+        })
+        .collect();
+
+    let mut constants: Vec<MaterialConstantView> = serialized
+        .constants
+        .iter()
+        .map(|c| {
+            let slot = template
+                .as_ref()
+                .and_then(|t| t.constants.iter().find(|tc| tc.name_hash == c.name_hash));
+            MaterialConstantView {
+                name_hash: c.name_hash,
+                name: material_names::label(c.name_hash),
+                values: c.values.clone(),
+                default_values: slot.map(|t| t.default_values.clone()),
+                in_template: slot.is_some(),
+                overridden: true,
+            }
+        })
+        .collect();
+
+    if let Some(t) = &template {
+        for ts in &t.samplers {
+            if !samplers.iter().any(|s| s.name_hash == ts.name_hash) {
+                samplers.push(MaterialSamplerView {
+                    name_hash: ts.name_hash,
+                    name: material_names::label(ts.name_hash),
+                    path: ts.default_path.clone(),
+                    slot_index: Some(ts.slot_index),
+                    default_path: Some(ts.default_path.clone()),
+                    in_template: true,
+                    overridden: false,
+                });
+            }
+        }
+        for tc in &t.constants {
+            if !constants.iter().any(|c| c.name_hash == tc.name_hash) {
+                constants.push(MaterialConstantView {
+                    name_hash: tc.name_hash,
+                    name: material_names::label(tc.name_hash),
+                    values: tc.default_values.clone(),
+                    default_values: Some(tc.default_values.clone()),
+                    in_template: true,
+                    overridden: false,
+                });
+            }
+        }
+    }
+
+    samplers.sort_by_key(|s| (s.slot_index.unwrap_or(u16::MAX), s.name_hash));
+    constants.sort_by(|a, b| a.name.cmp(&b.name));
+
+    info!(
+        "read_material: {} ({} samplers, {} constants, template {})",
+        material_path,
+        samplers.len(),
+        constants.len(),
+        template_path.as_deref().unwrap_or("<none>")
+    );
+
+    Ok(MaterialDocument {
+        path: material_path,
+        template_loaded: template.is_some(),
+        template_path,
+        template_note,
+        av_material_name: material_names::resolve(header.av_material_hash),
+        audio_material_name: material_names::resolve(header.audio_material_hash),
+        header,
+        samplers,
+        constants,
+        has_fur_section: material.dat1.get_section_data(TAG_MATERIAL_FUR).is_some(),
+        section_tags: material
+            .dat1
+            .sections
+            .iter()
+            .map(|s| format!("{:08X}", s.tag))
+            .collect(),
+    })
+}
+
+#[tauri::command]
+pub async fn save_material(
+    material_path: String,
+    header: MaterialHeaderSection,
+    samplers: Vec<MaterialSamplerEdit>,
+    constants: Vec<MaterialConstantEdit>,
+    out_path: Option<String>,
+) -> Result<String, ToolkitError> {
+    let data = std::fs::read(&material_path)?;
+    let mut material = MaterialFile::parse(&data)?;
+
+    material
+        .dat1
+        .set_section_data(TAG_MATERIAL_HEADER, header.build())?;
+
+    // The aux table isn't editable and isn't shown, but it must survive a save.
+    let aux = material
+        .dat1
+        .get_section_data(TAG_MATERIAL_SERIALIZED)
+        .and_then(|sec| MaterialSerialized::parse(sec).ok())
+        .map(|s| s.aux)
+        .unwrap_or_default();
+
+    let serialized = MaterialSerialized {
+        constants: constants
+            .into_iter()
+            .map(|c| MaterialConstant { name_hash: c.name_hash, values: c.values })
+            .collect(),
+        samplers: samplers
+            .into_iter()
+            .map(|s| MaterialSampler { name_hash: s.name_hash, path: s.path })
+            .collect(),
+        aux,
+    };
+
+    if material
+        .dat1
+        .get_section_data(TAG_MATERIAL_SERIALIZED)
+        .is_some()
+    {
+        material
+            .dat1
+            .set_section_data(TAG_MATERIAL_SERIALIZED, serialized.build())?;
+    } else if !serialized.constants.is_empty() || !serialized.samplers.is_empty() {
+        return Err(ToolkitError::Unsupported(
+            "this material has no serialized-data section to write overrides into".into(),
+        ));
+    }
+
+    let out = out_path.filter(|p| !p.is_empty()).unwrap_or_else(|| {
+        let p = Path::new(&material_path);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        p.with_file_name(format!("{stem}_edited.material"))
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    std::fs::write(&out, material.save())?;
+    info!("save_material: {} -> {}", material_path, out);
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn material_hash_name(name: String) -> Result<String, ToolkitError> {
+    Ok(format!("{:08X}", crate::core::crc32::hash(&name)))
 }
 
 #[tauri::command]

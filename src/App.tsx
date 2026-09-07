@@ -2,8 +2,10 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import Shell from "./components/layout/Shell";
 import Home from "./pages/Home";
 import ModelConverter from "./tools/model-converter/ModelConverter";
+import ModelInspector from "./tools/model-inspector/ModelInspector";
 import AssetBrowser from "./tools/asset-browser/AssetBrowser";
 import MaterialRemapper from "./tools/material-remapper/MaterialRemapper";
+import MaterialEditor from "./tools/material-editor/MaterialEditor";
 import Stager from "./tools/stager/Stager";
 import ConfigEditor from "./tools/config-editor/ConfigEditor";
 import AtmosphereEditor from "./tools/atmosphere-editor/AtmosphereEditor";
@@ -17,7 +19,9 @@ import Titlebar from "./components/layout/Titlebar";
 
 const TOOL_PATHS = [
   "/tools/model-converter",
+  "/tools/model-inspector",
   "/tools/material-remapper",
+  "/tools/material-editor",
   "/tools/asset-browser",
   "/tools/texture-converter",
   "/tools/stager",
@@ -47,8 +51,14 @@ export default function App() {
           <div style={{ display: show("/tools/model-converter", pathname) }}>
             <ModelConverter />
           </div>
+          <div style={{ display: show("/tools/model-inspector", pathname) }}>
+            <ModelInspector />
+          </div>
           <div style={{ display: show("/tools/material-remapper", pathname) }}>
             <MaterialRemapper />
+          </div>
+          <div style={{ display: show("/tools/material-editor", pathname) }}>
+            <MaterialEditor />
           </div>
           <div style={{ display: show("/tools/asset-browser", pathname) }}>
             <AssetBrowser />

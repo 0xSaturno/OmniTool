@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect, useRef, memo } from "react";
+import { IoFolderSharp } from "react-icons/io5";
+import { FaFile } from "react-icons/fa";
 import styles from "./AssetBrowser.module.css";
 
 export interface AssetSpan {
@@ -12,6 +14,20 @@ export interface TreeNodeData {
   fullPath: string;
   children: Map<string, TreeNodeData>;
   asset?: { id: string; spans: AssetSpan[] };
+  /** Sorts ahead of everything else at its level (the mods branch). */
+  pinned?: boolean;
+  /** Real asset path when `fullPath` is a display path (mods branch), so
+   *  extraction still names files by where the asset actually lives. */
+  canonicalPath?: string;
+}
+
+/** Pinned first, then folders, then names. */
+export function compareNodes(a: TreeNodeData, b: TreeNodeData): number {
+  if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+  const aIsFolder = a.children.size > 0;
+  const bIsFolder = b.children.size > 0;
+  if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
+  return a.name.localeCompare(b.name);
 }
 
 interface TreeViewProps {
@@ -34,6 +50,7 @@ const TreeNode = memo(function TreeNode({
   filter,
   depth,
   revealPath,
+  inMods,
 }: {
   node: TreeNodeData;
   selectedPaths: Set<string>;
@@ -42,6 +59,8 @@ const TreeNode = memo(function TreeNode({
   filter: string;
   depth: number;
   revealPath?: string | null;
+  /** Inside the pinned `[MODS]` branch — tints the whole subtree. */
+  inMods?: boolean;
 }) {
   const isFolder = node.children.size > 0;
   const [expanded, setExpanded] = useState(false);
@@ -86,12 +105,7 @@ const TreeNode = memo(function TreeNode({
   const isOpen = forceExpand || expanded || (isFolder && onRevealPath);
   const isSelected = !isFolder && selectedPaths.has(node.fullPath);
 
-  const sortedChildren = Array.from(node.children.values()).sort((a, b) => {
-    const aIsFolder = a.children.size > 0;
-    const bIsFolder = b.children.size > 0;
-    if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  const sortedChildren = Array.from(node.children.values()).sort(compareNodes);
 
   const filteredChildren = filter
     ? sortedChildren.filter((child) => matchesFilter(child, filter))
@@ -105,7 +119,7 @@ const TreeNode = memo(function TreeNode({
     <div className={styles.treeNode}>
       <div
         ref={rowRef}
-        className={`${styles.treeRow} ${isSelected ? styles.selected : ""}`}
+        className={`${styles.treeRow} ${inMods ? styles.modRow : ""} ${node.pinned ? styles.modRoot : ""} ${isSelected ? styles.selected : ""}`}
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
@@ -114,12 +128,12 @@ const TreeNode = memo(function TreeNode({
         {isFolder ? (
           <>
             <span className={styles.folderToggle}>{isOpen ? "▾" : "▸"}</span>
-            <span className={styles.folderIcon}>📁</span>
+            <span className={styles.folderIcon}><IoFolderSharp /></span>
           </>
         ) : (
           <>
             <span className={styles.folderToggle} />
-            <span className={styles.fileIcon}>·</span>
+            <span className={styles.fileIcon}><FaFile /></span>
           </>
         )}
         <span className={styles.nodeName}>{node.name}</span>
@@ -137,6 +151,7 @@ const TreeNode = memo(function TreeNode({
               filter={filter}
               depth={depth + 1}
               revealPath={revealPath}
+              inMods={inMods || child.pinned}
             />
           ))}
         </div>
@@ -162,7 +177,8 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
     const filterTerms = lowerFilter.split(/\s+/).filter(Boolean);
 
     function search(node: TreeNodeData) {
-      if (node.asset) {
+      // Skip the mods branch's display copies so each asset appears once.
+      if (node.asset && !node.canonicalPath) {
         const pathLower = node.fullPath.toLowerCase();
         if (filterTerms.every(term => pathLower.includes(term))) {
           results.push(node);
@@ -188,7 +204,7 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
             onContextMenu={(e) => { e.preventDefault(); onSelect(node, e); onContextMenu?.(node, e); }}
             title={`ID: ${node.asset?.id}${(node.asset?.spans.length ?? 0) > 1 ? ` · ${node.asset!.spans.length} spans` : ""}`}
           >
-            <span className={styles.fileIcon}>·</span>
+            <span className={styles.fileIcon}><FaFile /></span>
             <span className={styles.nodeName}>{node.fullPath}</span>
           </div>
         ))}
@@ -196,12 +212,7 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
     );
   }
 
-  const sortedChildren = Array.from(root.children.values()).sort((a, b) => {
-    const aIsFolder = a.children.size > 0;
-    const bIsFolder = b.children.size > 0;
-    if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  const sortedChildren = Array.from(root.children.values()).sort(compareNodes);
 
   return (
     <>
@@ -215,6 +226,7 @@ export default function TreeView({ root, selectedPaths, onSelect, onContextMenu,
           filter=""
           depth={depth}
           revealPath={revealPath}
+          inMods={child.pinned}
         />
       ))}
     </>

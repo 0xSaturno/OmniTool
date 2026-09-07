@@ -16,6 +16,8 @@ Built with Tauri + React + Rust.
 
 **Material Remapper** — Remap material path references inside `.model` files.
 
+**Material Editor** — Edit texture slots, shader constants and render flags inside `.material` files, with the referenced `.materialgraph` supplying slot names and defaults.
+
 **Asset Browser** — Browse the game's TOC archive, filter by path, and extract assets to a stage mod project.
 
 **Config Editor** — Convert `.config` files to JSON. Edit them with the inline editor that supports formatting and syntax highlighting.

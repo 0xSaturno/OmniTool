@@ -2,13 +2,13 @@ use crate::core::error::{Result, ToolkitError};
 use crate::core::math::{quat_mul, rotate_vec, vec_add};
 use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::{
-    geo::{TAG_VERTEXES, TAG_UV1, VertexesSection, Uv1Section},
+    geo::{TAG_VERTEXES, TAG_UV1, VertexesSection, Uv1Section, DEFAULT_UV_SCALE},
     meshes::{TAG_MESHES, MeshDefinition},
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
     skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
            decode_skin_data, decode_rcra_skin, VertexWeights},
-    built::{TAG_BUILT, get_uv_scale, get_position_scale},
+    built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
 };
 
 const TAG_INDEXES:   u32 = 0x0859863D;
@@ -32,10 +32,12 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
 
     // Sections
     let built_pos_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_position_scale).unwrap_or(1.0 / 4096.0);
+    let built_uv_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv_scale).unwrap_or(DEFAULT_UV_SCALE);
+    let built_uv1_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv1_scale).unwrap_or(DEFAULT_UV_SCALE);
 
     let vert_data = dat1.get_section_data(TAG_VERTEXES)
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_VERTEXES))?;
-    let vertexes_sec = VertexesSection::parse_scaled(vert_data, built_pos_scale)?;
+    let vertexes_sec = VertexesSection::parse_scaled(vert_data, built_pos_scale, built_uv_scale)?;
     let vertexes = &vertexes_sec.vertexes;
 
     let mesh_data = dat1.get_section_data(TAG_MESHES)
@@ -52,8 +54,6 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
     let look_sec = LookSection::parse(look_data)?;
 
     let uv1_sec: Option<Uv1Section> = dat1.get_section_data(TAG_UV1).map(|d| Uv1Section::parse(d).ok()).flatten();
-
-    let built_uv_scale: f32 = dat1.get_section_data(TAG_BUILT).map(get_uv_scale).unwrap_or(1.0 / 16384.0);
 
     // Skin
     let batched_skin: Option<Vec<VertexWeights>> = {
@@ -123,7 +123,9 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
         let mesh = &meshes[mi];
         let mat_path = get_material_path(mesh.material_index);
         out.push_str(&format!("sm{:02}_{}\n", mi, mat_path));
-        out.push_str("1\n");   // uv_layers
+        // Two layers when the model has a Model UV1 Vert section: UV0 from Std
+        // Vert, UV1 from that section. They are independent streams.
+        out.push_str(if uv1_sec.is_some() { "2\n" } else { "1\n" });   // uv_layers
         out.push_str("0\n");   // textures
 
         let gc = groups_count_for_mesh(mesh);
@@ -141,13 +143,15 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
             }
             out.push_str("0 0 0 0\n");
 
-            let (u, vv) = if let Some(ref uv1) = uv1_sec {
+            out.push_str(&format!("{} {}\n", pretty(v.u), pretty(v.v)));
+            if let Some(ref uv1) = uv1_sec {
                 let (ru, rv) = uv1.uvs[vi];
-                (ru as f32 * built_uv_scale, rv as f32 * built_uv_scale)
-            } else {
-                (v.u, v.v)
-            };
-            out.push_str(&format!("{} {}\n", pretty(u), pretty(vv)));
+                out.push_str(&format!(
+                    "{} {}\n",
+                    pretty(ru as f32 * built_uv1_scale),
+                    pretty(rv as f32 * built_uv1_scale)
+                ));
+            }
 
             if has_bones_section {
                 let wi = vi - mesh.vertex_start as usize + weight_offset;

@@ -67,7 +67,13 @@ fn main() {
     println!("\nTotal verts: {} | pos:{} norm:{} uv:{} w:{}", vc, pos_diff, norm_diff, uv_diff, w_diff);
 
     // Also check skin sections
-    for (tag, name) in [(0xCCBAFF15u32, "rcra_skin"), (0xDCA379A2, "skin_data"), (0xC61B1FF5, "skin_batch")] {
+    for (tag, name) in [
+        (0xCCBAFF15u32, "rcra_skin"),
+        (0xDCA379A2, "skin_data"),
+        (0xC61B1FF5, "skin_batch"),
+        (0x6B855EED, "uv1"),
+        (0x5CBA9DE9, "colors"),
+    ] {
         let os = orig_model.dat1.get_section_data(tag);
         let ms = rt_model.dat1.get_section_data(tag);
         match (os, ms) {

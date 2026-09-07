@@ -5,8 +5,10 @@ export const SEND_TO_ROUTES: Record<string, { label: string; route: string }[]> 
   performanceset: [{ label: "Config Editor", route: "/tools/config-editor" }],
   model: [
     { label: "Model Converter", route: "/tools/model-converter" },
+    { label: "Model Inspector", route: "/tools/model-inspector" },
     { label: "Material Remapper", route: "/tools/material-remapper" },
   ],
+  material: [{ label: "Material Editor", route: "/tools/material-editor" }],
   atmosphere: [{ label: "Atmosphere Editor", route: "/tools/atmosphere-editor" }],
   zonelightbin: [{ label: "ZoneLightBin Module", route: "/tools/zonelightbin-module" }],
   soundbank: [
