@@ -2,6 +2,7 @@ pub mod core;
 pub mod tools;
 mod commands;
 pub mod commands_model_inspector;
+pub mod commands_level_editor;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -81,6 +82,12 @@ pub fn run() {
             commands::soundbank_extract_bnk,
             commands::bnk_batch_inject_wems,
             commands::bnk_scan_wem_folder,
+            commands_level_editor::level_list_planets,
+            commands_level_editor::level_list_zones,
+            commands_level_editor::level_load_zone,
+            commands_level_editor::level_model_mesh,
+            commands_level_editor::level_save_zone,
+            commands_level_editor::level_zone_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

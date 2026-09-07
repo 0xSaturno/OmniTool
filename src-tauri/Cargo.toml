@@ -16,6 +16,18 @@ name = "OmniTool"
 path = "src/main.rs"
 
 [[bin]]
+name = "dev_dump_scene"
+path = "src/bin/dev_dump_scene.rs"
+
+[[bin]]
+name = "zone_check"
+path = "src/bin/zone_check.rs"
+
+[[bin]]
+name = "level_check"
+path = "src/bin/level_check.rs"
+
+[[bin]]
 name = "diag"
 path = "src/bin/diag.rs"
 required-features = ["dev-tools"]

@@ -1,0 +1,45 @@
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.3rem 0.55rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.stat b {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  margin-left: 0.15rem;
+}
+
+.spacer { flex: 1; }
+
+.selection {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busy {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.dirty {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--warning);
+  font-weight: 600;
+}
