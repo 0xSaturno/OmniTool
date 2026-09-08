@@ -5,6 +5,7 @@ use crate::tools::model_converter::sections::{
     meshes::{TAG_MESHES, MeshDefinition},
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
+    looks::{TAG_MATERIAL, MaterialSection},
     skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
            decode_skin_data, decode_rcra_skin, VertexWeights},
     built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
@@ -16,7 +17,6 @@ use gltf::json as gj;
 use gj::validation::{Checked, USize64};
 
 const TAG_INDEXES:   u32 = 0x0859863D;
-const TAG_MATERIALS: u32 = 0x3250BB80;
 
 /// Real binary glTF (.glb) export, distinct from the XNALara-style ASCII
 /// export in `ascii_writer.rs`. Every mesh's attributes live in their own
@@ -214,29 +214,48 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
     }
     let mesh_indices: Vec<usize> = mesh_set.into_iter().filter(|&i| i < meshes.len()).collect();
 
+    // Model Material is two parallel arrays, not one array of (u32, u32) pairs:
+    // `count` × 16-byte (u64 path_off, u64 name_off) slots, then `count` ×
+    // 16-byte id records. A subset's material_index indexes the slot array.
+    let mat_section = dat1
+        .get_section_data(TAG_MATERIAL)
+        .and_then(|d| MaterialSection::parse(d).ok());
     let get_material_path = |mat_idx: u16| -> String {
-        if let Some(mat_data) = dat1.get_section_data(TAG_MATERIALS) {
-            let entry_offset = mat_idx as usize * 8;
-            if entry_offset + 4 <= mat_data.len() {
-                let path_offset = u32::from_le_bytes(mat_data[entry_offset..entry_offset + 4].try_into().unwrap());
-                if let Some(s) = dat1.get_string(path_offset) {
-                    return s;
-                }
-            }
-        }
-        String::new()
+        mat_section
+            .as_ref()
+            .and_then(|m| m.slots.get(mat_idx as usize))
+            .and_then(|slot| dat1.get_string(slot.path_offset as u32))
+            .unwrap_or_default()
+    };
+    let get_material_name = |mat_idx: u16| -> String {
+        mat_section
+            .as_ref()
+            .and_then(|m| m.slots.get(mat_idx as usize))
+            .and_then(|slot| dat1.get_string(slot.name_offset as u32))
+            .unwrap_or_default()
+    };
+    let get_material_asset_id = |mat_idx: u16| -> u64 {
+        mat_section
+            .as_ref()
+            .and_then(|m| m.id_for_name(&get_material_name(mat_idx)))
+            .map(|id| id.asset_id)
+            .unwrap_or(0)
     };
 
     let mut buf = Buf::new();
     let mut root = gj::Root::default();
     root.asset.generator = Some("RCRA ModdingToolkit".to_string());
 
-    // One glTF material per unique game material path, so Blender gets a
-    // material slot per submesh instead of leaving primitives unassigned.
-    // No textures/PBR data is available from the .model, so these are named
-    // placeholders (default white, non-metallic) — just enough for Blender
-    // to create and label the slot; the reader ignores materials entirely.
-    let mut material_indices: std::collections::HashMap<String, gj::Index<gj::Material>> = std::collections::HashMap::new();
+    // One glTF material per Model Material *slot*, keyed by slot index rather
+    // than by path: several slots can share one .material path (this model has
+    // two `enm_thug_brawler_body` slots) and collapsing them would lose the
+    // distinction the model actually stores. Named after the authored slot
+    // name, which survives even on the path-less slots. No textures/PBR data
+    // is available from the .model, so these are placeholders (default white,
+    // non-metallic) — just enough for Blender to create and label the slot.
+    // The slot index, path and asset id ride along in `extras`, which Blender
+    // keeps as custom properties; the reader ignores materials entirely.
+    let mut material_indices: std::collections::HashMap<u16, gj::Index<gj::Material>> = std::collections::HashMap::new();
 
     let buffer_index: gj::Index<gj::Buffer> = root.push(gj::Buffer {
         byte_length: USize64(0), // patched after all data is written
@@ -309,16 +328,41 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
 
     for &mi in &mesh_indices {
         let mesh = &meshes[mi];
-        let mat_path = get_material_path(mesh.material_index);
-        let mesh_name = format!("sm{:02}_{}", mi, mat_path);
-        let material_name = if mat_path.is_empty() {
-            format!("mat{}", mesh.material_index)
-        } else {
+        let slot = mesh.material_index;
+        let mat_path = get_material_path(slot);
+        let slot_name = get_material_name(slot);
+        // Named after the material slot, not its path. Blender's MAX_NAME caps
+        // object/mesh names at 63 bytes, and the full paths run 77-103 — they
+        // were being silently truncated mid-path. Slot names are short, unique
+        // per slot and non-empty even where the path is (wpn_sheepinator's
+        // `pasted__mtl_sheepinator2` has no path, which used to yield a bare
+        // "sm12_"). The readers only need the leading `sm<digits>`.
+        let label = if !slot_name.is_empty() {
+            slot_name.clone()
+        } else if !mat_path.is_empty() {
             mat_path.clone()
+        } else {
+            format!("mat{}", slot)
         };
-        let material_index = *material_indices.entry(material_name.clone()).or_insert_with(|| {
+        let mesh_name = format!("sm{:02}_{}", mi, label);
+        let material_index = *material_indices.entry(slot).or_insert_with(|| {
+            let name = if slot_name.is_empty() {
+                format!("mat{}", slot)
+            } else {
+                slot_name.clone()
+            };
+            let extras = serde_json::value::RawValue::from_string(
+                serde_json::json!({
+                    "rcra_material_slot": slot,
+                    "rcra_material_path": mat_path,
+                    "rcra_material_asset_id": format!("{:016X}", get_material_asset_id(slot)),
+                })
+                .to_string(),
+            )
+            .ok();
             root.push(gj::Material {
-                name: Some(material_name),
+                name: Some(name),
+                extras,
                 ..Default::default()
             })
         });

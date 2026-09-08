@@ -218,25 +218,29 @@ fn update_look_groups(model: &mut ModelFile) -> Result<()> {
         .ok_or_else(|| ToolkitError::SectionNotFound(TAG_LOOK))?.to_vec();
     let mut look_sec = LookSection::parse(&look_data)?;
 
-    // Point every LOD of every look at the LOD0 mesh range. Only the LOD0
-    // meshes receive the injected geometry; LOD1+ still hold vanilla meshes, so
-    // any look still referencing them renders stale, un-edited geometry
-    // alongside the edited model. Collapsing only look 0 (which is what this
-    // used to do) leaves look 1 pointing at meshes 11..65. Both Python
-    // references collapse every look — `gltf_to_model.py`'s update_lookgroups
-    // and `inject_rivet.py`'s `for lk in look.looks: for lod in lk.lods`.
-    let lod0 = look_sec
-        .looks
-        .first()
-        .and_then(|l| l.lods.first().copied());
-    if let Some(lod0) = lod0 {
-        for look in look_sec.looks.iter_mut() {
-            for l in look.lods.iter_mut() {
-                // Leave genuinely empty LOD slots alone, as inject_rivet.py does.
-                if l.count > 0 {
-                    l.start = lod0.start;
-                    l.count = lod0.count;
-                }
+    // Point every LOD of a look at *that look's own* LOD0 mesh range. Only
+    // LOD0 meshes receive the injected geometry, so a look still referencing
+    // LOD1+ would render stale, un-edited geometry alongside the edited model.
+    //
+    // The Python references (`gltf_to_model.py`'s update_lookgroups and
+    // `inject_rivet.py`'s `for lk in look.looks: for lod in lk.lods`) collapse
+    // every look onto *look 0's* LOD0 instead. That only holds for models whose
+    // looks are palette swaps over one mesh set. Looks that select genuinely
+    // different geometry lose their identity: wpn_sheepinator's "V5" look is
+    // subset 12 alone, and flattening it onto look 0's (0, 2) makes V5 render
+    // the base weapon. Same for enm_thug_brawler, where looks 4+ own subsets
+    // 36..209. Each look keeps its own range here.
+    for look in look_sec.looks.iter_mut() {
+        // A look whose LOD0 is empty has no injected geometry to point at, so
+        // fall back to its first populated LOD rather than another look's.
+        let Some(src) = look.lods.iter().find(|l| l.count > 0).copied() else {
+            continue;
+        };
+        for l in look.lods.iter_mut() {
+            // Leave genuinely empty LOD slots alone, as inject_rivet.py does.
+            if l.count > 0 {
+                l.start = src.start;
+                l.count = src.count;
             }
         }
     }
