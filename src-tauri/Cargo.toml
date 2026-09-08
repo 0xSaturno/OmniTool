@@ -20,12 +20,20 @@ name = "dev_dump_scene"
 path = "src/bin/dev_dump_scene.rs"
 
 [[bin]]
+name = "block2_probe"
+path = "src/bin/block2_probe.rs"
+
+[[bin]]
 name = "zone_check"
 path = "src/bin/zone_check.rs"
 
 [[bin]]
 name = "level_check"
 path = "src/bin/level_check.rs"
+
+[[bin]]
+name = "coverage_audit"
+path = "src/bin/coverage_audit.rs"
 
 [[bin]]
 name = "diag"

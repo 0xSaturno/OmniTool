@@ -1,16 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   FiBox,
+  FiCompass,
   FiCrosshair,
   FiGlobe,
+  FiLayers,
   FiMaximize,
   FiMaximize2,
   FiMove,
   FiRotateCw,
   FiSlash,
+  FiSun,
 } from "react-icons/fi";
 import { LevelRenderer, KIND_COLORS, type HudState } from "./viewport/renderer";
-import { KIND_MODEL, kindName, type GizmoMode, type MeshLoader, type ZoneScene } from "./types";
+import type { ShadingMode } from "./viewport/materials";
+import {
+  KIND_DECAL,
+  KIND_IMPOSTOR,
+  KIND_MODEL,
+  kindName,
+  type GizmoMode,
+  type MeshLoader,
+  type SceneObjectDto,
+  type ZoneScene,
+} from "./types";
 import styles from "./Viewport.module.css";
 
 export interface ViewportProps {
@@ -39,7 +52,25 @@ const EMPTY_HUD: HudState = {
   hovered: null,
   selectedCount: 0,
   selectedName: null,
+  mirrored: 0,
+  windingSuspect: 0,
+  blockGeo: 0,
+  blockGeoLoaded: 0,
+  blockGeoTriangles: 0,
 };
+
+/** Mirrors `hasBlockGeometry` in the renderer — see the note there. */
+function ownsBlockGeometry(o: SceneObjectDto): boolean {
+  if (o.kind !== KIND_DECAL && o.kind !== KIND_IMPOSTOR) return false;
+  const g = o.geometry;
+  return Boolean(g && g.indexCount >= 3 && g.vertexCount >= 3);
+}
+
+const SHADING_BUTTONS: { mode: ShadingMode; icon: ReactElement; label: string; title: string }[] = [
+  { mode: "lit", icon: <FiSun />, label: "lit", title: "Lit shading" },
+  { mode: "normals", icon: <FiCompass />, label: "normals", title: "View-space normals as RGB (N)" },
+  { mode: "facing", icon: <FiLayers />, label: "facing", title: "Green = outward face, magenta = inward (N)" },
+];
 
 function fmt(n: number): string {
   return n.toLocaleString("en-US");
@@ -63,6 +94,7 @@ export default function Viewport(props: ViewportProps) {
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode | null>("translate");
   const [space, setSpace] = useState<"world" | "local">("world");
+  const [shading, setShading] = useState<ShadingMode>("lit");
   const [ready, setReady] = useState(false);
 
   // -- renderer lifecycle ---------------------------------------------------
@@ -104,13 +136,13 @@ export default function Viewport(props: ViewportProps) {
 
   // -- selection ------------------------------------------------------------
 
-  const selectionKey = selection.join(",");
   useEffect(() => {
     if (!ready) return;
     rendererRef.current?.setSelection(selection);
-    // selectionKey stands in for a deep compare of the offsets array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, selectionKey]);
+    // The shell only ever hands over a fresh array when the selection really
+    // changed, so identity is the compare — joining the offsets into a key
+    // would allocate a megabyte-sized string on every render of a select-all.
+  }, [ready, selection]);
 
   // -- toggles --------------------------------------------------------------
 
@@ -133,16 +165,56 @@ export default function Viewport(props: ViewportProps) {
     rendererRef.current?.setGizmoSpace(space);
   }, [ready, space]);
 
+  useEffect(() => {
+    if (!ready) return;
+    rendererRef.current?.setShadingMode(shading);
+  }, [ready, shading]);
+
+  // `N` cycles the shading modes. The canvas keeps its own key handling for
+  // camera and gizmo shortcuts, so this listens on the window and ignores
+  // anything typed into a field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "KeyN" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) return;
+      setShading((m) => {
+        const i = SHADING_BUTTONS.findIndex((b) => b.mode === m);
+        return SHADING_BUTTONS[(i + 1) % SHADING_BUTTONS.length].mode;
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // -- actions --------------------------------------------------------------
 
   const frameAll = useCallback(() => rendererRef.current?.frameAll(), []);
   const frameSelection = useCallback(() => rendererRef.current?.frameSelection(), []);
 
-  const kindsPresent = useMemo(() => {
-    const set = new Set<number>();
-    if (scene) for (const o of scene.objects) if (o.kind !== KIND_MODEL) set.add(o.kind);
-    return [...set].sort((a, b) => a - b);
+  // Kinds drawn as markers follow `showEntities`; kinds drawn from block-2
+  // geometry follow `showGeometry`, so the legend has to split them or it
+  // would name swatches that are not on screen.
+  const { markerKinds, meshKinds } = useMemo(() => {
+    const markers = new Set<number>();
+    const meshes = new Set<number>();
+    if (scene) {
+      for (const o of scene.objects) {
+        if (o.kind === KIND_MODEL) continue;
+        (ownsBlockGeometry(o) ? meshes : markers).add(o.kind);
+      }
+    }
+    const sort = (s: Set<number>) => [...s].sort((a, b) => a - b);
+    return { markerKinds: sort(markers), meshKinds: sort(meshes) };
   }, [scene]);
+
+  const legendRows = useMemo(() => {
+    const rows: { key: string; kind: number; label: string }[] = [];
+    if (showGeometry) for (const k of meshKinds) rows.push({ key: `m${k}`, kind: k, label: `${kindName(k)} mesh` });
+    if (showEntities) for (const k of markerKinds) rows.push({ key: `e${k}`, kind: k, label: kindName(k) });
+    return rows;
+  }, [markerKinds, meshKinds, showEntities, showGeometry]);
 
   const hasSelection = selection.length > 0;
   const [cx, cy, cz] = hud.cameraPos;
@@ -199,6 +271,20 @@ export default function Viewport(props: ViewportProps) {
 
         <div className={styles.divider} />
 
+        {SHADING_BUTTONS.map((b) => (
+          <button
+            key={b.mode}
+            className={shading === b.mode ? styles.btnActive : styles.btn}
+            onClick={() => setShading(b.mode)}
+            title={b.title}
+          >
+            {b.icon}
+            {b.label}
+          </button>
+        ))}
+
+        <div className={styles.divider} />
+
         <button
           className={styles.btn}
           onClick={() => setSpace(space === "world" ? "local" : "world")}
@@ -209,15 +295,15 @@ export default function Viewport(props: ViewportProps) {
         </button>
       </div>
 
-      {kindsPresent.length > 0 && showEntities && (
+      {legendRows.length > 0 && (
         <div className={styles.legend}>
-          {kindsPresent.map((k) => (
-            <div key={k} className={styles.legendRow}>
+          {legendRows.map((r) => (
+            <div key={r.key} className={styles.legendRow}>
               <span
                 className={styles.swatch}
-                style={{ background: `#${(KIND_COLORS[k] ?? 0x8b949e).toString(16).padStart(6, "0")}` }}
+                style={{ background: `#${(KIND_COLORS[r.kind] ?? 0x8b949e).toString(16).padStart(6, "0")}` }}
               />
-              {kindName(k)}
+              {r.label}
             </div>
           ))}
         </div>
@@ -253,6 +339,34 @@ export default function Viewport(props: ViewportProps) {
           </span>
           {hud.loading > 0 && <span className={styles.hudWarn}>loading {hud.loading}</span>}
         </div>
+        {hud.blockGeo > 0 && (
+          <div className={styles.hudRow}>
+            <span title="Scene objects whose mesh lives in the zone's own block 2 (impostor shells, projected decals) — no .model asset exists for these">
+              <span className={styles.hudKey}>block-2 </span>
+              <span className={hud.blockGeoLoaded < hud.blockGeo ? styles.hudWarn : styles.hudVal}>
+                {fmt(hud.blockGeoLoaded)}/{fmt(hud.blockGeo)}
+              </span>
+            </span>
+            <span title="Triangles contributed by that block-2 geometry">
+              <span className={styles.hudKey}>tris </span>
+              <span className={styles.hudVal}>{fmt(hud.blockGeoTriangles)}</span>
+            </span>
+          </div>
+        )}
+        {(hud.mirrored > 0 || hud.windingSuspect > 0) && (
+          <div className={styles.hudRow}>
+            <span title="Instances with a negative-determinant (mirrored) basis — drawn double-sided">
+              <span className={styles.hudKey}>mirrored </span>
+              <span className={styles.hudVal}>{fmt(hud.mirrored)}</span>
+            </span>
+            <span title="Dev builds only: meshes whose triangle winding disagrees with their own vertex normals. Drawn as decoded — this is a regression alarm, not a repair.">
+              <span className={styles.hudKey}>mis-wound </span>
+              <span className={hud.windingSuspect > 0 ? styles.hudWarn : styles.hudVal}>
+                {fmt(hud.windingSuspect)}
+              </span>
+            </span>
+          </div>
+        )}
         <div className={styles.hudRow}>
           <span className={styles.hudKey}>cam</span>
           <span className={styles.hudVal}>
@@ -275,7 +389,7 @@ export default function Viewport(props: ViewportProps) {
           <kbd>LMB</kbd> orbit / pick · <kbd>MMB</kbd>/<kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom
         </div>
         <div>
-          <kbd>WASD</kbd>+<kbd>QE</kbd> fly · <kbd>shift</kbd> fast · <kbd>ctrl</kbd>+drag box-select
+          <kbd>WASD</kbd>+<kbd>QE</kbd> fly · <kbd>shift</kbd> fast · <kbd>ctrl</kbd>+drag box-select · <kbd>N</kbd> shading
         </div>
       </div>
 

@@ -81,16 +81,22 @@ pub fn zone_has_objects(index: &LevelIndex, id: u64) -> bool {
 /// being asked.
 fn scene_objects_present(asset: &[u8]) -> bool {
     use crate::core::zone::{
-        T_ACTORS, T_DECALS, T_LIGHTS, T_MODEL_INSTS, T_SCENE_OBJECTS, T_VFX_INSTS, T_VOLUMES,
+        T_ACTORS, T_DECALS, T_IMPOSTORS, T_LIGHTS, T_MODEL_INSTS, T_SCENE_OBJECTS, T_VFX_INSTS,
+        T_VOLUMES,
     };
     const HDR: usize = crate::core::zone::ASSET_HEADER_LEN;
     /// The tables `build_index` reads scene-object offsets out of.
-    const INSTANCE_TABLES: [u32; 6] = [
+    ///
+    /// `T_IMPOSTORS` belongs here: the 645 shipped `*impostors*` zones carry a
+    /// heap and that table alone, so leaving it out reported `hasObjects=false`
+    /// for every one of them and hid 2.67 M triangles of megalopolis skyline.
+    const INSTANCE_TABLES: [u32; 7] = [
         T_MODEL_INSTS,
         T_LIGHTS,
         T_VOLUMES,
         T_DECALS,
         T_VFX_INSTS,
+        T_IMPOSTORS,
         T_ACTORS,
     ];
 
@@ -522,6 +528,19 @@ pub fn zone_section_name(tag: u32) -> Option<&'static str> {
         0x5570_13E9 => "Zone EnvProbe List",
         0xDC31_1FC3 => "Zone Impostors",
         0xCB8D_34F9 => "Zone Impostors Atlas",
+        0x8E40_1376 => "Zone Impostors BVH Info",
+        // `{ u64 instance_id, u32 vertex_count, u32 byte_offset }` rows that
+        // partition 9CCAA06F into one 4-byte-per-vertex run per model
+        // instance: baked per-vertex data, not geometry. Verified on
+        // tile_e21_art (rows 4009/12411/12411 == the two models' own vertex
+        // counts, ids == the kind-0 entries' instance ids, offsets chaining
+        // exactly to the section length).
+        0x5736_A46F => "Zone Instance Vertex Data Index",
+        0x9CCA_A06F => "Zone Instance Vertex Data",
+        // n x 64 bytes of 4x4 matrices whose bases are orthonormal on 1952/1952
+        // rows sampled and whose translations stay under 13 m while the zones
+        // span 180..5800 m — local frames, never world placements.
+        0xDE61_C274 => "Zone Local Frames",
         0xE415_8AC3 => "Zone Material Overrides",
         0x17AF_FFCE => "Zone Override Tris",
         0x5E54_ACCF => "Zone Script Actions",
@@ -659,8 +678,21 @@ pub fn parse_model_asset(bytes: &[u8]) -> Result<ModelFile> {
 /// Positions come out of `Model Std Vert` quantised — `VertexesSection` applies
 /// the `Built` section's position scale — and subsets flagged `0x10` index the
 /// vertex stream relative to their own `vertex_start`, so both are undone here
-/// exactly the way `gltf_writer` does it. Triangle winding is reversed to match
-/// the glTF/three.js counter-clockwise front-face convention.
+/// exactly the way `gltf_writer` does it.
+///
+/// Triangle winding is emitted in the asset's own index order. It used to be
+/// reversed here "to match the CCW glTF convention", but the assets are already
+/// CCW-front: measured over 596 distinct models drawn from four planets, the
+/// reversed order agreed with the models' own stored vertex normals on an
+/// area-weighted 0.23% of triangles (591/596 models below 10%, none above 40%)
+/// and every one of the 75 watertight models enclosed negative signed volume.
+/// In source order those figures become 99.8% and 75/75 positive. Since 58-100%
+/// of an art zone's triangles sit on open "sheet" meshes, the reversal made the
+/// front faces point away from the camera and hid most of the level. See the
+/// `winding vs. stored normals` section of `bin/level_check.rs`.
+///
+/// `tools::model_converter::gltf_writer` still reverses, deliberately: it is a
+/// shipped export path with its own users and is out of scope here.
 pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
     let dat1 = &model.dat1;
 
@@ -750,9 +782,9 @@ pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
         let mut emitted = 0u32;
         for f in 0..icount / 3 {
             let t = [
-                indexes[ibase + f * 3 + 2].wrapping_sub(sub) as u32,
-                indexes[ibase + f * 3 + 1].wrapping_sub(sub) as u32,
                 indexes[ibase + f * 3].wrapping_sub(sub) as u32,
+                indexes[ibase + f * 3 + 1].wrapping_sub(sub) as u32,
+                indexes[ibase + f * 3 + 2].wrapping_sub(sub) as u32,
             ];
             if t.iter().any(|&i| i as usize >= vcount) {
                 continue; // malformed subset — drop the triangle, keep the mesh
@@ -776,6 +808,184 @@ pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
         out.max = [0.0; 3];
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Geometry that lives in the zone itself (block 2)
+// ---------------------------------------------------------------------------
+
+/// Decode the mesh a scene-object entry owns inside the zone's raw block 2.
+///
+/// Two kinds carry one:
+///
+/// * **kind 6, impostor** — `vertex_count` packed `u32` positions
+///   (`R10G10B10A2`, tag bits constant 1 on 770/770 shipped impostors) followed
+///   by `index_count` `u16` indices. Each channel divided by 1023 gives a point
+///   in the entry's own unit box, so the entry's 4x4 places it in the world
+///   exactly the way a model instance is placed. Verified against the matching
+///   art: the megalopolis `n19` impostor decodes to a 31.6 x 311 x 31.6 m box
+///   whose base sits at the entry's own y (-220.6 vs -220.87).
+/// * **kind 3, decal** — `vertex_count` 16-byte `Model Std Vert` vertices at
+///   position scale `1/32768`, then `index_count` `u16` indices. Verified on
+///   all eight decals of `tile_n19_art`: every decoded mesh, placed by the
+///   entry matrix, lands inside the `Zone Decal Geometry` row's own bounding
+///   sphere (max radius 0.91 r) and within 0.1 m of the entry position.
+///
+/// Normals are computed from the triangles for impostors (the format stores
+/// none) and taken from the vertex stream for decals. Winding is emitted in the
+/// block's own index order, matching [`decode_model_mesh`]. Reversing it here
+/// was self-consistent for impostors only because their normals are then
+/// accumulated from the reversed triangles; the decals, which do carry stored
+/// normals, gave it away — reversed, 509 of 522 decoded decals scored below 0.9
+/// winding/normal agreement (mean 0.025); in source order only 13 do (mean
+/// 0.975), and those 13 are exactly the ones the reversed order agreed with,
+/// i.e. entries that really are wound against their own normals.
+pub fn decode_zone_geometry(zone: &crate::core::zone::Zone, offset: u32) -> Result<MeshOut> {
+    use crate::core::zone::{KIND_DECAL, KIND_IMPOSTOR};
+
+    let obj = zone
+        .find(offset)
+        .ok_or_else(|| ToolkitError::Parse(format!("no scene object at {offset}")))?;
+    let geo = obj
+        .geometry
+        .ok_or_else(|| ToolkitError::Parse(format!("object {offset} has no block-2 geometry")))?;
+    let block = zone
+        .block(2)
+        .ok_or_else(|| ToolkitError::Parse("zone has no block 2".into()))?;
+
+    let vstart = geo.vertex_offset as usize;
+    let icount = geo.index_count as usize;
+    let vcount = geo.vertex_count as usize;
+    let istart = geo.index_offset as usize;
+    if istart + icount * 2 > block.len() {
+        return Err(ToolkitError::Parse(format!(
+            "index span {istart}+{} exceeds block 2 ({})",
+            icount * 2,
+            block.len()
+        )));
+    }
+
+    let mut out = MeshOut {
+        min: [f32::INFINITY; 3],
+        max: [f32::NEG_INFINITY; 3],
+        ..Default::default()
+    };
+
+    match obj.kind {
+        KIND_IMPOSTOR => {
+            if vstart + vcount * 4 > block.len() {
+                return Err(ToolkitError::Parse("vertex span exceeds block 2".into()));
+            }
+            for i in 0..vcount {
+                let w = u32::from_le_bytes(
+                    block[vstart + i * 4..vstart + i * 4 + 4].try_into().unwrap(),
+                );
+                let p = [
+                    (w & 0x3FF) as f32 / 1023.0,
+                    ((w >> 10) & 0x3FF) as f32 / 1023.0,
+                    ((w >> 20) & 0x3FF) as f32 / 1023.0,
+                ];
+                out.positions.extend_from_slice(&p);
+                out.normals.extend_from_slice(&[0.0, 0.0, 0.0]);
+                out.uvs.extend_from_slice(&[0.0, 0.0]);
+                for k in 0..3 {
+                    out.min[k] = out.min[k].min(p[k]);
+                    out.max[k] = out.max[k].max(p[k]);
+                }
+            }
+        }
+        KIND_DECAL => {
+            if vstart + vcount * 16 > block.len() {
+                return Err(ToolkitError::Parse("vertex span exceeds block 2".into()));
+            }
+            let verts = VertexesSection::parse_scaled(
+                &block[vstart..vstart + vcount * 16],
+                1.0 / 32768.0,
+                DEFAULT_UV_SCALE,
+            )?
+            .vertexes;
+            for v in &verts {
+                out.positions.extend_from_slice(&[v.x, v.y, v.z]);
+                out.normals.extend_from_slice(&[v.nx, v.ny, v.nz]);
+                out.uvs.extend_from_slice(&[v.u, v.v]);
+                for (k, c) in [v.x, v.y, v.z].iter().enumerate() {
+                    out.min[k] = out.min[k].min(*c);
+                    out.max[k] = out.max[k].max(*c);
+                }
+            }
+        }
+        k => {
+            return Err(ToolkitError::Parse(format!(
+                "scene-object kind {k} carries no block-2 geometry"
+            )))
+        }
+    }
+
+    for t in 0..icount / 3 {
+        let mut tri = [0u32; 3];
+        for (j, slot) in tri.iter_mut().enumerate() {
+            let at = istart + (t * 3 + j) * 2;
+            *slot = u16::from_le_bytes(block[at..at + 2].try_into().unwrap()) as u32;
+        }
+        if tri.iter().any(|&i| i as usize >= vcount) {
+            continue;
+        }
+        out.indices.extend_from_slice(&tri);
+    }
+
+    if obj.kind == KIND_IMPOSTOR {
+        accumulate_normals(&mut out);
+    }
+    out.submeshes.push(SubmeshOut {
+        first_index: 0,
+        index_count: out.indices.len() as u32,
+        material_index: 0,
+        flags: 0,
+    });
+    if out.positions.is_empty() {
+        out.min = [0.0; 3];
+        out.max = [0.0; 3];
+    }
+    Ok(out)
+}
+
+/// Area-weighted vertex normals, for geometry that ships without any.
+fn accumulate_normals(out: &mut MeshOut) {
+    for n in out.normals.iter_mut() {
+        *n = 0.0;
+    }
+    for t in out.indices.chunks_exact(3) {
+        let p: Vec<[f32; 3]> = t
+            .iter()
+            .map(|&i| {
+                let b = i as usize * 3;
+                [out.positions[b], out.positions[b + 1], out.positions[b + 2]]
+            })
+            .collect();
+        let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+        let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        for &i in t {
+            let b = i as usize * 3;
+            for k in 0..3 {
+                out.normals[b + k] += n[k];
+            }
+        }
+    }
+    for n in out.normals.chunks_exact_mut(3) {
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len > 1e-12 {
+            for c in n.iter_mut() {
+                *c /= len;
+            }
+        } else {
+            n[1] = 1.0;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

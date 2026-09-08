@@ -115,3 +115,24 @@
   flex-shrink: 0;
   font-size: 0.7rem;
 }
+
+.headBtn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+  padding: 0.05rem 0.35rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.headBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.headBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* A non-primary member of a multi-selection — dimmer than `.selected`. */
+.selectedMulti { background: var(--bg-hover); }

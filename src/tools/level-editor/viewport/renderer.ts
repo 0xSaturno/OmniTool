@@ -6,11 +6,20 @@
  * that nothing per-frame ever goes through React state.
  *
  * Scene layout
- *   modelGroup   one THREE.InstancedMesh per unique model asset (GPU instancing
- *                is mandatory: a tile can hold 5k instances, a planet ~180k)
- *   entityGroup  one InstancedMesh of wireframe boxes per entity kind, plus a
- *                screen-sized Points cloud so markers stay visible at range
- *   helpers      grid, axes, selection outline boxes, gizmo
+ *   modelGroup    one THREE.InstancedMesh per unique model asset (GPU instancing
+ *                 is mandatory: a tile can hold 5k instances, a planet ~180k)
+ *   blockGeoGroup one single-instance mesh per scene object that owns geometry
+ *                 inside the zone's raw block 2 — kind 6 impostor shells and
+ *                 kind 3 projected decal sheets. Neither has a `.model` asset,
+ *                 so these triangles exist nowhere else: measured per zone,
+ *                 tile_c17_art (savali) 91 objects / 346,820 triangles,
+ *                 tile_e19_art (nefarious) 218 / 204,872, tile_m37_art
+ *                 (megalopolis) 205 / 26,955, tile_n19_art (sargasso) 8 / 2,107,
+ *                 and a megalopolis impostor zone is 100% impostor. They used
+ *                 to draw as empty wireframe boxes.
+ *   entityGroup   one InstancedMesh of wireframe boxes per entity kind, plus a
+ *                 screen-sized Points cloud so markers stay visible at range
+ *   helpers       grid, axes, selection outline boxes, gizmo
  */
 
 import * as THREE from "three";
@@ -18,7 +27,25 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { CameraRig } from "./cameraRig";
 import { MeshQueue } from "./meshCache";
 import { isFiniteMatrix, zoneToMatrix4 } from "./matrix";
-import { KIND_MODEL, type GizmoMode, type MeshLoader, type SceneObjectDto, type ZoneScene } from "../types";
+import {
+  BLOCK_GEO_TINTS,
+  createBlockGeoMaterial,
+  createLightRig,
+  depthBiasFor,
+  createModelMaterial,
+  type BlockGeoKind,
+  type ShadingMode,
+} from "./materials";
+import {
+  KIND_DECAL,
+  KIND_IMPOSTOR,
+  KIND_MODEL,
+  zoneGeometryKey,
+  type GizmoMode,
+  type MeshLoader,
+  type SceneObjectDto,
+  type ZoneScene,
+} from "../types";
 
 // ---------------------------------------------------------------------------
 
@@ -34,6 +61,16 @@ export interface HudState {
   hovered: string | null;
   selectedCount: number;
   selectedName: string | null;
+  /** Instances whose 4x4 has a negative-determinant basis (mirrored art). */
+  mirrored: number;
+  /** Dev builds only: decoded meshes whose winding disagrees with their normals. */
+  windingSuspect: number;
+  /** Scene objects carrying a mesh inside the zone's raw block 2. */
+  blockGeo: number;
+  /** Of those, how many have their real geometry on screen (rest are boxes). */
+  blockGeoLoaded: number;
+  /** Triangles those meshes contribute. */
+  blockGeoTriangles: number;
 }
 
 export interface LevelRendererOptions {
@@ -44,11 +81,31 @@ export interface LevelRendererOptions {
   onBoxSelect?: (rect: { x: number; y: number; w: number; h: number } | null) => void;
 }
 
+/**
+ * `model`    instanced `.model` asset geometry, one batch per asset.
+ * `entity`   wireframe marker boxes, one batch per scene-object kind.
+ * `blockGeo` one scene object's own mesh out of the zone's raw block 2. Each
+ *            such mesh is unique to its object, so these are single-instance
+ *            batches — they stay `InstancedMesh` purely so that picking,
+ *            per-instance tinting, the gizmo and box-select need no special
+ *            case, and a one-instance InstancedMesh is one draw call either way.
+ */
+type BatchKind = "model" | "entity" | "blockGeo";
+
 interface Batch {
   key: string;
   mesh: THREE.InstancedMesh;
   objects: SceneObjectDto[];
-  isEntity: boolean;
+  kind: BatchKind;
+  /** `blockGeo` only. */
+  geoKind?: BlockGeoKind;
+  /** `blockGeo` only: real geometry has replaced the placeholder marker box. */
+  resolved: boolean;
+}
+
+/** True while a batch is drawn as a scale-hint wireframe box rather than a mesh. */
+function isMarkerBox(b: Batch): boolean {
+  return b.kind === "entity" || (b.kind === "blockGeo" && !b.resolved);
 }
 
 interface Slot {
@@ -61,9 +118,10 @@ interface Slot {
 export const KIND_COLORS: Record<number, number> = {
   1: 0xffd166, // light
   2: 0x3fb950, // actor
-  3: 0xa371f7, // decal
+  3: BLOCK_GEO_TINTS.decal, // decal
   4: 0x39c5cf, // spline
   5: 0xf0883e, // vfx
+  6: BLOCK_GEO_TINTS.impostor, // impostor
 };
 const KIND_FALLBACK = 0x8b949e;
 
@@ -83,6 +141,27 @@ let entityGeometry: THREE.BoxGeometry | null = null;
 function getEntityGeometry(): THREE.BoxGeometry {
   if (!entityGeometry) entityGeometry = new THREE.BoxGeometry(1, 1, 1);
   return entityGeometry;
+}
+
+/** The wireframe marker box every non-model object starts (and may stay) as. */
+function makeMarkerMaterial(): THREE.Material {
+  return new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.9 });
+}
+
+/**
+ * Does this entry own a mesh inside the zone's raw block 2?
+ *
+ * `SceneObjectDto.geometry` is set by the backend only for kind 3 / kind 6
+ * entries whose span it validated, so this is a free, exact predicate: we ask
+ * `level_zone_geometry` for exactly the objects that have something to return,
+ * never once per boxy entity. The kind check is belt-and-braces — the backend
+ * refuses to decode anything else — and `indexCount` filters spans that would
+ * decode to zero triangles.
+ */
+function hasBlockGeometry(o: SceneObjectDto): boolean {
+  if (o.kind !== KIND_DECAL && o.kind !== KIND_IMPOSTOR) return false;
+  const g = o.geometry;
+  return Boolean(g && g.indexCount >= 3 && g.vertexCount >= 3);
 }
 
 /** Stable pastel colour per model id, so instances of one model read as a set. */
@@ -109,6 +188,7 @@ export class LevelRenderer {
   private raycaster = new THREE.Raycaster();
 
   private modelGroup = new THREE.Group();
+  private blockGeoGroup = new THREE.Group();
   private entityGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
 
@@ -121,6 +201,8 @@ export class LevelRenderer {
   private gizmoMode: GizmoMode | null = "translate";
 
   private batches: Batch[] = [];
+  private batchByKey = new Map<string, Batch>();
+  private batchByMesh = new Map<THREE.Object3D, Batch>();
   private slots = new Map<number, Slot>();
   private matrices = new Map<number, THREE.Matrix4>();
   private meshQueue: MeshQueue | null = null;
@@ -134,10 +216,16 @@ export class LevelRenderer {
   private showGeometry = true;
   private showEntities = true;
   private wireframe = false;
+  private shading: ShadingMode = "lit";
 
   private modelInstanceCount = 0;
   private entityInstanceCount = 0;
   private uniqueModels = 0;
+  private mirroredInstanceCount = 0;
+  private suspectMeshCount = 0;
+  private blockGeoCount = 0;
+  private blockGeoLoaded = 0;
+  private blockGeoTriangles = 0;
 
   private needsRender = true;
   private running = true;
@@ -169,6 +257,10 @@ export class LevelRenderer {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setClearColor(0x0f1117, 1);
+    // Untextured clay under a bright key blows out fast; ACES keeps the
+    // highlights inside the range where shading is still readable.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.style.width = "100%";
     this.renderer.domElement.style.height = "100%";
@@ -180,14 +272,9 @@ export class LevelRenderer {
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 20000);
     this.rig = new CameraRig(this.camera);
 
-    this.scene.add(this.modelGroup, this.entityGroup, this.helperGroup);
+    this.scene.add(this.modelGroup, this.blockGeoGroup, this.entityGroup, this.helperGroup);
 
-    const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x2a2f3a, 2.4);
-    const key = new THREE.DirectionalLight(0xffffff, 2.1);
-    key.position.set(0.6, 1, 0.4);
-    const fill = new THREE.DirectionalLight(0x9fb6d8, 0.9);
-    fill.position.set(-0.5, 0.3, -0.7);
-    this.scene.add(hemi, key, fill);
+    this.scene.add(...createLightRig());
 
     this.outline = new THREE.LineSegments(
       new THREE.BufferGeometry(),
@@ -233,6 +320,7 @@ export class LevelRenderer {
 
     const byModel = new Map<string, SceneObjectDto[]>();
     const byKind = new Map<number, SceneObjectDto[]>();
+    const blockGeo: SceneObjectDto[] = [];
     const bounds = new THREE.Box3();
     const p = new THREE.Vector3();
 
@@ -244,12 +332,18 @@ export class LevelRenderer {
         let list = byModel.get(o.modelId);
         if (!list) byModel.set(o.modelId, (list = []));
         list.push(o);
+      } else if (hasBlockGeometry(o)) {
+        // The entry itself tells us it owns a mesh, so we never spend an IPC
+        // round trip on a decal or impostor that has none — and every other
+        // kind keeps its marker box without asking the backend at all.
+        blockGeo.push(o);
       } else if (o.kind !== KIND_MODEL) {
         let list = byKind.get(o.kind);
         if (!list) byKind.set(o.kind, (list = []));
         list.push(o);
       }
     }
+    this.blockGeoCount = blockGeo.length;
 
     if (bounds.isEmpty()) bounds.set(new THREE.Vector3(-50, 0, -50), new THREE.Vector3(50, 0, 50));
     // Give flat zones some vertical room so framing does not degenerate.
@@ -267,7 +361,7 @@ export class LevelRenderer {
       const objects = byModel.get(modelId)!;
       const mesh = new THREE.InstancedMesh(
         getPlaceholderGeometry(),
-        new THREE.MeshLambertMaterial({ color: 0xffffff, wireframe: this.wireframe }),
+        createModelMaterial(this.shading, this.wireframe),
         objects.length,
       );
       mesh.name = modelId;
@@ -279,29 +373,46 @@ export class LevelRenderer {
         mesh.setMatrixAt(i, m4);
         mesh.setColorAt(i, base);
         this.matrices.set(o.offset, m4.clone());
+        if (determinant3(o.matrix) < 0) this.mirroredInstanceCount++;
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.computeBoundingSphere();
 
-      const batch: Batch = { key: modelId, mesh, objects, isEntity: false };
-      for (let i = 0; i < objects.length; i++) this.slots.set(objects[i].offset, { batch, index: i, object: objects[i] });
-      this.batches.push(batch);
-      this.modelGroup.add(mesh);
+      this.registerBatch({ key: modelId, mesh, objects, kind: "model", resolved: true }, this.modelGroup);
       this.modelInstanceCount += objects.length;
     }
     this.uniqueModels = order.length;
+
+    // Block-2 geometry: one single-instance batch per object, drawn as the same
+    // wireframe marker box it used to be until its mesh arrives (and left that
+    // way for good if the decode comes back empty).
+    for (const o of blockGeo) {
+      const geoKind: BlockGeoKind = o.kind === KIND_IMPOSTOR ? "impostor" : "decal";
+      const mesh = new THREE.InstancedMesh(getEntityGeometry(), makeMarkerMaterial(), 1);
+      mesh.name = `${geoKind}@${o.offset}`;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      zoneToMatrix4(o.matrix, m4);
+      this.matrices.set(o.offset, m4.clone());
+      mesh.setMatrixAt(0, this.entityMarkerMatrix(o, m4.clone()));
+      mesh.setColorAt(0, new THREE.Color(BLOCK_GEO_TINTS[geoKind]));
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      if (determinant3(o.matrix) < 0) this.mirroredInstanceCount++;
+
+      this.registerBatch(
+        { key: zoneGeometryKey(scene.path, o.offset), mesh, objects: [o], kind: "blockGeo", geoKind, resolved: false },
+        this.blockGeoGroup,
+      );
+    }
 
     // Entity batches — wireframe boxes, one InstancedMesh per kind.
     const pos: number[] = [];
     const col: number[] = [];
     for (const [kind, objects] of byKind) {
       const color = new THREE.Color(KIND_COLORS[kind] ?? KIND_FALLBACK);
-      const mesh = new THREE.InstancedMesh(
-        getEntityGeometry(),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.9 }),
-        objects.length,
-      );
+      const mesh = new THREE.InstancedMesh(getEntityGeometry(), makeMarkerMaterial(), objects.length);
       mesh.name = `kind${kind}`;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       for (let i = 0; i < objects.length; i++) {
@@ -317,10 +428,7 @@ export class LevelRenderer {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.computeBoundingSphere();
 
-      const batch: Batch = { key: `kind${kind}`, mesh, objects, isEntity: true };
-      for (let i = 0; i < objects.length; i++) this.slots.set(objects[i].offset, { batch, index: i, object: objects[i] });
-      this.batches.push(batch);
-      this.entityGroup.add(mesh);
+      this.registerBatch({ key: `kind${kind}`, mesh, objects, kind: "entity", resolved: true }, this.entityGroup);
       this.entityInstanceCount += objects.length;
     }
 
@@ -337,17 +445,53 @@ export class LevelRenderer {
       this.entityGroup.add(points);
     }
 
-    this.modelGroup.visible = this.showGeometry;
-    this.entityGroup.visible = this.showEntities;
+    this.applyGroupVisibility();
 
     this.buildHelpers(bounds);
     if (!keepCamera) this.rig.frameBoxDefaultAngle(bounds);
 
-    this.meshQueue = new MeshQueue(meshLoader, (id, geom) => this.onGeometry(id, geom), 4);
+    // One queue over one cache for both mesh sources — models first (they are
+    // sorted by instance count, so the visually dominant art lands first), then
+    // the block-2 meshes, which are one object each and therefore cheaper to
+    // wait for.
+    this.meshQueue = new MeshQueue(meshLoader, (key, geom) => this.onGeometry(key, geom), 4);
     for (const modelId of order) this.meshQueue.request(modelId);
+    for (const o of blockGeo) this.meshQueue.request(zoneGeometryKey(scene.path, o.offset));
 
     this.setSelection([]);
     this.needsRender = true;
+  }
+
+  private registerBatch(batch: Batch, group: THREE.Group): void {
+    for (let i = 0; i < batch.objects.length; i++) {
+      this.slots.set(batch.objects[i].offset, { batch, index: i, object: batch.objects[i] });
+    }
+    this.batches.push(batch);
+    this.batchByKey.set(batch.key, batch);
+    this.batchByMesh.set(batch.mesh, batch);
+    group.add(batch.mesh);
+  }
+
+  /** Is this batch's group currently drawn? Picking must agree with the eye. */
+  private batchVisible(b: Batch): boolean {
+    return b.kind === "entity" ? this.showEntities : this.showGeometry;
+  }
+
+  /**
+   * Block-2 geometry follows `showGeometry`, not `showEntities`.
+   *
+   * These are real triangle meshes - on savali's `tile_c17_art` they are 346,820
+   * of them, and one megalopolis impostor zone is 100% block-2 geometry - so a
+   * "hide geometry" that left a skyline standing would be a lie, and "entities
+   * only" is asked for precisely when someone wants an unobstructed view of the
+   * markers. The placeholder marker box a block-2 object wears before its mesh
+   * arrives follows the same toggle, so an object never jumps between groups
+   * mid-load. Kinds 3 and 6 that own no block-2 span stay ordinary entities.
+   */
+  private applyGroupVisibility(): void {
+    this.modelGroup.visible = this.showGeometry;
+    this.blockGeoGroup.visible = this.showGeometry;
+    this.entityGroup.visible = this.showEntities;
   }
 
   setSelection(offsets: number[]): void {
@@ -371,14 +515,34 @@ export class LevelRenderer {
     if (this.wireframe !== v.wireframe) {
       this.wireframe = v.wireframe;
       for (const b of this.batches) {
-        if (b.isEntity) continue;
-        (b.mesh.material as THREE.MeshLambertMaterial).wireframe = this.wireframe;
+        // A marker box is already a wireframe; only real meshes have a mode.
+        if (isMarkerBox(b)) continue;
+        (b.mesh.material as THREE.MeshPhongMaterial).wireframe = this.wireframe;
       }
     }
-    this.modelGroup.visible = this.showGeometry;
-    this.entityGroup.visible = this.showEntities;
+    this.applyGroupVisibility();
     this.updateGizmoAttachment();
     this.needsRender = true;
+  }
+
+  /** Swap the model-batch material (lit / normals / facing). */
+  setShadingMode(mode: ShadingMode): void {
+    if (this.shading === mode) return;
+    this.shading = mode;
+    for (const b of this.batches) {
+      if (isMarkerBox(b)) continue;
+      const old = b.mesh.material as THREE.Material;
+      b.mesh.material =
+        b.kind === "blockGeo"
+          ? createBlockGeoMaterial(b.geoKind!, this.shading, this.wireframe)
+          : createModelMaterial(this.shading, this.wireframe);
+      old.dispose();
+    }
+    this.needsRender = true;
+  }
+
+  getShadingMode(): ShadingMode {
+    return this.shading;
   }
 
   setGizmoMode(mode: GizmoMode | null): void {
@@ -461,6 +625,8 @@ export class LevelRenderer {
       b.mesh.dispose();
     }
     this.batches = [];
+    this.batchByKey.clear();
+    this.batchByMesh.clear();
     this.slots.clear();
     this.matrices.clear();
 
@@ -475,6 +641,11 @@ export class LevelRenderer {
     this.modelInstanceCount = 0;
     this.entityInstanceCount = 0;
     this.uniqueModels = 0;
+    this.mirroredInstanceCount = 0;
+    this.suspectMeshCount = 0;
+    this.blockGeoCount = 0;
+    this.blockGeoLoaded = 0;
+    this.blockGeoTriangles = 0;
     this.selection = [];
     this.selectionSet.clear();
     this.hovered = null;
@@ -485,10 +656,32 @@ export class LevelRenderer {
 
   // -- geometry streaming ---------------------------------------------------
 
-  private onGeometry(modelId: string, geometry: THREE.BufferGeometry | null): void {
+  private onGeometry(key: string, geometry: THREE.BufferGeometry | null): void {
+    // An empty buffer decodes to null; the batch keeps the placeholder it has
+    // (a unit box for a model, the scale-hint wireframe box for a block-2
+    // object), which is exactly the fallback those objects had before.
     if (!geometry) return;
-    const batch = this.batches.find((b) => !b.isEntity && b.key === modelId);
-    if (!batch) return;
+    const batch = this.batchByKey.get(key);
+    if (!batch || batch.kind === "entity") return;
+    if (geometry.userData.windingSuspect) this.suspectMeshCount++;
+
+    if (batch.kind === "blockGeo" && !batch.resolved) {
+      // Swap the marker box for the real mesh: solid tinted material, and the
+      // object's own untouched 4x4 - the marker matrix substitutes a readable
+      // box size for the entry's scale hint, which would squash the real mesh.
+      const old = batch.mesh.material as THREE.Material;
+      batch.mesh.material = createBlockGeoMaterial(batch.geoKind!, this.shading, this.wireframe);
+      old.dispose();
+      batch.resolved = true;
+      const m = this.matrices.get(batch.objects[0].offset);
+      if (m) batch.mesh.setMatrixAt(0, m);
+      batch.mesh.instanceMatrix.needsUpdate = true;
+      this.refreshColor(batch.objects[0].offset);
+      this.blockGeoLoaded++;
+      const idx = geometry.getIndex();
+      this.blockGeoTriangles += Math.floor((idx ? idx.count : geometry.getAttribute("position").count) / 3);
+    }
+
     batch.mesh.geometry = geometry;
     batch.mesh.computeBoundingSphere();
     this.updateOutline();
@@ -537,7 +730,7 @@ export class LevelRenderer {
   }
 
   private writeInstanceMatrix(slot: Slot, m: THREE.Matrix4): void {
-    if (slot.batch.isEntity) {
+    if (isMarkerBox(slot.batch)) {
       slot.batch.mesh.setMatrixAt(slot.index, this.entityMarkerMatrix(slot.object, m.clone()));
     } else {
       slot.batch.mesh.setMatrixAt(slot.index, m);
@@ -552,7 +745,8 @@ export class LevelRenderer {
     let color: THREE.Color;
     if (this.selectionSet.has(offset)) color = SELECT_COLOR;
     else if (this.hovered === offset) color = HOVER_COLOR;
-    else if (batch.isEntity) color = new THREE.Color(KIND_COLORS[object.kind] ?? KIND_FALLBACK);
+    else if (batch.kind === "blockGeo") color = new THREE.Color(BLOCK_GEO_TINTS[batch.geoKind!]);
+    else if (batch.kind === "entity") color = new THREE.Color(KIND_COLORS[object.kind] ?? KIND_FALLBACK);
     else color = colorForKey(batch.key);
     batch.mesh.setColorAt(index, color);
     if (batch.mesh.instanceColor) batch.mesh.instanceColor.needsUpdate = true;
@@ -563,7 +757,7 @@ export class LevelRenderer {
     const m = this.matrices.get(offset);
     if (!slot || !m) return null;
     let local: THREE.Box3;
-    if (slot.batch.isEntity) {
+    if (isMarkerBox(slot.batch)) {
       const s = slot.object.scale;
       const dim = (v: number) => (Number.isFinite(v) && v > 0.01 ? THREE.MathUtils.clamp(v, 0.25, 200) : 1);
       local = new THREE.Box3(
@@ -705,19 +899,31 @@ export class LevelRenderer {
 
   private pickAt(clientX: number, clientY: number): number | null {
     const targets: THREE.Object3D[] = [];
-    if (this.showGeometry) for (const b of this.batches) if (!b.isEntity) targets.push(b.mesh);
-    if (this.showEntities) for (const b of this.batches) if (b.isEntity) targets.push(b.mesh);
+    for (const b of this.batches) if (this.batchVisible(b)) targets.push(b.mesh);
     if (!targets.length) return null;
 
     this.raycaster.setFromCamera(this.ndc(clientX, clientY), this.camera);
     const hits = this.raycaster.intersectObjects(targets, false);
+
+    // Rank by the same biased depth the shader writes, not the raw distance.
+    // A decal sits ~2 cm in front of the surface it decorates once biased but
+    // ~2 cm behind it geometrically (measured on savali `tile_c17_art`: model
+    // hit at 19.18 m, decal at 19.20 m), so an unbiased raycast would hand back
+    // the wall the user can no longer see instead of the decal drawn over it.
+    let best: number | null = null;
+    let bestDepth = Infinity;
     for (const h of hits) {
-      const batch = this.batches.find((b) => b.mesh === h.object);
+      const batch = this.batchByMesh.get(h.object);
       if (!batch) continue;
       const id = h.instanceId;
       if (id === undefined || id < 0 || id >= batch.objects.length) continue;
-      return batch.objects[id].offset;
+      const d = h.distance * (1 - depthBiasFor(batch.kind === "blockGeo" ? batch.geoKind! : null));
+      if (d < bestDepth) {
+        bestDepth = d;
+        best = batch.objects[id].offset;
+      }
     }
+    if (best !== null) return best;
 
     // Entities are often sub-metre; fall back to a screen-space proximity test
     // so markers stay clickable when they are only a few pixels across.
@@ -734,7 +940,7 @@ export class LevelRenderer {
     let bestScore = Infinity;
 
     for (const b of this.batches) {
-      if (!b.isEntity) continue;
+      if (b.kind !== "entity") continue;
       for (const o of b.objects) {
         const m = this.matrices.get(o.offset);
         if (!m) continue;
@@ -764,8 +970,7 @@ export class LevelRenderer {
     const out: number[] = [];
 
     for (const b of this.batches) {
-      if (b.isEntity && !this.showEntities) continue;
-      if (!b.isEntity && !this.showGeometry) continue;
+      if (!this.batchVisible(b)) continue;
       for (const o of b.objects) {
         const m = this.matrices.get(o.offset);
         if (!m) continue;
@@ -1001,11 +1206,28 @@ export class LevelRenderer {
       hovered: hoveredObj ? describe(hoveredObj.object) : null,
       selectedCount: this.selection.length,
       selectedName: selectedObj ? describe(selectedObj.object) : null,
+      mirrored: this.mirroredInstanceCount,
+      windingSuspect: this.suspectMeshCount,
+      blockGeo: this.blockGeoCount,
+      blockGeoLoaded: this.blockGeoLoaded,
+      blockGeoTriangles: this.blockGeoTriangles,
     });
   }
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Determinant of the 3x3 basis of a ROW-MAJOR zone matrix. Negative means the
+ * instance is mirrored — see `materials.ts` for why that matters.
+ */
+function determinant3(m: ArrayLike<number>): number {
+  return (
+    m[0] * (m[5] * m[10] - m[6] * m[9]) -
+    m[1] * (m[4] * m[10] - m[6] * m[8]) +
+    m[2] * (m[4] * m[9] - m[5] * m[8])
+  );
+}
 
 function describe(o: SceneObjectDto): string {
   if (o.name) return o.name;

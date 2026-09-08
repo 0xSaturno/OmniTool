@@ -21,10 +21,15 @@ type Row =
 interface Props {
   objects: SceneObjectDto[];
   modelPaths: Map<string, string>;
+  /** The primary (last picked) selection — the one the Inspector shows. */
   selected: number | null;
   onSelect: (offset: number | null) => void;
   editedOffsets: Set<number>;
   zoneOf?: (offset: number) => string | undefined;
+  /** Every selected offset, so multi-selection is visible in the tree too. */
+  selectedSet?: Set<number>;
+  onSelectAll?: () => void;
+  onSelectNone?: () => void;
 }
 
 function shortModel(path: string, id: string) {
@@ -40,6 +45,9 @@ export default function SceneTree({
   onSelect,
   editedOffsets,
   zoneOf,
+  selectedSet,
+  onSelectAll,
+  onSelectNone,
 }: Props) {
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -83,6 +91,8 @@ export default function SceneTree({
     }
     return out;
   }, [objects, modelPaths, needle]);
+
+  const selectionCount = selectedSet ? selectedSet.size : selected === null ? 0 : 1;
 
   const total = useMemo(
     () => groups.reduce((n, g) => n + g.objects.length + [...g.models.values()].reduce((m, l) => m + l.length, 0), 0),
@@ -192,7 +202,29 @@ export default function SceneTree({
     <div className={styles.panel}>
       <div className={styles.head}>
         <span className={styles.title}>Scene Tree</span>
-        <span className={styles.count}>{total.toLocaleString()}</span>
+        {onSelectAll && (
+          <button
+            className={styles.headBtn}
+            onClick={onSelectAll}
+            disabled={objects.length === 0}
+            title="Select every visible object across all loaded zones (Ctrl+A)"
+          >
+            Select all
+          </button>
+        )}
+        {onSelectNone && selectionCount > 0 && (
+          <button
+            className={styles.headBtn}
+            onClick={onSelectNone}
+            title="Clear the selection (Esc)"
+          >
+            None
+          </button>
+        )}
+        <span className={styles.count}>
+          {selectionCount > 0 ? `${selectionCount.toLocaleString()} / ` : ""}
+          {total.toLocaleString()}
+        </span>
       </div>
       <input
         className={styles.search}
@@ -226,7 +258,13 @@ export default function SceneTree({
                 ) : (
                   <button
                     key={r.id}
-                    className={`${styles.objRow} ${selected === r.obj.offset ? styles.selected : ""}`}
+                    className={`${styles.objRow} ${
+                      selected === r.obj.offset
+                        ? styles.selected
+                        : selectedSet?.has(r.obj.offset)
+                          ? styles.selectedMulti
+                          : ""
+                    }`}
                     style={{ paddingLeft: `${0.55 + r.depth * 0.75}rem`, height: ROW_H }}
                     onClick={() => onSelect(r.obj.offset)}
                     title={`${r.obj.kindName} · ${r.obj.instanceId}${

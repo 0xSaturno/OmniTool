@@ -6,12 +6,16 @@
 //!   [36-byte "Archive TOC Asset Header Data"]   (prepended by Toc::extract_asset)
 //!   [block 0]  DAT1 "Zone PID Contents"   <- parsed and edited here
 //!   [block 1]  DAT1 "Zone PID Physics"    (48-byte empty DAT1 for gameplay zones)
-//!   [block 2]  hlod        (art zones only)
-//!   [block 3]  texture     (art zones only)
+//!   [block 2]  raw geometry appendix      (decal meshes; impostor meshes)
+//!   [block 3]  raw texture atlas          (impostor zones only, always 0x40000)
 //! ```
 //!
-//! The header is `{ u32 type_id, u32 sizes[4], u8 format_data[16] }` and
-//! `sum(sizes) == asset size`.
+//! The header is `{ u32 type_id, u32 sizes[8] }`, but only a **prefix** of
+//! `sizes[]` are block sizes — the rest is type-specific metadata (for impostor
+//! zones `sizes[4..8]` is a texture descriptor). The block count is therefore
+//! the smallest `k` with `sum(sizes[0..k]) == asset size`, which resolves for
+//! 712/712 sampled zones. Reading a fixed four sizes mis-splits the tail and
+//! loses block 2, which is where every decal and impostor mesh lives.
 //!
 //!
 //! ```text
@@ -25,6 +29,8 @@
 //!   0xBDAB2B0D  Zone Volumes           u32[] scene-object byte offsets
 //!   0xBCF43558  Zone Decals            u32[] scene-object byte offsets
 //!   0x927C4EC3  Zone Visual Effect Insts u32[] scene-object byte offsets
+//!   0xDC311FC3  Zone Impostors         u32[] scene-object byte offsets (kind 6)
+//!   0x657512BB  Zone Decal Geometry    88-byte rows, one per Zone Decals row
 //! ```
 //!
 //! `Zone Scene Objects` is *not* an array of fixed-size records: entries have
@@ -47,6 +53,8 @@
 //! and no inter-section byte offset can be invalidated, and re-serialising an
 //! untouched zone reproduces the original bytes exactly.
 
+use std::collections::HashMap;
+
 use crate::core::dat1::Dat1;
 use crate::core::error::{Result, ToolkitError};
 use byteorder::{ByteOrder, LE};
@@ -66,6 +74,8 @@ pub const T_LIGHTS: u32 = 0x97FF_6EB5;
 pub const T_VOLUMES: u32 = 0xBDAB_2B0D;
 pub const T_DECALS: u32 = 0xBCF4_3558;
 pub const T_VFX_INSTS: u32 = 0x927C_4EC3;
+pub const T_IMPOSTORS: u32 = 0xDC31_1FC3;
+pub const T_DECAL_GEOMETRY: u32 = 0x6575_12BB;
 
 const OFF_MATRIX: usize = 0x00;
 const OFF_FLAGS: usize = 0x5C;
@@ -75,6 +85,18 @@ const OFF_INSTANCE_ID: usize = 0x80;
 const OFF_INSTANCE_K0: usize = 0x100;
 const OFF_MODEL_INDEX: usize = 0x110;
 const ENTRY_HEADER_LEN: usize = 0x80;
+/// Kind 3 / kind 6 keep an inline NUL-terminated asset path right after the
+/// shared header: a `.material` for a decal, a `.texture` atlas for an impostor.
+const OFF_INLINE_PATH_DECAL: usize = 0x80;
+const OFF_INLINE_PATH_IMPOSTOR: usize = 0x88;
+/// Kind 6: `{ u32 vertex_offset, u32 vertex_count, u32 index_offset, u32 index_count }`
+/// addressing the zone's raw block 2. Verified on 770/770 impostors of
+/// megalopolis + sargasso + savali: every span fits block 2, every index is
+/// below the vertex count and every packed vertex carries the 2-bit tag 1.
+const OFF_IMPOSTOR_GEO: usize = 0x280;
+/// Kind 3: index of this decal's `Zone Decal Geometry` row, or `u32::MAX` when
+/// it projects no mesh. See `build_index` for the measurements.
+const OFF_DECAL_ROW: usize = 0x2BC;
 
 pub const KIND_MODEL: u8 = 0;
 pub const KIND_LIGHT: u8 = 1;
@@ -82,6 +104,7 @@ pub const KIND_ACTOR: u8 = 2;
 pub const KIND_DECAL: u8 = 3;
 pub const KIND_SPLINE: u8 = 4;
 pub const KIND_VFX: u8 = 5;
+pub const KIND_IMPOSTOR: u8 = 6;
 
 pub fn kind_name(kind: u8) -> &'static str {
     match kind {
@@ -91,7 +114,7 @@ pub fn kind_name(kind: u8) -> &'static str {
         KIND_DECAL => "decal",
         KIND_SPLINE => "spline",
         KIND_VFX => "vfx",
-        6 => "unknown6",
+        KIND_IMPOSTOR => "impostor",
         _ => "other",
     }
 }
@@ -120,10 +143,41 @@ pub struct SceneObject {
     #[serde(default)]
     pub model_path: String,
     /// Number of trailing 0x20-byte records on a kind-0 entry.
+    ///
+    /// They are **not** extra transforms: each is
+    /// `{ f32 value; f32 0,0,0; u32 crc32_tag(parameter name); u32 0,0,0 }`,
+    /// i.e. one scalar shader-parameter override. `0x06F19114 == "Emissive"`
+    /// and `0x77AF2D2B == "emissive_amount"` recovered by CRC32 inversion; the
+    /// other six hashes seen are single-valued too. Over 38 670 kind-0 entries
+    /// of eight real zones only 44 carry any, so they cost no geometry.
     #[serde(default)]
     pub extra_count: u16,
     pub name: String,
     pub actor_index: i32,
+    /// Kind 3: the inline `.material` path. Kind 6: the inline `.texture`
+    /// atlas path. Empty for every other kind.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub asset_path: String,
+    /// Where this entry's geometry lives inside the zone's raw block 2 —
+    /// kind 6 (impostor shell) and kind 3 (projected decal mesh) only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<GeoRef>,
+}
+
+/// A span of the zone's raw block 2 holding one mesh.
+///
+/// Impostors (kind 6) store `vertex_count` packed `u32` positions
+/// (R10G10B10A2, each channel `/1023` inside the entry's own unit box) and
+/// `index_count` `u16` indices. Decals (kind 3) store `vertex_count` 16-byte
+/// `Model Std Vert` vertices at position scale `1/32768` in the entry's local
+/// space, then `index_count` `u16` indices.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoRef {
+    pub vertex_offset: u32,
+    pub vertex_count: u32,
+    pub index_offset: u32,
+    pub index_count: u32,
 }
 
 impl SceneObject {
@@ -176,14 +230,21 @@ pub struct Zone {
     /// The 36-byte TOC asset header, when the asset carried one.
     pub header: Option<Vec<u8>>,
     pub sizes: [u32; 4],
+    /// All eight header words, of which only a prefix are block sizes.
+    pub all_sizes: [u32; 8],
     pub dat1: Dat1,
     /// Blocks after block 0, carried through verbatim.
     pub tail: Vec<u8>,
+    /// `(start, len)` of blocks 1.. inside [`Zone::tail`]. Index 0 of this
+    /// vector is block 1.
+    pub block_spans: Vec<(usize, usize)>,
     pub scene_objects: Vec<SceneObject>,
     pub actors: Vec<ActorRow>,
     pub model_ids: Vec<u64>,
     /// Model paths parallel to `model_ids`, read from the zone's own string pool.
     pub model_paths: Vec<String>,
+    /// Decal heap offset -> its mesh span inside block 2.
+    pub decal_geometry: HashMap<u32, GeoRef>,
     pub edits: Vec<ZoneEdit>,
 }
 
@@ -213,22 +274,25 @@ impl Zone {
     /// 36-byte asset header prepended).
     pub fn parse(asset: &[u8]) -> Result<Self> {
         let (header, body) = split_header(asset)?;
-        let sizes = match &header {
+        let all_sizes = match &header {
             Some(h) => {
-                let mut s = [0u32; 4];
+                let mut s = [0u32; 8];
                 for (i, v) in s.iter_mut().enumerate() {
                     *v = LE::read_u32(&h[4 + i * 4..8 + i * 4]);
                 }
                 s
             }
-            None => [body.len() as u32, 0, 0, 0],
+            None => [body.len() as u32, 0, 0, 0, 0, 0, 0, 0],
         };
+        let mut sizes = [0u32; 4];
+        sizes.copy_from_slice(&all_sizes[..4]);
 
-        let block0_len = if sizes[0] as usize <= body.len() && sizes[0] > 0 {
-            sizes[0] as usize
+        let block0_len = if all_sizes[0] as usize <= body.len() && all_sizes[0] > 0 {
+            all_sizes[0] as usize
         } else {
             body.len()
         };
+        let block_spans = split_blocks(&all_sizes, body.len(), block0_len);
         let dat1 = Dat1::parse(&body[..block0_len])?;
         if dat1.unk1 != ZONE_TYPE_ID {
             return Err(ToolkitError::Parse(format!(
@@ -241,12 +305,15 @@ impl Zone {
         let mut zone = Zone {
             header,
             sizes,
+            all_sizes,
             dat1,
             tail,
+            block_spans,
             scene_objects: Vec::new(),
             actors: Vec::new(),
             model_ids: Vec::new(),
             model_paths: Vec::new(),
+            decal_geometry: HashMap::new(),
             edits: Vec::new(),
         };
         zone.build_index();
@@ -265,11 +332,72 @@ impl Zone {
         self.model_paths = paths;
 
         let mut offsets: Vec<u32> = Vec::new();
-        for tag in [T_MODEL_INSTS, T_LIGHTS, T_VOLUMES, T_DECALS, T_VFX_INSTS] {
+        for tag in [
+            T_MODEL_INSTS,
+            T_LIGHTS,
+            T_VOLUMES,
+            T_DECALS,
+            T_VFX_INSTS,
+            // Without this table every kind-6 entry is invisible, and an
+            // impostor zone (645 of them ship, 456 on megalopolis alone)
+            // parses to zero scene objects.
+            T_IMPOSTORS,
+        ] {
             if let Some(sec) = self.dat1.get_section_data(tag) {
                 offsets.extend(sec.chunks_exact(4).map(LE::read_u32));
             }
         }
+
+        // Zone Decal Geometry rows are addressed by the kind-3 entry itself:
+        // `entry + OFF_DECAL_ROW` holds the row index, or `u32::MAX` when the
+        // decal projects no mesh at all.
+        //
+        // It is NOT parallel to Zone Decals. That looks true on any zone where
+        // every decal has geometry (`tile_n19_art`, 8 of 8), and false the
+        // moment one does not: over 108 shipped zones from every planet, 416 of
+        // 4818 kind-3 entries carry `u32::MAX` here, and each one shifts every
+        // later decal off its row. Measured on the positional mapping, only
+        // 1340 of 1935 decals sampled had their own mesh inside their own row's
+        // bounding sphere (worst case 1745 radii away — a neighbour's mesh
+        // hoisted onto the wrong transform); reading the index makes it 4000 of
+        // 4008, the 8 stragglers overshooting by 1.09-7.81 r. The field is
+        // exact: it agrees with the row every one of 2186 sampled decals was
+        // matched to by sphere, never names a row twice inside a zone, and
+        // leaves no row unclaimed.
+        let mut decal_geo: HashMap<u32, GeoRef> = HashMap::new();
+        if let (Some(list), Some(geo)) = (
+            self.dat1.get_section_data(T_DECALS).map(<[u8]>::to_vec),
+            self.dat1.get_section_data(T_DECAL_GEOMETRY).map(<[u8]>::to_vec),
+        ) {
+            const ROW: usize = 88;
+            for off in list.chunks_exact(4).map(LE::read_u32) {
+                let row = match scene.get(off as usize + OFF_DECAL_ROW..off as usize + OFF_DECAL_ROW + 4) {
+                    Some(b) => LE::read_u32(b) as usize,
+                    None => continue,
+                };
+                let base = row * ROW;
+                if base + ROW > geo.len() {
+                    continue; // u32::MAX: this decal projects no mesh
+                }
+                let vertex_count = LE::read_u16(&geo[base..base + 2]) as u32;
+                let index_count = LE::read_u16(&geo[base + 2..base + 4]) as u32;
+                let vertex_offset = LE::read_u32(&geo[base + 0x50..base + 0x54]);
+                if vertex_count == 0 || index_count == 0 {
+                    continue;
+                }
+                decal_geo.insert(
+                    off,
+                    GeoRef {
+                        vertex_offset,
+                        vertex_count,
+                        // The index run follows the vertex run immediately.
+                        index_offset: vertex_offset + vertex_count * 16,
+                        index_count,
+                    },
+                );
+            }
+        }
+        self.decal_geometry = decal_geo;
 
         // Zone Actors: 32-byte rows
         //   { u32 name_index, u32 asset_index, u32 heap_offset, i32 prius_index,
@@ -383,8 +511,37 @@ impl Zone {
                     model_path = self.model_paths.get(mi as usize).cloned().unwrap_or_default();
                 }
             }
-        } else if off + OFF_INSTANCE_ID + 8 <= end {
+        } else if kind != KIND_DECAL && off + OFF_INSTANCE_ID + 8 <= end {
+            // A kind-3 entry starts its inline `.material` path at +0x80, so the
+            // eight bytes there are the first characters of that string, not an
+            // id — every decal used to report instance
+            // `0x6C6169726574616D` ("material" little-endian). Leave it zero.
             instance_id = LE::read_u64(&scene[off + OFF_INSTANCE_ID..off + OFF_INSTANCE_ID + 8]);
+        }
+
+        let mut asset_path = String::new();
+        let mut geometry = None;
+        match kind {
+            KIND_DECAL => {
+                asset_path = read_cstr(scene, off + OFF_INLINE_PATH_DECAL, end);
+                geometry = self.decal_geometry.get(&(off as u32)).copied();
+            }
+            KIND_IMPOSTOR => {
+                asset_path = read_cstr(scene, off + OFF_INLINE_PATH_IMPOSTOR, end);
+                if off + OFF_IMPOSTOR_GEO + 16 <= end {
+                    let g = off + OFF_IMPOSTOR_GEO;
+                    let r = GeoRef {
+                        vertex_offset: LE::read_u32(&scene[g..g + 4]),
+                        vertex_count: LE::read_u32(&scene[g + 4..g + 8]),
+                        index_offset: LE::read_u32(&scene[g + 8..g + 12]),
+                        index_count: LE::read_u32(&scene[g + 12..g + 16]),
+                    };
+                    if r.vertex_count > 0 && r.index_count >= 3 {
+                        geometry = Some(r);
+                    }
+                }
+            }
+            _ => {}
         }
 
         SceneObject {
@@ -402,7 +559,16 @@ impl Zone {
             extra_count,
             name: String::new(),
             actor_index: -1,
+            asset_path,
+            geometry,
         }
+    }
+
+    /// One of the asset's raw blocks. Block 0 is the DAT1 in [`Zone::dat1`], so
+    /// only `i >= 1` ever resolves; block 2 is the geometry appendix.
+    pub fn block(&self, i: usize) -> Option<&[u8]> {
+        let (start, len) = *self.block_spans.get(i.checked_sub(1)?)?;
+        self.tail.get(start..start + len)
     }
 
     // -- queries ---------------------------------------------------------------------------
@@ -558,6 +724,50 @@ impl Zone {
     }
 }
 
+/// Where blocks 1.. start and end inside the tail (the body past block 0).
+///
+/// Only a prefix of the eight header words are block sizes, so the block count
+/// is the smallest `k` with `sum(sizes[0..k]) == body_len`. When no `k` fits
+/// (an asset whose header we cannot trust) the whole tail is reported as one
+/// block, which is what the previous fixed-four-sizes reader always did.
+fn split_blocks(sizes: &[u32; 8], body_len: usize, block0_len: usize) -> Vec<(usize, usize)> {
+    let mut acc = 0usize;
+    let mut ends: Vec<usize> = Vec::new();
+    for &s in sizes {
+        acc = acc.saturating_add(s as usize);
+        ends.push(acc);
+        if acc == body_len {
+            break;
+        }
+        if acc > body_len || s == 0 {
+            ends.clear();
+            break;
+        }
+    }
+    if ends.last() != Some(&body_len) || ends.len() < 2 {
+        let len = body_len.saturating_sub(block0_len);
+        return if len > 0 { vec![(0, len)] } else { Vec::new() };
+    }
+    let mut spans = Vec::with_capacity(ends.len() - 1);
+    for i in 1..ends.len() {
+        let start = ends[i - 1] - block0_len;
+        spans.push((start, ends[i] - ends[i - 1]));
+    }
+    spans
+}
+
+/// Read a NUL-terminated UTF-8 string out of the heap, bounded by the entry.
+fn read_cstr(scene: &[u8], off: usize, end: usize) -> String {
+    if off >= end || end > scene.len() {
+        return String::new();
+    }
+    let slice = &scene[off..end];
+    let n = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..n])
+        .replace('\\', "/")
+        .to_string()
+}
+
 /// Split an extracted asset into its optional 36-byte header and the body.
 fn split_header(asset: &[u8]) -> Result<(Option<Vec<u8>>, &[u8])> {
     if asset.len() < 8 {
@@ -602,5 +812,37 @@ mod tests {
     fn kind_names_are_stable() {
         assert_eq!(kind_name(KIND_MODEL), "model");
         assert_eq!(kind_name(KIND_ACTOR), "actor");
+        assert_eq!(kind_name(KIND_IMPOSTOR), "impostor");
+    }
+
+    #[test]
+    fn blocks_split_on_the_first_prefix_that_sums_to_the_body() {
+        // A shipped art zone: block0 + physics + the raw geometry appendix.
+        let sizes = [1_382_288, 490_864, 73_952, 0, 0, 0, 0, 0];
+        let body = 1_382_288 + 490_864 + 73_952;
+        assert_eq!(
+            split_blocks(&sizes, body, 1_382_288),
+            vec![(0, 490_864), (490_864, 73_952)]
+        );
+
+        // An impostor zone: sizes[4..] are a texture descriptor, not sizes, so
+        // the walk must stop at k = 4 rather than adding them.
+        let sizes = [1268, 48, 34_440, 262_144, 0x1000_0150, 0x10800, 0x301_0248, 0x480_0000];
+        let body = 1268 + 48 + 34_440 + 262_144;
+        assert_eq!(
+            split_blocks(&sizes, body, 1268),
+            vec![(0, 48), (48, 34_440), (34_488, 262_144)]
+        );
+
+        // A plain two-block zone.
+        let sizes = [18_536, 19_924, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            split_blocks(&sizes, 18_536 + 19_924, 18_536),
+            vec![(0, 19_924)]
+        );
+
+        // A header we cannot trust falls back to one opaque tail block.
+        let sizes = [10, 999, 0, 0, 0, 0, 0, 0];
+        assert_eq!(split_blocks(&sizes, 100, 10), vec![(0, 90)]);
     }
 }

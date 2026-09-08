@@ -448,6 +448,18 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
 
         // Faces: mesh-local indices, matching gltf_reader.rs's inject_vertexes
         // convention (which re-adds vertex_start on the way back in).
+        //
+        // NOTE: this reverses each triangle. `core::level::decode_model_mesh`
+        // used to do the same and no longer does — measured over 596 distinct
+        // models from four planets, the reversed order agrees with the models'
+        // own stored vertex normals on an area-weighted 0.23% of triangles and
+        // leaves all 75 watertight models at negative signed volume, while the
+        // source order scores 99.77% and 75/75 positive. So the export below is
+        // very likely emitting back-facing triangles too. Left alone on purpose:
+        // this is the shipped glTF/ASCII export path, gltf_reader.rs round-trips
+        // against it, and changing it would silently alter every existing user's
+        // exports. Raise it as its own change, with its own round-trip check.
+
         let vc_offset = if mesh.has_relative_indices() { 0u16 } else { mesh.vertex_start as u16 };
         let face_count = mesh.index_count / 3;
         let mut idx_arr: Vec<u16> = Vec::with_capacity(face_count as usize * 3);

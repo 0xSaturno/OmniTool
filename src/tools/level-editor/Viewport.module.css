@@ -26,7 +26,10 @@
   position: absolute;
   top: 0.6rem;
   left: 0.6rem;
+  /* The shading buttons push the row wide; wrap rather than overflow the pane. */
+  max-width: calc(100% - 1.2rem);
   display: flex;
+  flex-wrap: wrap;
   gap: 0.35rem;
   align-items: center;
   padding: 0.3rem;

@@ -5,6 +5,7 @@
 // callers just catch and forward the message into the status log.
 
 import { invoke } from "@tauri-apps/api/core";
+import { parseZoneGeometryKey } from "./types";
 import type {
   LevelRegion,
   LevelZoneStats,
@@ -45,6 +46,23 @@ export async function loadModelMesh(
   return invoke<ArrayBuffer>("level_model_mesh", { gameDir, modelId, lod });
 }
 
+/**
+ * RCMS buffer for the mesh one scene object keeps inside the zone's own raw
+ * block 2 — kind 6 impostor shells and kind 3 projected decal sheets, neither
+ * of which has a `.model` asset. Vertices come back in the entry's local
+ * space, so the viewport places them with the entry's own 4x4.
+ *
+ * Returns the header-only empty buffer (never an error) when the object has no
+ * block-2 span or the span will not decode.
+ */
+export async function loadZoneGeometry(
+  gameDir: string,
+  zonePath: string,
+  offset: number,
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("level_zone_geometry", { gameDir, zonePath, offset });
+}
+
 export async function saveZone(
   gameDir: string,
   zonePath: string,
@@ -60,20 +78,33 @@ export async function zoneStats(gameDir: string, hashesPath?: string): Promise<L
 
 /**
  * Builds the `meshLoader` the viewport calls, bound to one game directory.
- * Results are memoised per model id — a zone reuses the same handful of models
- * thousands of times, so the viewport must never re-fetch one.
+ *
+ * One loader serves both mesh sources, chosen by the shape of the key:
+ *   `"0x…"`                     -> `level_model_mesh` (a shared `.model` asset)
+ *   `"zone:<zonePath>#<offset>"` -> `level_zone_geometry` (block-2 impostor/decal)
+ *
+ * Keeping them in one keyspace lets the viewport run a single progressive
+ * queue over a single geometry cache, and lets the shell keep handing down one
+ * function. Results are memoised per key — a zone reuses the same handful of
+ * models thousands of times, so the viewport must never re-fetch one, and a
+ * block-2 mesh is per-object so it must be fetched exactly once.
  */
 export function makeMeshLoader(gameDir: string): MeshLoader {
   const cache = new Map<string, Promise<ArrayBuffer>>();
-  return (modelId: string) => {
-    let hit = cache.get(modelId);
+  return (key: string) => {
+    let hit = cache.get(key);
     if (!hit) {
-      hit = loadModelMesh(gameDir, modelId).catch((e) => {
-        // A model that cannot be decoded must not poison the whole scene.
-        console.warn(`level_model_mesh failed for ${modelId}:`, e);
+      const zone = parseZoneGeometryKey(key);
+      const call = zone
+        ? loadZoneGeometry(gameDir, zone.zonePath, zone.offset)
+        : loadModelMesh(gameDir, key);
+      hit = call.catch((e) => {
+        // One undecodable mesh must not poison the whole scene; the viewport
+        // keeps its placeholder box for an empty buffer.
+        console.warn(`mesh load failed for ${key}:`, e);
         return new ArrayBuffer(0);
       });
-      cache.set(modelId, hit);
+      cache.set(key, hit);
     }
     return hit;
   };

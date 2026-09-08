@@ -30,6 +30,139 @@ const HASHES: &str = r"E:\RCRALevelEditorViewer\refs\RCRA-Forge\hashes.txt";
 const SAMPLE_REGION: &str = "i29/openarea/sargasso";
 const PROJECT: &str = "level_check_scratch";
 
+/// Exhaustive forward walk of the Zone Scene Objects heap, ignoring the tables.
+/// Used only to prove the table-driven reader misses nothing.
+fn walk_heap(scene: &[u8]) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut o = 0usize;
+    while o + 0x80 <= scene.len() {
+        let size = u32::from_le_bytes(scene[o + 0x7C..o + 0x80].try_into().unwrap()) & 0x00FF_FFFF;
+        let kind = scene[o + 0x5F];
+        let m33 = f32::from_le_bytes(scene[o + 0x3C..o + 0x40].try_into().unwrap());
+        if size >= 0x80 && o + size as usize <= scene.len() && kind <= 6 && m33 == 1.0 {
+            out.push(o as u32);
+            o = (o + size as usize + 7) & !7;
+        } else {
+            o += 8;
+        }
+    }
+    out
+}
+
+/// The vertex total `gltf_writer` exports for look 0 / LOD 0, computed the same
+/// way it does — the reference the viewport's decoder must reproduce.
+fn gltf_look0_vertex_count(model: &omnitool_lib::tools::model_converter::model::ModelFile) -> Option<usize> {
+    use omnitool_lib::tools::model_converter::sections::look::{LookSection, TAG_LOOK};
+    use omnitool_lib::tools::model_converter::sections::meshes::{MeshDefinition, TAG_MESHES};
+    let meshes = MeshDefinition::parse_all(model.dat1.get_section_data(TAG_MESHES)?).ok()?;
+    let looks = LookSection::parse(model.dat1.get_section_data(TAG_LOOK)?).ok()?;
+    let lod = looks.looks.first()?.lods.first()?;
+    Some(
+        (lod.start..lod.start + lod.count)
+            .filter_map(|i| meshes.get(i as usize))
+            .map(|m| m.vertex_count as usize)
+            .sum(),
+    )
+}
+
+/// How much of a mesh's emitted winding agrees with its own stored vertex
+/// normals, as a triangle-area-weighted fraction in `0..=1`.
+///
+/// For each triangle the geometric normal `cross(p1-p0, p2-p0)` is compared
+/// against the sum of the three stored vertex normals; a positive dot means the
+/// emitted front face points the way the artist's normals do. Degenerate
+/// triangles and triangles whose three normals cancel are skipped. Weighting by
+/// area keeps a few slivers from swamping the answer.
+fn winding_agreement(m: &level::MeshOut) -> Option<f32> {
+    let (mut agree, mut total) = (0f64, 0f64);
+    for t in m.indices.chunks_exact(3) {
+        let p: [[f32; 3]; 3] = std::array::from_fn(|j| {
+            let b = t[j] as usize * 3;
+            [m.positions[b], m.positions[b + 1], m.positions[b + 2]]
+        });
+        let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+        let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+        let g = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let area = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt() as f64;
+        if area <= 1e-12 {
+            continue;
+        }
+        let mut n = [0f32; 3];
+        for j in 0..3 {
+            let b = t[j] as usize * 3;
+            for k in 0..3 {
+                n[k] += m.normals[b + k];
+            }
+        }
+        if n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < 1e-12 {
+            continue;
+        }
+        total += area;
+        if (g[0] * n[0] + g[1] * n[1] + g[2] * n[2]) > 0.0 {
+            agree += area;
+        }
+    }
+    (total > 0.0).then(|| (agree / total) as f32)
+}
+
+/// `Some(signed_volume)` when the topology is closed — every directed edge
+/// appears once and its reverse appears once. A correctly wound closed mesh has
+/// positive signed volume.
+///
+/// Vertices are welded by exact position first: the exporter splits a vertex
+/// wherever the UV or normal breaks, so a solid prop's index topology looks
+/// open until the seam copies are merged back together.
+fn watertight_volume(m: &level::MeshOut) -> Option<f64> {
+    let mut weld: HashMap<[u32; 3], u32> = HashMap::new();
+    let mut key = vec![0u32; m.vertex_count()];
+    for i in 0..m.vertex_count() {
+        let k = [
+            m.positions[i * 3].to_bits(),
+            m.positions[i * 3 + 1].to_bits(),
+            m.positions[i * 3 + 2].to_bits(),
+        ];
+        let next = weld.len() as u32;
+        key[i] = *weld.entry(k).or_insert(next);
+    }
+    let mut edges: HashMap<(u32, u32), i32> = HashMap::new();
+    for t in m.indices.chunks_exact(3) {
+        let t = [key[t[0] as usize], key[t[1] as usize], key[t[2] as usize]];
+        if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+            return None;
+        }
+        for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *edges.entry(e).or_insert(0) += 1;
+        }
+    }
+    if edges.is_empty() {
+        return None;
+    }
+    for (&(a, b), &n) in &edges {
+        if n != 1 || edges.get(&(b, a)).copied().unwrap_or(0) != 1 {
+            return None;
+        }
+    }
+    let mut vol = 0f64;
+    for t in m.indices.chunks_exact(3) {
+        let p: [[f64; 3]; 3] = std::array::from_fn(|j| {
+            let b = t[j] as usize * 3;
+            [
+                m.positions[b] as f64,
+                m.positions[b + 1] as f64,
+                m.positions[b + 2] as f64,
+            ]
+        });
+        vol += p[0][0] * (p[1][1] * p[2][2] - p[1][2] * p[2][1])
+            - p[0][1] * (p[1][0] * p[2][2] - p[1][2] * p[2][0])
+            + p[0][2] * (p[1][0] * p[2][1] - p[1][1] * p[2][0]);
+    }
+    Some(vol / 6.0)
+}
+
 fn load(index: &LevelIndex, path: &str) -> Result<Zone, String> {
     let id = omnitool_lib::core::crc64::hash(path);
     let raw = index.extract(id).map_err(|e| e.to_string())?;
@@ -502,6 +635,353 @@ fn main() {
         fail("project layout does not match the Stager's", &mut failures);
     }
     let _ = std::fs::remove_dir_all(&project_dir);
+
+    // ---- coverage invariants ----------------------------------------------
+    // Everything below was established by measuring the shipped archives with
+    // `cargo run --bin coverage_audit`; these assertions keep it that way.
+    println!("\n== coverage invariants ==");
+
+    // 1. Every heap entry an exhaustive walk finds must also be reachable
+    //    through the instance tables — i.e. the table-driven reader loses
+    //    nothing. Measured over these zones: 39 165 entries, 0 orphans.
+    const FUNNEL_ZONES: [&str; 5] = [
+        "levels/i29/openarea/sargasso/tile_n19/tile_n19_art.zone",
+        "levels/i29/openarea/megalopolis/tile_m37/tile_m37_art.zone",
+        "levels/i29/openarea/megalopolis/global_art.zone",
+        "levels/i29/openarea/sargasso/tile_o17/tile_o17_gp.zone",
+        "levels/i29/openarea/megalopolis/i29_megalopolis_impostors_default_n19_art.zone",
+    ];
+    let (mut walked, mut exposed) = (0usize, 0usize);
+    for zp in FUNNEL_ZONES {
+        let Ok(zone) = load(&index, zp) else {
+            fail(&format!("{zp} did not load"), &mut failures);
+            continue;
+        };
+        let scene = zone
+            .dat1
+            .get_section_data(omnitool_lib::core::zone::T_SCENE_OBJECTS)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+        let found = walk_heap(&scene);
+        let seen: HashSet<u32> = zone.scene_objects.iter().map(|o| o.offset).collect();
+        let missed: Vec<u32> = found.iter().copied().filter(|o| !seen.contains(o)).collect();
+        walked += found.len();
+        exposed += seen.len();
+        if !missed.is_empty() {
+            fail(
+                &format!(
+                    "{zp}: {} heap entries the tables do not reach (e.g. {:?})",
+                    missed.len(),
+                    &missed[..missed.len().min(4)]
+                ),
+                &mut failures,
+            );
+        }
+    }
+    println!("  heap walk {walked} entries, exposed {exposed} — no entry is lost by the tables");
+
+    // 2. Impostor zones must parse to their kind-6 entries and decode their
+    //    block-2 shells. Before Zone Impostors was read, every one of the 645
+    //    shipped impostor zones parsed to zero objects.
+    let imposter_zones: Vec<String> = index
+        .zones
+        .iter()
+        .filter(|z| z.path.contains("impostors") && z.size > level::STUB_MAX_SIZE)
+        .map(|z| z.path.clone())
+        .take(120)
+        .collect();
+    let (mut imp_zones, mut imp_objs, mut imp_tris, mut imp_fail) = (0, 0, 0usize, 0);
+    for zp in &imposter_zones {
+        let Ok(zone) = load(&index, zp) else { continue };
+        let k6: Vec<u32> = zone
+            .scene_objects
+            .iter()
+            .filter(|o| o.kind == omnitool_lib::core::zone::KIND_IMPOSTOR)
+            .map(|o| o.offset)
+            .collect();
+        if k6.is_empty() {
+            continue;
+        }
+        imp_zones += 1;
+        imp_objs += k6.len();
+        for off in k6 {
+            match level::decode_zone_geometry(&zone, off) {
+                Ok(m) if !m.indices.is_empty() => imp_tris += m.indices.len() / 3,
+                _ => imp_fail += 1,
+            }
+        }
+    }
+    println!(
+        "  impostors: {imp_zones} zones, {imp_objs} kind-6 entries, {imp_tris} triangles decoded, {imp_fail} failures"
+    );
+    if imp_zones == 0 || imp_fail > 0 {
+        fail("impostor geometry did not decode", &mut failures);
+    }
+
+    // 3. Decal meshes decode and, once placed by their entry matrix, sit inside
+    //    the bounding sphere the Zone Decal Geometry row records for them.
+    let mut decals = 0usize;
+    let mut decal_fail = 0usize;
+    for zp in [
+        "levels/i29/openarea/sargasso/tile_n19/tile_n19_art.zone",
+        "levels/i29/openarea/megalopolis/tile_m37/tile_m37_art.zone",
+    ] {
+        let Ok(zone) = load(&index, zp) else { continue };
+        for o in zone
+            .scene_objects
+            .iter()
+            .filter(|o| o.kind == omnitool_lib::core::zone::KIND_DECAL && o.geometry.is_some())
+        {
+            decals += 1;
+            match level::decode_zone_geometry(&zone, o.offset) {
+                Ok(m) if !m.indices.is_empty() => {
+                    // Local-space extent must stay inside the projector box.
+                    let r = (0..3)
+                        .map(|k| m.max[k].abs().max(m.min[k].abs()))
+                        .fold(0f32, f32::max);
+                    if r > 1.5 {
+                        decal_fail += 1;
+                    }
+                }
+                _ => decal_fail += 1,
+            }
+        }
+    }
+    println!("  decals: {decals} meshes decoded, {decal_fail} outside their projector box");
+    if decals == 0 || decal_fail > 0 {
+        fail("decal geometry did not decode inside its projector box", &mut failures);
+    }
+
+    // 4. `decode_model_mesh` must emit exactly the subsets `gltf_writer`
+    //    exports for look 0 / LOD 0 — the shipped export path is the oracle.
+    //    Measured over the 576 distinct models of six real art zones: 574
+    //    exact, 0 under, 0 over, 2 models simply absent from the TOC.
+    let mut checked = 0usize;
+    let mut mismatched = 0usize;
+    let mut zone_models: Vec<u64> = Vec::new();
+    for zp in FUNNEL_ZONES.iter().take(3) {
+        if let Ok(zone) = load(&index, zp) {
+            zone_models.extend(zone.model_instances().map(|o| o.model_id));
+        }
+    }
+    zone_models.sort_unstable();
+    zone_models.dedup();
+    for id in zone_models.iter().take(300) {
+        let Ok(raw) = index.extract(*id) else { continue };
+        let Ok(model) = level::parse_model_asset(&raw) else {
+            continue;
+        };
+        let Some(expected) = gltf_look0_vertex_count(&model) else {
+            continue;
+        };
+        let Ok(mesh) = level::decode_model_mesh(&model, 0) else {
+            continue;
+        };
+        checked += 1;
+        if mesh.vertex_count() != expected {
+            mismatched += 1;
+        }
+    }
+    println!("  look/LOD: {checked} models compared with the glTF export selection, {mismatched} mismatched");
+    if checked < 100 || mismatched > 0 {
+        fail("decode_model_mesh no longer matches the glTF export selection", &mut failures);
+    }
+
+    // 5. Emitted triangle winding must AGREE with the stored vertex normals.
+    //    The zone assets store one winding and one set of artist normals; the
+    //    decoder used to reverse every triangle, which put the two in direct
+    //    opposition — measured over 399 distinct models of four planets,
+    //    396/399 scored below 0.10 agreement, 0/399 above 0.90, and all 49
+    //    watertight models had NEGATIVE signed volume. Since 58-100% of a
+    //    zone's triangles live on open "sheet" meshes, single-sided rendering
+    //    then hid most of the level. Keep the source winding: agreement must
+    //    average above 0.9 and every closed mesh must enclose positive volume.
+    println!("\n== winding vs. stored normals ==");
+    // One art tile from each of four planets, so the sample is not one
+    // artist's habit. Tile basenames repeat across planets, hence the planet
+    // folder in the match.
+    const WIND_ZONES: [(&str, &str); 4] = [
+        ("sargasso", "tile_n19_art.zone"),
+        ("megalopolis", "tile_m37_art.zone"),
+        ("nefarious", "tile_e19_art.zone"),
+        ("savali", "tile_c17_art.zone"),
+    ];
+    let mut wind_models: Vec<u64> = Vec::new();
+    let mut wind_zones_found = 0usize;
+    for (planet, suffix) in WIND_ZONES {
+        let Some(zp) = index
+            .zones
+            .iter()
+            .find(|z| z.path.ends_with(suffix) && z.path.contains(planet))
+            .map(|z| z.path.clone())
+        else {
+            continue;
+        };
+        let Ok(zone) = load(&index, &zp) else { continue };
+        wind_zones_found += 1;
+        println!("  {zp}");
+        wind_models.extend(zone.model_instances().map(|o| o.model_id));
+    }
+    wind_models.sort_unstable();
+    wind_models.dedup();
+
+    // Distribution over agreement deciles, plus the watertight-volume tally.
+    let mut hist = [0usize; 10];
+    let (mut n_models, mut sum_agree) = (0usize, 0f64);
+    let (mut worst, mut worst_id) = (2f32, 0u64);
+    let (mut tight, mut tight_neg) = (0usize, 0usize);
+    for id in &wind_models {
+        let Ok(raw) = index.extract(*id) else { continue };
+        let Ok(model) = level::parse_model_asset(&raw) else {
+            continue;
+        };
+        let Ok(mesh) = level::decode_model_mesh(&model, 0) else {
+            continue;
+        };
+        let Some(a) = winding_agreement(&mesh) else {
+            continue;
+        };
+        n_models += 1;
+        sum_agree += a as f64;
+        hist[((a * 10.0) as usize).min(9)] += 1;
+        if a < worst {
+            worst = a;
+            worst_id = *id;
+        }
+        if let Some(v) = watertight_volume(&mesh) {
+            tight += 1;
+            if v <= 0.0 {
+                tight_neg += 1;
+            }
+        }
+    }
+    let mean = if n_models > 0 {
+        sum_agree / n_models as f64
+    } else {
+        0.0
+    };
+    println!(
+        "  {n_models} distinct models from {wind_zones_found} art zones, mean agreement {mean:.4}"
+    );
+    for (d, n) in hist.iter().enumerate() {
+        if *n > 0 {
+            println!("    [{:.1},{:.1})  {n:>4}", d as f32 / 10.0, (d + 1) as f32 / 10.0);
+        }
+    }
+    println!(
+        "  worst model {worst_id:#018x} at {worst:.4}; watertight {tight}, of which negative volume {tight_neg}"
+    );
+    if n_models < 150 {
+        fail(
+            &format!("only {n_models} models measured, need at least 150"),
+            &mut failures,
+        );
+    }
+    if mean <= 0.9 {
+        fail(
+            &format!("mean winding/normal agreement {mean:.4} is not above 0.9"),
+            &mut failures,
+        );
+    }
+    if tight == 0 {
+        fail("no watertight model found to check signed volume", &mut failures);
+    }
+    if tight_neg > 0 {
+        fail(
+            &format!("{tight_neg}/{tight} watertight models have negative signed volume"),
+            &mut failures,
+        );
+    }
+
+    // The same rule for the geometry that lives in the zone's own block 2.
+    // Impostors ship no normals, so theirs are accumulated from the emitted
+    // winding and agreement is 1.0 by construction — what it proves is that the
+    // accumulator and the emitter still share an orientation. Decals do carry
+    // stored normals, so their agreement is a real measurement.
+    let (mut zg_imp, mut zg_imp_sum, mut zg_imp_bad) = (0usize, 0f64, 0usize);
+    let (mut zg_dec, mut zg_dec_sum, mut zg_dec_bad) = (0usize, 0f64, 0usize);
+    let mut zg_tight_neg = 0usize;
+    let mut zg_paths: Vec<String> = index
+        .zones
+        .iter()
+        .filter(|z| z.path.contains("impostors") && z.size > level::STUB_MAX_SIZE)
+        .map(|z| z.path.clone())
+        .take(40)
+        .collect();
+    for (planet, suffix) in WIND_ZONES {
+        if let Some(z) = index
+            .zones
+            .iter()
+            .find(|z| z.path.ends_with(suffix) && z.path.contains(planet))
+        {
+            zg_paths.push(z.path.clone());
+        }
+    }
+    for zp in &zg_paths {
+        let Ok(zone) = load(&index, zp) else { continue };
+        for o in zone.scene_objects.iter().filter(|o| o.geometry.is_some()) {
+            let Ok(m) = level::decode_zone_geometry(&zone, o.offset) else {
+                continue;
+            };
+            let Some(a) = winding_agreement(&m) else { continue };
+            if let Some(v) = watertight_volume(&m) {
+                if v <= 0.0 {
+                    zg_tight_neg += 1;
+                }
+            }
+            if o.kind == omnitool_lib::core::zone::KIND_IMPOSTOR {
+                zg_imp += 1;
+                zg_imp_sum += a as f64;
+                if a < 0.9 {
+                    zg_imp_bad += 1;
+                }
+            } else {
+                zg_dec += 1;
+                zg_dec_sum += a as f64;
+                if a < 0.9 {
+                    zg_dec_bad += 1;
+                }
+            }
+        }
+    }
+    let dec_mean = if zg_dec > 0 {
+        zg_dec_sum / zg_dec as f64
+    } else {
+        0.0
+    };
+    let imp_mean = if zg_imp > 0 {
+        zg_imp_sum / zg_imp as f64
+    } else {
+        0.0
+    };
+    println!(
+        "  block 2: {zg_imp} impostors mean agreement {imp_mean:.4} ({zg_imp_bad} below 0.9), \
+{zg_dec} decals mean agreement {dec_mean:.4} ({zg_dec_bad} below 0.9), {zg_tight_neg} closed meshes with negative volume"
+    );
+    if zg_imp == 0 || imp_mean <= 0.9 {
+        fail(
+            &format!("impostor winding/accumulated-normal agreement {imp_mean:.4} is not above 0.9"),
+            &mut failures,
+        );
+    }
+    // A handful of decals really are wound against their own stored normals —
+    // 13 of 522, each at exactly 0.000, and exactly the 13 that scored *above*
+    // 0.9 while the decoder was reversing. That is a property of those entries,
+    // not of the decoder, so the guard is on the mean plus a cap on the tail.
+    if zg_dec == 0 || dec_mean <= 0.9 || zg_dec_bad * 20 > zg_dec {
+        fail(
+            &format!(
+                "decal winding/normal agreement {dec_mean:.4} with {zg_dec_bad}/{zg_dec} below 0.9"
+            ),
+            &mut failures,
+        );
+    }
+    if zg_tight_neg > 0 {
+        fail(
+            &format!("{zg_tight_neg} block-2 closed meshes have negative signed volume"),
+            &mut failures,
+        );
+    }
 
     println!(
         "\n{}",

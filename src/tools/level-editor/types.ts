@@ -62,6 +62,7 @@ export const KIND_ACTOR = 2;
 export const KIND_DECAL = 3;
 export const KIND_SPLINE = 4;
 export const KIND_VFX = 5;
+export const KIND_IMPOSTOR = 6;
 
 export const KIND_NAMES: Record<number, string> = {
   [KIND_MODEL]: "model",
@@ -70,10 +71,27 @@ export const KIND_NAMES: Record<number, string> = {
   [KIND_DECAL]: "decal",
   [KIND_SPLINE]: "spline",
   [KIND_VFX]: "vfx",
+  [KIND_IMPOSTOR]: "impostor",
 };
 
 export function kindName(kind: number): string {
   return KIND_NAMES[kind] ?? `kind${kind}`;
+}
+
+/**
+ * Where a scene-object entry's own mesh lives inside the zone's raw block 2.
+ *
+ * Only kind 3 (projected decal sheet) and kind 6 (baked impostor shell) carry
+ * one — no `.model` asset exists for either, so `level_zone_geometry` is the
+ * only route to those triangles. Present iff the backend found a well-formed
+ * span, so its mere presence is the cheap "this object has a mesh" signal the
+ * viewport needs in order to avoid one IPC round trip per boxy entity.
+ */
+export interface GeoRef {
+  vertexOffset: number;
+  vertexCount: number;
+  indexOffset: number;
+  indexCount: number;
 }
 
 export interface SceneObjectDto {
@@ -93,6 +111,10 @@ export interface SceneObjectDto {
   modelId: string;
   name: string;
   actorIndex: number;
+  /** Kind 3: the inline `.material` path. Kind 6: the inline `.texture` atlas. */
+  assetPath?: string;
+  /** Block-2 mesh span; absent on every kind that has none. See {@link GeoRef}. */
+  geometry?: GeoRef | null;
 }
 
 export interface ZoneModelRef {
@@ -126,6 +148,10 @@ export interface ZoneScene {
   path: string;
   id: string;
   sizes: number[];
+  /** Real block sizes, block 0 first — the prefix of `sizes` that is trustworthy. */
+  blocks?: number[];
+  /** Scene objects carrying a mesh in block 2 (impostors, decals). */
+  blockGeometryCount?: number;
   dirty: boolean;
   bounds: ZoneBounds | null;
   /** Unique models referenced by the zone, sorted by `instanceCount` descending. */
@@ -167,7 +193,37 @@ export interface LevelZoneStats {
 // Viewport
 // ---------------------------------------------------------------------------
 
-/** Loads the RCMS mesh buffer for a model asset id (`"0x…"`). */
-export type MeshLoader = (modelId: string) => Promise<ArrayBuffer>;
+/**
+ * Loads an RCMS mesh buffer for one cache key.
+ *
+ * A key is either a model asset id (`"0x…"`, served by `level_model_mesh`) or a
+ * zone-geometry key built by {@link zoneGeometryKey} (served by
+ * `level_zone_geometry`). Folding both into one keyspace means the viewport
+ * keeps a single progressive queue and a single geometry cache, and the shell
+ * keeps passing one loader down — see `makeMeshLoader` in `api.ts`.
+ */
+export type MeshLoader = (key: string) => Promise<ArrayBuffer>;
+
+const ZONE_GEOMETRY_PREFIX = "zone:";
+
+/**
+ * Cache key for the block-2 mesh of one scene object: `zone:<zonePath>#<offset>`.
+ *
+ * Zone asset paths are lowercase forward-slash paths and never contain `#`, so
+ * splitting on the last `#` round-trips exactly.
+ */
+export function zoneGeometryKey(zonePath: string, offset: number): string {
+  return `${ZONE_GEOMETRY_PREFIX}${zonePath}#${offset}`;
+}
+
+/** Inverse of {@link zoneGeometryKey}; `null` for a plain model id. */
+export function parseZoneGeometryKey(key: string): { zonePath: string; offset: number } | null {
+  if (!key.startsWith(ZONE_GEOMETRY_PREFIX)) return null;
+  const hash = key.lastIndexOf("#");
+  if (hash < ZONE_GEOMETRY_PREFIX.length) return null;
+  const offset = Number(key.slice(hash + 1));
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  return { zonePath: key.slice(ZONE_GEOMETRY_PREFIX.length, hash), offset };
+}
 
 export type GizmoMode = "translate" | "rotate" | "scale";

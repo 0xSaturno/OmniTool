@@ -7,15 +7,15 @@ import {
   useState,
 } from "react";
 import { useLocation } from "react-router-dom";
-import { LuSave, LuSettings } from "react-icons/lu";
+import { LuLayers3, LuSave, LuSettings } from "react-icons/lu";
 import { useSettings } from "../../contexts/SettingsContext";
 import { useProjects } from "../../contexts/ProjectsContext";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import Viewport from "./Viewport";
-import type { SceneObjectDto, ZoneScene } from "./types";
+import { KIND_MODEL, type SceneObjectDto, type ZoneScene } from "./types";
 import * as api from "./api";
 import type { LevelRegion, LevelZoneStats, ZoneEdit, ZoneEntry } from "./api";
-import ZoneBrowser from "./panels/ZoneBrowser";
+import ZoneBrowser, { type BulkLoadProgress } from "./panels/ZoneBrowser";
 import SceneTree from "./panels/SceneTree";
 import Inspector, { type TransformValue } from "./panels/Inspector";
 import Toolbar, { type ToolMode } from "./panels/Toolbar";
@@ -31,6 +31,27 @@ import styles from "./LevelEditor.module.css";
  * single-zone case keeps the real offsets.
  */
 const OFFSET_STRIDE = 1 << 27;
+
+/**
+ * "Load all" is happy to queue a whole planet (megalopolis alone lists 2,191
+ * zones), so anything past this many zones asks first.
+ */
+const BULK_CONFIRM_THRESHOLD = 25;
+
+/**
+ * Zones are loaded one at a time so the UI keeps painting, but they are pushed
+ * into `loaded` in small batches — every commit rebuilds the composite scene
+ * and the whole viewport, which is far too expensive to do 400 times.
+ */
+const BULK_FLUSH_EVERY = 8;
+
+/**
+ * Ceiling for "select all". The renderer recolours every selected instance and
+ * the gizmo re-derives its centroid from the whole selection, so an unbounded
+ * select-all on a full planet (~180,000 instances) would stall the frame. The
+ * cap is reported in the status log whenever it bites.
+ */
+const SELECT_ALL_LIMIT = 25000;
 
 interface LoadedZone {
   path: string;
@@ -163,7 +184,22 @@ export default function LevelEditor() {
 
   // ---- loaded zones -------------------------------------------------------
   const [loaded, setLoaded] = useState<LoadedZone[]>([]);
+  const loadedRef = useRef<LoadedZone[]>([]);
+  loadedRef.current = loaded;
   const [busyPaths, setBusyPaths] = useState<Set<string>>(() => new Set());
+
+  // ---- bulk "Load all" run -------------------------------------------------
+  const [bulk, setBulk] = useState<BulkLoadProgress | null>(null);
+  const bulkCancelRef = useRef(false);
+  const bulkRunningRef = useRef(false);
+  /**
+   * Zones a "Load all" click queued that still need the user to confirm, with
+   * the kind scope the browser applied ("Art", "Art, Gameplay", …) so the
+   * dialog can name exactly what is about to load.
+   */
+  const [confirmLoad, setConfirmLoad] = useState<{ entries: ZoneEntry[]; scope: string } | null>(
+    null,
+  );
 
   // ---- edits / selection / view -------------------------------------------
   const [editState, dispatchEdit] = useReducer(editReducer, EMPTY_EDITS);
@@ -222,6 +258,11 @@ export default function LevelEditor() {
   const frameSelection = useCallback(() => {
     setFrameToken((t) => t + 1);
     sendViewportKey(selectionRef.current.length > 0 ? "KeyF" : "KeyH");
+  }, [sendViewportKey]);
+
+  const frameAll = useCallback(() => {
+    setFrameToken((t) => t + 1);
+    sendViewportKey("KeyH");
   }, [sendViewportKey]);
 
   /* ---------------- region / zone index ---------------- */
@@ -325,10 +366,142 @@ export default function LevelEditor() {
     [loaded, loadZonePath],
   );
 
+  const unloadTile = useCallback((entries: ZoneEntry[]) => {
+    const paths = new Set(entries.map((e) => e.path));
+    setLoaded((prev) => prev.filter((z) => !paths.has(z.path)));
+  }, []);
+
+  const cancelBulk = useCallback(() => {
+    if (!bulkRunningRef.current) return;
+    bulkCancelRef.current = true;
+    pushLog("info", "Cancelling the zone load — zones already loaded stay loaded.");
+  }, [pushLog]);
+
   const clearZones = useCallback(() => {
+    bulkCancelRef.current = true;
     setLoaded([]);
     setSelection([]);
   }, []);
+
+  /**
+   * Loads a queue of zones one at a time so the window keeps repainting, keeps
+   * a per-zone busy marker in the browser, survives individual failures and
+   * can be stopped mid-run without losing what already came in.
+   */
+  const runBulkLoad = useCallback(
+    async (entries: ZoneEntry[], scope?: string) => {
+      if (!gameDir || bulkRunningRef.current) return;
+      const what = scope ? `${scope} zones` : "zones";
+
+      const already = new Set(loadedRef.current.map((z) => z.path));
+      const queue: ZoneEntry[] = [];
+      const seen = new Set<string>();
+      for (const e of entries) {
+        if (!e.hasObjects || already.has(e.path) || seen.has(e.path)) continue;
+        seen.add(e.path);
+        queue.push(e);
+      }
+      if (queue.length === 0) {
+        pushLog("info", `Nothing to load — every listed ${what.slice(0, -1)} is already loaded or is an empty stub.`);
+        return;
+      }
+
+      bulkRunningRef.current = true;
+      bulkCancelRef.current = false;
+      setBulk({ done: 0, total: queue.length, failed: 0 });
+      pushLog("info", `Loading ${queue.length.toLocaleString()} ${what}…`);
+
+      let done = 0;
+      let failed = 0;
+      let objects = 0;
+      let batch: { path: string; scene: ZoneScene }[] = [];
+
+      const flush = () => {
+        if (batch.length === 0) return;
+        const chunk = batch;
+        batch = [];
+        setLoaded((prev) => {
+          const used = new Set(prev.map((z) => z.slot));
+          const have = new Set(prev.map((z) => z.path));
+          const next = [...prev];
+          let slot = 0;
+          for (const item of chunk) {
+            if (have.has(item.path)) continue;
+            while (used.has(slot)) slot++;
+            used.add(slot);
+            have.add(item.path);
+            next.push({ path: item.path, slot, scene: item.scene });
+          }
+          return next;
+        });
+      };
+
+      try {
+        for (const entry of queue) {
+          if (bulkCancelRef.current) break;
+          markBusy(entry.path, true);
+          try {
+            const scene = await api.loadZone(gameDir, entry.path);
+            batch.push({ path: entry.path, scene });
+            objects += scene.objects.length;
+          } catch (e) {
+            failed++;
+            pushLog("error", `Could not load ${entry.path}: ${e}`);
+          } finally {
+            markBusy(entry.path, false);
+          }
+          done++;
+          setBulk({ done, total: queue.length, failed });
+          if (batch.length >= BULK_FLUSH_EVERY) flush();
+        }
+        flush();
+      } finally {
+        bulkRunningRef.current = false;
+        setBulk(null);
+      }
+
+      const cancelled = bulkCancelRef.current;
+      bulkCancelRef.current = false;
+      const ok = done - failed;
+      const parts = [`${ok.toLocaleString()} of ${queue.length.toLocaleString()} ${what}`];
+      if (objects > 0) parts.push(`${objects.toLocaleString()} objects`);
+      if (failed > 0) parts.push(`${failed.toLocaleString()} failed`);
+      pushLog(
+        cancelled || failed > 0 ? "warning" : "success",
+        `${cancelled ? "Cancelled — loaded" : "Loaded"} ${parts.join(", ")}.`,
+      );
+
+      // Let the composite scene commit and reach the renderer before framing.
+      if (ok > 0) window.setTimeout(frameAll, 80);
+    },
+    [gameDir, pushLog, frameAll],
+  );
+
+  /**
+   * "Load all" from the zone browser. The browser hands over exactly the zones
+   * of the SELECTED KIND CHIPS that its search filter and "Hide stubs" state
+   * leave listed, plus the name of that scope; a big queue asks for
+   * confirmation first.
+   */
+  const requestLoadAll = useCallback(
+    (entries: ZoneEntry[], scope: string) => {
+      const already = new Set(loadedRef.current.map((z) => z.path));
+      const queue = entries.filter((e) => e.hasObjects && !already.has(e.path));
+      if (queue.length === 0) {
+        pushLog(
+          "info",
+          `Nothing to load — every listed ${scope} zone is already loaded or is an empty stub.`,
+        );
+        return;
+      }
+      if (queue.length > BULK_CONFIRM_THRESHOLD) {
+        setConfirmLoad({ entries: queue, scope });
+        return;
+      }
+      void runBulkLoad(queue, scope);
+    },
+    [pushLog, runBulkLoad],
+  );
 
   // "Send to Level Editor" from the Asset Browser: `?assetPath=…zone`.
   const incomingRef = useRef<string | null>(null);
@@ -552,6 +725,50 @@ export default function LevelEditor() {
 
   const selectedEdited = primary !== null && editedOffsets.has(primary);
 
+  /* ---------------- select all / none ---------------- */
+
+  /** Fast membership test for the tree; the array stays the source of truth. */
+  const selectedSet = useMemo(() => new Set(selection), [selection]);
+
+  /**
+   * Selects every object the viewport is currently drawing. Objects the
+   * renderer has no instance for — hidden by the geometry/entity toggles,
+   * model instances without a model, or objects with a broken matrix — are
+   * skipped so the count matches what is actually highlighted.
+   */
+  const selectAll = useCallback(() => {
+    const objects = scene?.objects ?? [];
+    const out: number[] = [];
+    let skipped = 0;
+    for (const o of objects) {
+      const visible = o.kind === KIND_MODEL ? showGeometry && o.modelId !== "0x0" : showEntities;
+      if (!visible || !o.matrix.every(Number.isFinite)) continue;
+      if (out.length >= SELECT_ALL_LIMIT) {
+        skipped++;
+        continue;
+      }
+      out.push(o.offset);
+    }
+    setSelection(out);
+    if (out.length === 0) {
+      pushLog("info", "Nothing to select — no visible objects in the loaded zones.");
+    } else if (skipped > 0) {
+      pushLog(
+        "warning",
+        `Selected the first ${out.length.toLocaleString()} visible objects — ${skipped.toLocaleString()} more were left out to keep the viewport responsive.`,
+      );
+    } else {
+      pushLog("info", `Selected ${out.length.toLocaleString()} objects.`);
+    }
+  }, [scene, showGeometry, showEntities, pushLog]);
+
+  const selectNone = useCallback(() => setSelection([]), []);
+
+  // The window key handler is bound once per activation; reach the latest
+  // implementation through a ref instead of re-binding on every scene change.
+  const selectAllRef = useRef(selectAll);
+  selectAllRef.current = selectAll;
+
   /* ---------------- keyboard shortcuts ---------------- */
 
   useEffect(() => {
@@ -561,8 +778,15 @@ export default function LevelEditor() {
       // when this page is actually visible, and never while typing.
       if (!rootRef.current || rootRef.current.offsetParent === null) return;
       const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable))
+        return;
 
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        // Ctrl/Cmd+A would otherwise select the whole page's text.
+        e.preventDefault();
+        selectAllRef.current();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         dispatchEdit({ type: e.shiftKey ? "redo" : "undo" });
@@ -657,11 +881,20 @@ export default function LevelEditor() {
   const instanceCount = scene?.objects.filter((o) => o.kind === 0).length ?? 0;
   const entityCount = (scene?.objects.length ?? 0) - instanceCount;
 
-  const selectionLabel = selectedObject
-    ? `${selectedObject.kindName}: ${selectedObject.name || `@0x${selectedObject.offset.toString(16)}`}`
-    : null;
+  const selectionLabel =
+    selection.length > 1
+      ? `${selection.length.toLocaleString()} objects selected`
+      : selectedObject
+        ? `${selectedObject.kindName}: ${selectedObject.name || `@0x${selectedObject.offset.toString(16)}`}`
+        : null;
 
-  const busyLabel = busyPaths.size > 0 ? `Loading ${busyPaths.size} zone(s)…` : null;
+  const busyLabel = bulk
+    ? `Loading ${bulk.done.toLocaleString()} / ${bulk.total.toLocaleString()} zones…${
+        bulk.failed > 0 ? ` (${bulk.failed} failed)` : ""
+      }`
+    : busyPaths.size > 0
+      ? `Loading ${busyPaths.size} zone(s)…`
+      : null;
 
   /* ---------------- render ---------------- */
 
@@ -732,6 +965,10 @@ export default function LevelEditor() {
             onSelectRegion={(k) => void selectRegion(k)}
             onToggleZone={toggleZone}
             onLoadTile={(entries) => void loadTile(entries)}
+            onUnloadTile={unloadTile}
+            onLoadAll={requestLoadAll}
+            onCancelBulk={cancelBulk}
+            bulk={bulk}
             onClearAll={clearZones}
             onRefresh={() => void loadRegions()}
           />
@@ -802,6 +1039,9 @@ export default function LevelEditor() {
               onSelect={(offset) => setSelection(offset === null ? [] : [offset])}
               editedOffsets={editedOffsets}
               zoneOf={(off) => objectIndex.get(off)?.zonePath}
+              selectedSet={selectedSet}
+              onSelectAll={selectAll}
+              onSelectNone={selectNone}
             />
           </div>
           <div className={styles.rightInspector}>
@@ -822,7 +1062,73 @@ export default function LevelEditor() {
         </aside>
       </div>
 
+      {confirmLoad && (
+        <ConfirmLoadAll
+          count={confirmLoad.entries.length}
+          scope={confirmLoad.scope}
+          region={activeRegion}
+          onCancel={() => setConfirmLoad(null)}
+          onConfirm={() => {
+            const { entries, scope } = confirmLoad;
+            setConfirmLoad(null);
+            void runBulkLoad(entries, scope);
+          }}
+        />
+      )}
+
       <StatusLog entries={log} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+interface ConfirmLoadAllProps {
+  count: number;
+  /** Kinds the zone browser scoped the click to, e.g. "Art" or "Art, Lighting". */
+  scope: string;
+  region: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function ConfirmLoadAll({ count, scope, region, onCancel, onConfirm }: ConfirmLoadAllProps) {
+  return (
+    <div
+      className={styles.backdrop}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className={styles.modal}>
+        <h3 className={styles.modalTitle}>
+          Load {count.toLocaleString()} {scope} zone{count === 1 ? "" : "s"}?
+        </h3>
+        <p className={styles.modalBody}>
+          This loads the <b>{scope}</b> zones the browser currently lists
+          {region ? (
+            <>
+              {" "}
+              for <b>{region.split("/").pop()}</b>
+            </>
+          ) : null}{" "}
+          — <b>{count.toLocaleString()}</b> zone{count === 1 ? "" : "s"} of that kind that are not
+          loaded yet. Zones of every other kind are left alone. Zones load one at a time and the run
+          can be stopped from the panel header; everything loaded up to that point is kept.
+        </p>
+        <p className={styles.modalHint}>
+          Narrow the search filter, or turn off a kind chip, to load fewer zones.
+        </p>
+        <div className={styles.modalActions}>
+          <button className={styles.cancelBtn} onClick={onCancel}>
+            Cancel
+          </button>
+          <button className={styles.primary} onClick={onConfirm} autoFocus>
+            <LuLayers3 />
+            Load {count.toLocaleString()} {scope} zone{count === 1 ? "" : "s"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

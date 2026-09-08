@@ -79,6 +79,13 @@
   padding: 0.35rem 0.25rem 0.15rem;
 }
 
+.groupNote {
+  font-size: 0.62rem;
+  color: var(--accent);
+  padding: 0.25rem 0.25rem 0;
+  font-style: italic;
+}
+
 .regionRow {
   display: flex;
   align-items: center;
@@ -125,6 +132,13 @@
   flex-shrink: 0;
 }
 
+.statsLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.6rem;
+  opacity: 0.75;
+}
+
 .statsBar b {
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -168,6 +182,34 @@
   background: var(--accent-muted);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.chip:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.chip:disabled:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+/* Per-kind zone count carried on the chip, so the chips say how much each
+   one puts in the "Load all" scope. */
+.chipCount {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  opacity: 0.75;
+  margin-left: 0.3rem;
+}
+
+/* Shown while no kind chip is on, right above the list, because that is the
+   state in which "Load all" is disabled. */
+.scopeHint {
+  font-size: 0.66rem;
+  color: var(--accent);
+  padding: 0.1rem 0.1rem 0.15rem;
+  flex-shrink: 0;
 }
 
 .zoneList {
@@ -320,4 +362,63 @@
   font-size: 0.66rem;
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* --- Zones header actions ("Load all" / progress / Clear) ------------- */
+
+.headActions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.loadAllBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.35rem;
+  cursor: pointer;
+}
+
+.loadAllBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Disabled = no kind chip is on, or every zone in scope is already loaded.
+   It stays visible (and keeps its tooltip) so the reason is discoverable. */
+.loadAllBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.bulkProgress {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--accent);
+}
+
+.tileIconBtn {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  padding: 0.1rem 0.2rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tileIconBtn:hover {
+  border-color: var(--warning);
+  color: var(--warning);
 }

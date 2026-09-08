@@ -1,14 +1,15 @@
 //! Tauri commands backing the Level Editor / Viewer tool.
 //!
-//! Five entry points, all reading the shipped archives read-only:
+//! Six entry points, all reading the shipped archives read-only:
 //!
-//! | command             | answers                                             |
-//! |---------------------|-----------------------------------------------------|
-//! | `level_list_planets`| which regions (planets / missions / instances) exist |
-//! | `level_list_zones`  | which `.zone` assets a region is made of            |
-//! | `level_load_zone`   | one zone's scene objects, actors, models and bounds |
-//! | `level_model_mesh`  | packed LOD geometry for one model, as an ArrayBuffer|
-//! | `level_save_zone`   | apply transform edits into a Stager project         |
+//! | command               | answers                                            |
+//! |-----------------------|----------------------------------------------------|
+//! | `level_list_planets`  | which regions (planets / missions / instances) exist |
+//! | `level_list_zones`    | which `.zone` assets a region is made of           |
+//! | `level_load_zone`     | one zone's scene objects, actors, models and bounds |
+//! | `level_model_mesh`    | packed LOD geometry for one model, as an ArrayBuffer |
+//! | `level_zone_geometry` | packed geometry an impostor or decal keeps in the zone's own block 2 |
+//! | `level_save_zone`     | apply transform edits into a Stager project        |
 //!
 //! The TOC, the asset-name list and the derived zone tree are memoised per game
 //! directory in [`crate::core::level`], so only the first call pays for them.
@@ -86,6 +87,11 @@ pub struct ZoneScene {
     pub path: String,
     pub id: String,
     pub sizes: Vec<u32>,
+    /// Real block sizes, block 0 first. Only a prefix of `sizes` are block
+    /// sizes, so this is the list the viewer should trust.
+    pub blocks: Vec<u32>,
+    /// How many scene objects carry a mesh inside block 2 (impostors, decals).
+    pub block_geometry_count: usize,
     pub dirty: bool,
     pub bounds: Option<BoundsDto>,
     pub models: Vec<ZoneModelDto>,
@@ -276,10 +282,20 @@ pub async fn level_load_zone(
 
     let bounds = zone.bounds().map(|(min, max)| BoundsDto { min, max });
 
+    let mut blocks = vec![zone.sizes[0]];
+    blocks.extend(zone.block_spans.iter().map(|&(_, n)| n as u32));
+    let block_geometry_count = zone
+        .scene_objects
+        .iter()
+        .filter(|o| o.geometry.is_some())
+        .count();
+
     let scene = ZoneScene {
         path,
         id: hex_id(id),
         sizes: zone.sizes.to_vec(),
+        blocks,
+        block_geometry_count,
         dirty: zone.is_dirty(),
         bounds,
         models,
@@ -297,6 +313,34 @@ pub async fn level_load_zone(
         start.elapsed()
     );
     Ok(scene)
+}
+
+/// Packed geometry for one scene object that owns a mesh inside the zone's own
+/// raw block 2 — an impostor (kind 6) or a decal (kind 3).
+///
+/// The buffer is the same `"RCMS"` layout `level_model_mesh` returns, and the
+/// vertices are in the entry's local space, so the viewport places it with the
+/// object's own 4x4 exactly as it places a model instance.
+///
+/// This is the only route to impostor geometry: 645 `*impostors*` zones ship
+/// (456 on megalopolis), holding 2.67 M triangles of distant skyline that no
+/// `.model` asset contains.
+#[tauri::command]
+pub async fn level_zone_geometry(
+    game_dir: String,
+    zone_path: String,
+    offset: u32,
+) -> Result<tauri::ipc::Response> {
+    let idx = index(&game_dir, None)?;
+    let (_, _, zone) = load_zone(&idx, &zone_path)?;
+    let bytes = match level::decode_zone_geometry(&zone, offset) {
+        Ok(m) => m.pack(),
+        Err(e) => {
+            info!("level_zone_geometry {zone_path} @{offset}: {e}");
+            level::empty_mesh_bytes()
+        }
+    };
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Packed LOD geometry for one model, delivered to JS as an `ArrayBuffer`.
