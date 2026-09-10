@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
-import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio } from "react-icons/lu";
+import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio, LuSwords } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
 import { TbHexagon3D, TbListSearch } from "react-icons/tb";
 import { MdTexture, MdOutlinePalette } from "react-icons/md";
 import { PiImageSquareBold } from "react-icons/pi";
 import { VscJson } from "react-icons/vsc";
-import { GiSwordsPower } from "react-icons/gi";
 
 export interface ToolDefinition {
   id: string;
@@ -14,6 +13,8 @@ export interface ToolDefinition {
   path: string;
   icon: ReactNode;
   category: "asset" | "model" | "texture" | "audio" | "config" | "misc";
+  devOnly?: boolean;
+  disabled?: boolean;
 }
 
 export const TOOLS: ToolDefinition[] = [
@@ -98,6 +99,15 @@ export const TOOLS: ToolDefinition[] = [
     category: "config",
   },
   {
+    id: "arena-editor",
+    label: "Arena Editor",
+    description: "Retune Zurkie's arena challenges and swap the enemies they spawn",
+    path: "/tools/arena-editor",
+    icon: <LuSwords />,
+    category: "config",
+    devOnly: true,
+  },
+  {
     id: "atmosphere-editor",
     label: "Atmosphere Editor",
     description: "Edit .atmosphere known values",
@@ -106,19 +116,12 @@ export const TOOLS: ToolDefinition[] = [
     category: "misc",
   },
   {
-    id: "arena-editor",
-    label: "Arena Editor",
-    description: "Retune Zurkie's arena challenges and swap the enemies they spawn",
-    path: "/tools/arena-editor",
-    icon: <GiSwordsPower />,
-    category: "config",
-  },
-  {
     id: "zonelightbin-module",
     label: "ZoneLightBin",
     description: "under construction",
     path: "/tools/zonelightbin-module",
     icon: <LuLightbulb />,
     category: "misc",
+    devOnly: true,
   },
 ];
