@@ -1,4 +1,4 @@
-//! `.material` asset format (Rift Apart). See docs/MATERIAL_FORMAT.md.
+//! `.material` asset format
 
 use serde::{Deserialize, Serialize};
 
@@ -53,15 +53,23 @@ impl MaterialFile {
             return Err(ToolkitError::Parse("material file too small".into()));
         }
         if u32::from_le_bytes(data[0..4].try_into().unwrap()) == DAT1_MAGIC {
-            return Ok(Self { wrapper: None, dat1: Dat1::parse(data)? });
+            return Ok(Self {
+                wrapper: None,
+                dat1: Dat1::parse(data)?,
+            });
         }
         if data.len() < WRAPPER_SIZE + 4 {
-            return Err(ToolkitError::Parse("material file too small for wrapper".into()));
+            return Err(ToolkitError::Parse(
+                "material file too small for wrapper".into(),
+            ));
         }
         let inner = &data[WRAPPER_SIZE..];
         let magic = u32::from_le_bytes(inner[0..4].try_into().unwrap());
         if magic != DAT1_MAGIC {
-            return Err(ToolkitError::InvalidMagic { expected: DAT1_MAGIC, got: magic });
+            return Err(ToolkitError::InvalidMagic {
+                expected: DAT1_MAGIC,
+                got: magic,
+            });
         }
         Ok(Self {
             wrapper: Some(data[..WRAPPER_SIZE].to_vec()),
@@ -180,7 +188,9 @@ pub struct MaterialSerialized {
 impl MaterialSerialized {
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < SERIALIZED_HEADER_SIZE {
-            return Err(ToolkitError::Parse("serialized data section too small".into()));
+            return Err(ToolkitError::Parse(
+                "serialized data section too small".into(),
+            ));
         }
         let const_count = rd_u32(data, 0x04)? as usize;
         let const_values_off = rd_u32(data, 0x08)? as usize;
@@ -206,7 +216,10 @@ impl MaterialSerialized {
             }
             let mut values = Vec::with_capacity(byte_len / 4);
             for k in 0..byte_len / 4 {
-                values.push(f32::from_bits(rd_u32(data, const_values_off + value_off + k * 4)?));
+                values.push(f32::from_bits(rd_u32(
+                    data,
+                    const_values_off + value_off + k * 4,
+                )?));
             }
             constants.push(MaterialConstant { name_hash, values });
         }
@@ -231,7 +244,11 @@ impl MaterialSerialized {
             });
         }
 
-        Ok(Self { constants, samplers, aux })
+        Ok(Self {
+            constants,
+            samplers,
+            aux,
+        })
     }
 
     pub fn build(&self) -> Vec<u8> {
@@ -300,8 +317,14 @@ mod tests {
     fn sample() -> MaterialSerialized {
         MaterialSerialized {
             constants: vec![
-                MaterialConstant { name_hash: 0x24F4_CA4C, values: vec![0.5] },
-                MaterialConstant { name_hash: 0x4BAA_D667, values: vec![1.0, 0.25, 0.0] },
+                MaterialConstant {
+                    name_hash: 0x24F4_CA4C,
+                    values: vec![0.5],
+                },
+                MaterialConstant {
+                    name_hash: 0x4BAA_D667,
+                    values: vec![1.0, 0.25, 0.0],
+                },
             ],
             samplers: vec![
                 MaterialSampler {
@@ -314,8 +337,14 @@ mod tests {
                 },
             ],
             aux: vec![
-                MaterialAuxEntry { value: 1, name_hash: 0x8D0C_C279 },
-                MaterialAuxEntry { value: 0, name_hash: 0x9720_83DC },
+                MaterialAuxEntry {
+                    value: 1,
+                    name_hash: 0x8D0C_C279,
+                },
+                MaterialAuxEntry {
+                    value: 0,
+                    name_hash: 0x9720_83DC,
+                },
             ],
         }
     }
@@ -338,7 +367,10 @@ mod tests {
         assert_eq!(parsed.aux.len(), 2);
         assert_eq!(parsed.aux[0].value, 1);
         assert_eq!(parsed.aux[1].name_hash, 0x9720_83DC);
-        assert!(parsed.samplers.iter().all(|s| s.path.starts_with("characters/")));
+        assert!(parsed
+            .samplers
+            .iter()
+            .all(|s| s.path.starts_with("characters/")));
     }
 
     #[test]
@@ -348,7 +380,10 @@ mod tests {
         doc.samplers[0].path = "characters/hero/textures/custom_c.texture".into();
         let parsed = MaterialSerialized::parse(&doc.build()).expect("parse");
         assert_eq!(parsed.constants[0].values, vec![0.875]);
-        assert_eq!(parsed.samplers[0].path, "characters/hero/textures/custom_c.texture");
+        assert_eq!(
+            parsed.samplers[0].path,
+            "characters/hero/textures/custom_c.texture"
+        );
     }
 
     #[test]

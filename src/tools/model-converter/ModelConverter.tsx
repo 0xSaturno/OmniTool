@@ -142,7 +142,7 @@ export default function ModelConverter() {
   }
 
   async function runAsciiToModel() {
-    if (!asciiPath)    { pushLog("error", `Select a .${format} file first.`); return; }
+    if (!asciiPath) { pushLog("error", `Select a .${format} file first.`); return; }
     if (!srcModelPath) { pushLog("error", "Select a source .model file first."); return; }
     const outputPath = overwriteSourceModel ? srcModelPath : (modelOutPath || null);
     setRunning(true);
@@ -165,8 +165,10 @@ export default function ModelConverter() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Model Converter</h2>
-      <p className={styles.subtitle}>Export .model mesh data to .ascii for editing, then inject it back</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Model Converter</h2>
+        <span className={styles.subtitle}>Export .model mesh data to .ascii or .gltf for editing, and import it back</span>
+      </div>
 
       <div className={styles.tabs}>
         <button className={`${styles.tab} ${tab === "to-ascii" ? styles.active : ""}`} onClick={() => setTab("to-ascii")}>
@@ -179,11 +181,11 @@ export default function ModelConverter() {
 
       {tab === "to-ascii" && (
         <div className={styles.panel}>
-          <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
-            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input type="radio" checked={format === "ascii"} onChange={() => setFormat("ascii")} /> ASCII Mode
             </label>
-            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input type="radio" checked={format === "gltf"} onChange={() => setFormat("gltf")} /> GLTF Mode
             </label>
           </div>
@@ -254,20 +256,20 @@ export default function ModelConverter() {
 
       {tab === "to-model" && (
         <div className={styles.panel}>
-          <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
-            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input type="radio" checked={format === "ascii"} onChange={() => setFormat("ascii")} /> ASCII Mode
             </label>
-            <label style={{display: 'flex', gap: '0.5rem', alignItems: 'center'}}>
+            <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <input type="radio" checked={format === "gltf"} onChange={() => setFormat("gltf")} /> GLTF Mode
             </label>
           </div>
           <FilePickerInput
             label={`Source .${format}`}
-            value={asciiPath} 
-            onChange={setAsciiPath} 
-            mode="open" 
-            filters={format === "gltf" ? GLTF_FILTER : ASCII_FILTER} 
+            value={asciiPath}
+            onChange={setAsciiPath}
+            mode="open"
+            filters={format === "gltf" ? GLTF_FILTER : ASCII_FILTER}
           />
           <FilePickerInput label="Target .model" value={srcModelPath} onChange={setSrcModelPath} mode="open" filters={MODEL_FILTER} />
           <FilePickerInput

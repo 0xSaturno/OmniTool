@@ -206,7 +206,7 @@ export default function ModelInspector() {
       pushLog(
         "success",
         `${result.sections.length} sections · ${num(result.subsets.length)} subsets · ` +
-          `${num(result.joints.length)} joints · ${num(result.morphs.length)} morphs`,
+        `${num(result.joints.length)} joints · ${num(result.morphs.length)} morphs`,
       );
       for (const w of result.warnings) pushLog("warning", w);
       if (!result.warnings.length) {
@@ -248,11 +248,12 @@ export default function ModelInspector() {
 
   return (
     <div className={styles.page}>
-      <h1 className={styles.title}>Model Inspector</h1>
-      <p className={styles.subtitle}>
-        Read-only view of every reversed <code>.model</code> section — looks, materials,
-        skeleton, morph targets, IK chains and hair. See <code>docs/MODEL_FORMAT.md</code>.
-      </p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Model Inspector</h2>
+        <span className={styles.subtitle}>
+          Read-only view of every reversed <code>.model</code> section (looks, materials, skeleton, morph targets, IK chains and hair).
+        </span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput
@@ -421,9 +422,8 @@ export default function ModelInspector() {
                         </td>
                         <td>
                           {l.lods[0]
-                            ? `${l.lods[0].first_subset} … ${
-                                l.lods[0].first_subset + l.lods[0].subset_count
-                              }`
+                            ? `${l.lods[0].first_subset} … ${l.lods[0].first_subset + l.lods[0].subset_count
+                            }`
                             : "—"}
                         </td>
                         <td>{l.bspheres.length}</td>

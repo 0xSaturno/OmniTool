@@ -87,7 +87,7 @@ export default function Stager() {
       setExporting(true);
       const selectedProject = projects.find(p => p.name === selected);
       const versionSuffix = selectedProject && selectedProject.version !== "" ? `-${selectedProject.version}` : "";
-      
+
       const outputPath = await save({
         filters: [{ name: "Stage File", extensions: ["stage"] }],
         defaultPath: `${selected}${versionSuffix}.stage`,
@@ -128,7 +128,7 @@ export default function Stager() {
     try {
       await invoke("update_project_version", { name: selected, version: editingVersion });
       await refreshProjects();
-    } catch(e) {
+    } catch (e) {
       pushLog("error", `Failed saving version: ${e}`);
     }
   }
@@ -139,7 +139,7 @@ export default function Stager() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h2 className={styles.title}>Stager</h2>
-        <span className={styles.subtitle}>Create and manage mod stage packages.</span>
+        <span className={styles.subtitle}>Create and manage mod stage packages</span>
       </div>
 
       <div className={styles.layout}>
@@ -218,26 +218,26 @@ export default function Stager() {
               <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
                 <span className={styles.workspaceMeta}>{selectedProject.game} · {selectedProject.author}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem", color: "var(--text-muted)" }}>
-                   <span>v</span>
-                   <input 
-                      className={styles.versionInput}
-                      type="text" 
-                      value={editingVersion} 
-                      onChange={e => setEditingVersion(e.target.value)}
-                      onBlur={handleSaveVersion}
-                      onKeyDown={e => e.key === "Enter" && e.currentTarget.blur()}
-                      style={{ 
-                        background: "var(--bg-elevated)", 
-                        border: "1px solid var(--border)", 
-                        color: "var(--text-primary)", 
-                        padding: "2px 6px", 
-                        borderRadius: "4px", 
-                        width: "120px", 
-                        fontSize: "0.85rem",
-                        textAlign: "left"
-                      }}
-                      title="Project Version"
-                    />
+                  <span>v</span>
+                  <input
+                    className={styles.versionInput}
+                    type="text"
+                    value={editingVersion}
+                    onChange={e => setEditingVersion(e.target.value)}
+                    onBlur={handleSaveVersion}
+                    onKeyDown={e => e.key === "Enter" && e.currentTarget.blur()}
+                    style={{
+                      background: "var(--bg-elevated)",
+                      border: "1px solid var(--border)",
+                      color: "var(--text-primary)",
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      width: "120px",
+                      fontSize: "0.85rem",
+                      textAlign: "left"
+                    }}
+                    title="Project Version"
+                  />
                 </div>
               </div>
             </div>
@@ -245,8 +245,8 @@ export default function Stager() {
             <div className={styles.assetSection} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
               <div className={styles.assetHeader} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>Assets ({assets.length} file{assets.length !== 1 ? "s" : ""})</span>
-                <button 
-                  onClick={handleOpenExplorer} 
+                <button
+                  onClick={handleOpenExplorer}
                   style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "4px", padding: "2px 8px", color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.8rem", transition: "0.15s" }}
                   onMouseOver={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
                   onMouseOut={(e) => (e.currentTarget.style.color = "var(--text-secondary)")}
@@ -255,10 +255,10 @@ export default function Stager() {
                 </button>
               </div>
               <div className={styles.assetList} style={{ flex: 1, overflow: 'hidden', padding: 0 }}>
-                <StagerTreeView 
-                   project={selectedProject.name} 
-                   assets={assets} 
-                   onRefresh={() => loadAssets(selectedProject.name)} 
+                <StagerTreeView
+                  project={selectedProject.name}
+                  assets={assets}
+                  onRefresh={() => loadAssets(selectedProject.name)}
                 />
               </div>
             </div>

@@ -4,10 +4,8 @@
 //!   1. Known `ReferencesSection` tags (16-byte entries: u64 asset_id,
 //!      u32 string_offset into the DAT1 strings pool, u32 extension type
 //!      hash).
-//!   2. Path-like strings in the DAT1 strings pool (best-effort), hashed
+//!   2. Path-like strings in the DAT1 strings pool, hashed
 //!      with the standard DAT1 CRC64 to recover their packed asset id.
-//!
-
 
 use crate::core::crc64;
 use crate::core::dat1::{Dat1, DAT1_MAGIC};
@@ -66,10 +64,7 @@ pub fn ext_label(hash: u32) -> Option<&'static str> {
 fn is_pathlike(s: &str) -> bool {
     // Must contain an extension dot AND a separator. Reject very short or
     // very long candidates to avoid noise from non-path tokens.
-    s.len() >= 5
-        && s.len() < 512
-        && s.contains('.')
-        && (s.contains('/') || s.contains('\\'))
+    s.len() >= 5 && s.len() < 512 && s.contains('.') && (s.contains('/') || s.contains('\\'))
 }
 
 /// Iterate null-terminated strings in the DAT1 strings pool, invoking

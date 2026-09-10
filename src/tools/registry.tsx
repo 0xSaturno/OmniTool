@@ -37,7 +37,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     id: "model-converter",
     label: "Model Converter",
-    description: "Convert .model ↔ .ascii (export and inject mesh assets)",
+    description: "Convert .model to .ascii/.gltf (export and import mesh assets)",
     path: "/tools/model-converter",
     icon: <TbHexagon3D />,
     category: "model",

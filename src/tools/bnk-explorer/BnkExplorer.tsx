@@ -422,8 +422,10 @@ export default function BnkExplorer() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>BNK Explorer</h2>
-      <p className={styles.subtitle}>Inspect Wwise soundbank contents, preview audio, and extract WEMs</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>BNK Explorer</h2>
+        <span className={styles.subtitle}>Inspect Wwise soundbank contents, preview audio, and extract WEMs</span>
+      </div>
 
       <div className={styles.mainLayout}>
         {/* ── Left Panel ─────────────────────────────── */}

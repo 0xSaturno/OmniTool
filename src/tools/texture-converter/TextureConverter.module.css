@@ -5,6 +5,12 @@
   height: 100%;
 }
 
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
 .title {
   margin-top: 0;
   margin-bottom: 0;
@@ -15,7 +21,7 @@
 
 .subtitle {
   color: var(--text-secondary);
-  margin-top: -1rem;
+  font-size: 0.875rem;
   margin-bottom: 0;
 }
 

@@ -219,8 +219,10 @@ export default function WwisePatcher() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Wwise Soundbank Patcher</h2>
-      <p className={styles.subtitle}>Build custom soundbanks and patch the events.wwiselookup table</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Wwise Soundbank Patcher</h2>
+        <span className={styles.subtitle}>Build custom soundbanks and patch the events.wwiselookup table</span>
+      </div>
 
       <div className={styles.tabs}>
         <button

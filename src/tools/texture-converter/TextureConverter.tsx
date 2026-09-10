@@ -583,8 +583,10 @@ export default function TextureConverter() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Texture Converter</h2>
-      <p className={styles.subtitle}>Extract or replace texture formats</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Texture Converter</h2>
+        <span className={styles.subtitle}>Extract or replace texture formats</span>
+      </div>
 
       <div className={styles.tabs}>
         <button

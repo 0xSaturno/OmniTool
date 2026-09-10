@@ -226,11 +226,13 @@ export default function ZoneLightBinModule() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>ZoneLightBin Inspector</h2>
-      <p className={styles.subtitle}>
-        Inspect, diff, and section-copy <code>.zonelightbin</code> assets
-        (light tile grids)
-      </p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>ZoneLightBin Inspector</h2>
+        <span className={styles.subtitle}>
+          Inspect, diff, and section-copy <code>.zonelightbin</code> assets
+          (light tile grids)
+        </span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput

@@ -151,8 +151,10 @@ export default function AtmosphereEditor() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Atmosphere Editor</h2>
-      <p className={styles.subtitle}>Inspect and edit known .atmosphere values and strings</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Atmosphere Editor</h2>
+        <span className={styles.subtitle}>Inspect and edit known .atmosphere values</span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput

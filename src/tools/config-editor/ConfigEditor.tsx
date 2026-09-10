@@ -212,8 +212,10 @@ export default function ConfigEditor() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Config Editor</h2>
-      <p className={styles.subtitle}>Read and edit .config .actor .conduit files</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Config Editor</h2>
+        <span className={styles.subtitle}>Read and edit .config .actor .conduit files</span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput

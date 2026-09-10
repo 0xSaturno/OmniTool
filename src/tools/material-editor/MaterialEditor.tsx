@@ -294,10 +294,12 @@ export default function MaterialEditor() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Material Editor</h2>
-      <p className={styles.subtitle}>
-        Edit texture slots, shader constants and render flags inside .material files
-      </p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Material Editor</h2>
+        <span className={styles.subtitle}>
+          Edit texture slots, shader constants and render flags inside .material files
+        </span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput

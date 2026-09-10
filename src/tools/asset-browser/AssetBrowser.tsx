@@ -649,7 +649,7 @@ export default function AssetBrowser() {
       <div className={styles.header}>
         <div className={styles.headerTitle}>
           <h2 className={styles.title}>Asset Browser</h2>
-          <p className={styles.subtitle}>Browse and extract game assets</p>
+          <span className={styles.subtitle}>Browse and extract game assets</span>
         </div>
         <button className={styles.loadBtn} onClick={handleLoad} disabled={loading || !archivesDir}>
           {loading ? "Loading…" : "Load"}

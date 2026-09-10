@@ -133,8 +133,10 @@ export default function MaterialRemapper() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Material Remapper</h2>
-      <p className={styles.subtitle}>Remap material path references inside .model files</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Material Remapper</h2>
+        <span className={styles.subtitle}>Remap material path references inside .model files</span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput label="Source .model" value={modelPath} onChange={setModelPath} mode="open" filters={MODEL_FILTER} />

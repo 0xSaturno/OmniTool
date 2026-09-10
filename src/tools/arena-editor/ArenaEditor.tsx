@@ -956,10 +956,12 @@ export default function ArenaEditor() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Arena Editor</h2>
-      <p className={styles.subtitle}>
-        Retune arena challenge waves and swap the enemies they spawn
-      </p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Arena Editor</h2>
+        <span className={styles.subtitle}>
+          Retune arena challenge waves and swap the enemies they spawn
+        </span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput

@@ -1,5 +1,4 @@
-//! `read_model_info` — a read-only view over every reversed `.model` section,
-//! backing the Model Inspector tool. See `docs/MODEL_FORMAT.md`.
+//! `read_model_info` — a read-only view over every reversed `.model` section
 
 use crate::core::crc32;
 use crate::core::dat1::Dat1;
@@ -262,7 +261,10 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
             av_material_hash: b.unk_0x6c,
         }
     });
-    let position_scale = built.as_ref().map(|b| b.position_scale).unwrap_or(1.0 / 4096.0);
+    let position_scale = built
+        .as_ref()
+        .map(|b| b.position_scale)
+        .unwrap_or(1.0 / 4096.0);
 
     // Cross-check the Built counts against the actual stream sizes.
     if let Some(b) = &built {
@@ -327,7 +329,10 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
         .get_section_data(joints::TAG_JOINTS)
         .and_then(|d| Joint::parse_all(d).ok())
         .unwrap_or_default();
-    let joint_names: Vec<String> = joints_raw.iter().map(|j| s(dat1, j.string_offset as u64)).collect();
+    let joint_names: Vec<String> = joints_raw
+        .iter()
+        .map(|j| s(dat1, j.string_offset as u64))
+        .collect();
     let joints: Vec<JointView> = joints_raw
         .iter()
         .enumerate()
@@ -383,7 +388,9 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
         .map(|(i, m)| SubsetView {
             index: i,
             material: m.material_index,
-            material_name: materials.get(m.material_index as usize).map(|x| x.name.clone()),
+            material_name: materials
+                .get(m.material_index as usize)
+                .map(|x| x.name.clone()),
             vertex_start: m.vertex_start,
             vertex_count: m.vertex_count,
             index_start: m.index_start,
@@ -414,7 +421,9 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
             .map(|l| expand_mask(&l.bsphere_mask) == l.bspheres)
             .unwrap_or(true);
         if !mask_ok {
-            warnings.push(format!("Look {i}: bsphere bitmask disagrees with its index list"));
+            warnings.push(format!(
+                "Look {i}: bsphere bitmask disagrees with its index list"
+            ));
         }
         looks.push(LookView {
             index: i,
@@ -426,7 +435,10 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
                 .map(|l| {
                     l.lods
                         .iter()
-                        .map(|d| LodRangeView { first_subset: d.start, subset_count: d.count })
+                        .map(|d| LodRangeView {
+                            first_subset: d.start,
+                            subset_count: d.count,
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -455,7 +467,15 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
             let mirror = mi
                 .pairs
                 .iter()
-                .find_map(|&(l, r)| if l == e.id { Some(r) } else if r == e.id { Some(l) } else { None })
+                .find_map(|&(l, r)| {
+                    if l == e.id {
+                        Some(r)
+                    } else if r == e.id {
+                        Some(l)
+                    } else {
+                        None
+                    }
+                })
                 .and_then(name_of);
             morphs.push(MorphView {
                 id: e.id,
@@ -502,7 +522,11 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
                 .iter()
                 .map(|e| BindChainView {
                     joint: jname(e.joint as usize).unwrap_or_default(),
-                    parent: if e.parent == u16::MAX { None } else { jname(e.parent as usize) },
+                    parent: if e.parent == u16::MAX {
+                        None
+                    } else {
+                        jname(e.parent as usize)
+                    },
                     chain: b
                         .chain_of(e)
                         .iter()
@@ -532,7 +556,10 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
             warnings.push("Spline point count disagrees with the per-strand totals".into());
         }
         for g in &ss.subsets {
-            let (a, b) = (g.first_strand as usize, (g.first_strand + g.strand_count) as usize);
+            let (a, b) = (
+                g.first_strand as usize,
+                (g.first_strand + g.strand_count) as usize,
+            );
             let (p0, p1) = (
                 offsets.get(a).copied().unwrap_or(0) as usize,
                 offsets.get(b).copied().unwrap_or(0) as usize,
@@ -553,8 +580,16 @@ pub async fn read_model_info(model_path: String) -> Result<ModelInfo, ToolkitErr
                 strand_count: g.strand_count,
                 first_strand: g.first_strand,
                 point_count: (p1 - p0.min(p1)) as u32,
-                bounds_min: if empty { (0.0, 0.0, 0.0) } else { (lo[0], lo[1], lo[2]) },
-                bounds_max: if empty { (0.0, 0.0, 0.0) } else { (hi[0], hi[1], hi[2]) },
+                bounds_min: if empty {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    (lo[0], lo[1], lo[2])
+                },
+                bounds_max: if empty {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    (hi[0], hi[1], hi[2])
+                },
             });
         }
     }
