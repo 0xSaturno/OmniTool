@@ -206,6 +206,90 @@
   text-align: right;
 }
 
+.msgBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.35rem;
+}
+
+.msgHead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.msgLabel {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* When | Style | Text | Delay | Shown | remove */
+.msgRow {
+  display: grid;
+  grid-template-columns: 8.5rem 9.5rem minmax(160px, 1fr) 4rem 4rem 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.msgCols {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+/* Label | Text | revert */
+.textRow {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(160px, 1fr) 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Label | Text | Style | revert */
+.victoryRow {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(160px, 1fr) 11rem 1.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.msgText {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  padding: 0.2rem 0.4rem;
+}
+
+.msgText:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.msgTextDirty {
+  border-color: var(--accent);
+}
+
+.msgRemove {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0;
+}
+
+.msgRemove:hover {
+  color: #f85149;
+}
+
 .fromCell {
   display: flex;
   flex-direction: column;

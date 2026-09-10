@@ -146,6 +146,27 @@ fn main() {
         );
     }
 
+    // --edits <edits.json> <out.zone>: apply a ZoneEdits payload as the editor would.
+    if let Some(p) = args.iter().position(|a| a == "--edits") {
+        let edits: ZoneEdits =
+            serde_json::from_str(&std::fs::read_to_string(&args[p + 1]).unwrap()).unwrap();
+        let out_path = args.get(p + 2).cloned().unwrap_or_else(|| "edited.zone".into());
+        let bytes = zone.save(&edits).unwrap();
+        std::fs::write(&out_path, &bytes).unwrap();
+        let re = Zone::parse(&bytes).unwrap();
+        println!("\n--edits -> {out_path} ({} bytes), nodes {}", bytes.len(), re.actions.len());
+        for m in re.wave_messages() {
+            println!(
+                "  message node {} wave {} {:?} +{}s {:?} {}s: {:?}",
+                m.node, m.wave, m.when, m.delay, m.style, m.duration, m.text
+            );
+        }
+        if let Some((text, style)) = re.victory_text() {
+            println!("  victory banner swapped: {style:?} {text:?}");
+        }
+        return;
+    }
+
     if let Some(p) = args.iter().position(|a| a == "--clone-wave") {
         let source: u32 = args[p + 1].parse().unwrap();
         let new_number: u32 = args[p + 2].parse().unwrap();

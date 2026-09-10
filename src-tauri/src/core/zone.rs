@@ -142,6 +142,7 @@ pub struct ScriptVar {
     pub value_type: u16,
     /// Zone Script Strings index of the name; `0xFFFF` for literal constants.
     pub name_index: u16,
+    /// Script Strings index of a string var's value (type 4), e.g. a loc key.
     pub name_index2: u16,
     pub name_index3: u16,
     pub id: u64,
@@ -151,6 +152,7 @@ pub struct ScriptVar {
 impl ScriptVar {
     pub const TYPE_INT: u16 = 1;
     pub const TYPE_FLOAT: u16 = 2;
+    pub const TYPE_STRING: u16 = 4;
 
     fn read(b: &[u8]) -> Self {
         let rd16 = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().unwrap());
@@ -539,6 +541,15 @@ impl Zone {
     }
 
     /// Name of a script variable, or `None` for literal constants.
+    /// The text a string var (type 4) holds.
+    pub fn string_value(&self, index: usize) -> Option<&str> {
+        let v = self.vars.get(index)?;
+        if v.value_type != ScriptVar::TYPE_STRING || v.name_index2 == u16::MAX {
+            return None;
+        }
+        self.script_types.get(v.name_index2 as usize).map(String::as_str)
+    }
+
     pub fn var_name(&self, index: usize) -> Option<&str> {
         let v = self.vars.get(index)?;
         for idx in [v.name_index, v.name_index2, v.name_index3] {
@@ -666,6 +677,13 @@ impl Zone {
             if let Some(w) = &report.warning {
                 eprintln!("[zone] clone_wave: {w}");
             }
+        }
+        self.unhook_nodes(&edits.remove_messages);
+        for m in &edits.wave_messages {
+            self.add_wave_message(m)?;
+        }
+        if let Some(text) = edits.victory_text.as_deref().filter(|t| !t.trim().is_empty()) {
+            self.set_victory_text(text, edits.victory_style)?;
         }
         // Heals zones written by earlier clone code, which could drop the flag.
         for a in &mut self.actions {
@@ -817,8 +835,18 @@ impl Zone {
     }
 
     fn apply_script_var_edits(&mut self, edits: &ZoneEdits) -> Result<()> {
-        if edits.script_vars.is_empty() && edits.script_var_ids.is_empty() {
+        if edits.script_vars.is_empty()
+            && edits.script_var_ids.is_empty()
+            && edits.script_var_strings.is_empty()
+        {
             return Ok(());
+        }
+        for (idx, text) in &edits.script_var_strings {
+            if self.vars.get(*idx).map(|v| v.value_type) != Some(ScriptVar::TYPE_STRING) {
+                return Err(ToolkitError::Parse(format!("script var {idx} is not a string")));
+            }
+            let s = self.intern_script_string(text);
+            self.vars[*idx].name_index2 = s;
         }
         for (idx, value) in &edits.script_vars {
             let var = self.vars.get_mut(*idx).ok_or_else(|| {
@@ -1107,6 +1135,29 @@ impl Zone {
             }
         }
 
+        // HUD banners and messages (with their delays) fired only from inside
+        // the wave are dead ends, so the path walk above misses them; without
+        // a copy the clone shows the source wave's number and messages.
+        loop {
+            let mut added = false;
+            for i in nodes.clone() {
+                for t in &adj[i] {
+                    if nodes.contains(t) || !radj[*t].iter().all(|s| nodes.contains(s)) {
+                        continue;
+                    }
+                    let banner = adj[*t].is_empty()
+                        && self.action_type(&self.actions[*t]) == "UIArenaWaveAction";
+                    if banner || self.is_message_chain(&plugs, *t) {
+                        nodes.insert(*t);
+                        added = true;
+                    }
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+
         let feeders = radj[head].clone();
         Ok(WaveSegment {
             number,
@@ -1328,18 +1379,25 @@ impl Zone {
 
         // Splice: the source wave's clear check now starts the clone, and the
         // clone hands on to whatever the source used to trigger.
+        // Messages on the clear check belong to their own wave and stay put.
         let clone_head = index_of[&seg.head];
         let clone_tail = index_of[&seg.tail];
         let attach = after.unwrap_or(seg.tail);
-        let tail_links = plugs[attach].links.clone();
-        plugs[clone_tail].links = tail_links.clone();
-        plugs[attach].links = tail_links
-            .iter()
-            .map(|p| ScriptPlug {
-                index: clone_head as u32,
-                ..*p
-            })
+        let chain: std::collections::HashSet<usize> = (0..self.actions.len())
+            .filter(|i| self.is_message_chain(&plugs, *i))
             .collect();
+        let is_message = |p: &ScriptPlug| chain.contains(&(p.index as usize));
+        let (kept, handoff): (Vec<ScriptPlug>, Vec<ScriptPlug>) =
+            plugs[attach].links.iter().copied().partition(|p| is_message(p));
+        let mut tail_links: Vec<ScriptPlug> =
+            plugs[clone_tail].links.iter().copied().filter(|p| is_message(p)).collect();
+        tail_links.extend(handoff.iter().copied());
+        plugs[clone_tail].links = tail_links;
+        plugs[attach].links = kept;
+        plugs[attach].links.extend(handoff.iter().map(|p| ScriptPlug {
+            index: clone_head as u32,
+            ..*p
+        }));
 
         self.set_node_plugs(&plugs);
         // When the segment's own clear check also feeds its countdown the two
@@ -1363,6 +1421,447 @@ impl Zone {
             warning,
         })
     }
+
+    /// Show `msg.text` on the HUD when a wave starts or is cleared, through a
+    /// `HUDMessageAction`. The text goes in `LocTag`, which the game shows
+    /// verbatim when it is not a localization key.
+    pub fn add_wave_message(&mut self, msg: &WaveMessageRequest) -> Result<usize> {
+        let node = match msg.node {
+            Some(n) => {
+                if self.actions.get(n).map(|a| self.action_type(a)) != Some(HUD_MESSAGE_TYPE) {
+                    return Err(ToolkitError::Parse(format!("node {n} is not a HUD message")));
+                }
+                self.set_message_prius(n, msg);
+                self.unhook_nodes(&[n]);
+                n
+            }
+            None => self.push_message_node(msg),
+        };
+        self.hook_message(node, msg.wave, msg.when, msg.delay)?;
+        Ok(node)
+    }
+
+    fn set_message_prius(&mut self, node: usize, msg: &WaveMessageRequest) {
+        let blob = self.script_priuses.iter().position(|b| b.owners.contains(&node));
+        match blob {
+            Some(b) if self.script_priuses[b].owners.len() == 1 => {
+                self.script_priuses[b].json = message_prius(msg);
+                self.script_priuses[b].dirty = true;
+            }
+            // A shared blob keeps its other owners; this node gets its own.
+            Some(b) => {
+                self.script_priuses[b].owners.retain(|o| *o != node);
+                self.push_message_prius(node, msg);
+            }
+            None => self.push_message_prius(node, msg),
+        }
+    }
+
+    fn reward_banner(&self) -> Option<usize> {
+        self.actions.iter().position(|a| self.action_type(a) == REWARD_BANNER_TYPE)
+    }
+
+    /// The message standing in for the victory banner, once it has been swapped.
+    fn victory_message(&self, plugs: &[NodePlugs]) -> Option<usize> {
+        let reward = self.reward_banner()?;
+        if plugs.iter().any(|np| np.links.iter().any(|p| p.index as usize == reward)) {
+            return None;
+        }
+        let next: Vec<usize> = plugs[reward].links.iter().map(|p| p.index as usize).collect();
+        let show = crc32::hash("Show");
+        plugs
+            .iter()
+            .enumerate()
+            .filter(|(i, np)| {
+                *i != reward && np.links.iter().any(|p| next.contains(&(p.index as usize)))
+            })
+            .flat_map(|(_, np)| np.links.iter())
+            .find(|p| {
+                p.other_hash == show
+                    && self.action_type(&self.actions[p.index as usize]) == HUD_MESSAGE_TYPE
+            })
+            .map(|p| p.index as usize)
+    }
+
+    /// The victory banner's text if it has been swapped for a message; `None`
+    /// while the stock banner (words from the HUD) is still in place.
+    pub fn victory_text(&self) -> Option<(String, MessageStyle)> {
+        let m = self.victory_message(&self.node_plugs())?;
+        let json = &self.script_priuses.iter().find(|b| b.owners.contains(&m))?.json;
+        let field = |k: &str| json.get(k).and_then(|f| f.get("Value")).and_then(Value::as_str);
+        Some((
+            field("LocTag").unwrap_or("").to_string(),
+            message_style(field("HudMessageType"), field("MessageType")),
+        ))
+    }
+
+    pub fn has_victory_banner(&self) -> bool {
+        self.reward_banner().is_some()
+    }
+
+    /// Swap the stock victory banner (`UIArenaRewardAction`, which takes no
+    /// text) for a HUD message. Its feeders are wired straight to its
+    /// successors, so the win sequence keeps its timing.
+    pub fn set_victory_text(&mut self, text: &str, style: MessageStyle) -> Result<usize> {
+        let msg = WaveMessageRequest {
+            node: None,
+            wave: 0,
+            text: text.to_string(),
+            duration: default_message_seconds(),
+            style,
+            when: MessageWhen::Cleared,
+            delay: 0.0,
+        };
+        if let Some(m) = self.victory_message(&self.node_plugs()) {
+            self.set_message_prius(m, &msg);
+            return Ok(m);
+        }
+        let reward = self
+            .reward_banner()
+            .ok_or_else(|| ToolkitError::Parse("zone has no victory banner".into()))?;
+        let before = self.node_plugs();
+        let feeders: Vec<(usize, ScriptPlug)> = before
+            .iter()
+            .enumerate()
+            .flat_map(|(i, np)| {
+                np.links
+                    .iter()
+                    .filter(|p| p.index as usize == reward)
+                    .map(move |p| (i, *p))
+            })
+            .collect();
+        if feeders.is_empty() {
+            return Err(ToolkitError::Parse("the victory banner is not connected".into()));
+        }
+        let outs = before[reward].links.clone();
+
+        let node = self.push_message_node(&msg);
+        let mut plugs = self.node_plugs();
+        let show = crc32::hash("Show");
+        for (src, p) in &feeders {
+            plugs[*src].links.retain(|q| q.index as usize != reward);
+            for o in &outs {
+                plugs[*src].links.push(ScriptPlug {
+                    name_hash: p.name_hash,
+                    index: o.index,
+                    other_hash: o.other_hash,
+                });
+            }
+            plugs[*src].links.push(ScriptPlug {
+                name_hash: p.name_hash,
+                index: node as u32,
+                other_hash: show,
+            });
+        }
+        self.set_node_plugs(&plugs);
+        Ok(node)
+    }
+
+    fn push_message_node(&mut self, msg: &WaveMessageRequest) -> usize {
+        let seed = crc32::hash(&msg.text) as u64 ^ ((msg.wave as u64) << 32);
+        let mut ids = IdAllocator::new(self, 0x4855_444D_5347);
+        let node = self.actions.len();
+        let mut plugs = self.node_plugs();
+
+        // Stock messages address the local players through a `_Players` var.
+        let mut params = Vec::new();
+        if let Some(v) = (0..self.vars.len()).find(|v| self.var_name(*v) == Some("_Players")) {
+            let mut var = self.vars[v].clone();
+            var.id = ids.fresh(var.id ^ seed);
+            self.vars.push(var);
+            params.push(ScriptPlug {
+                name_hash: MESSAGE_PLAYERS_PLUG,
+                index: (self.vars.len() - 1) as u32,
+                other_hash: crc32::hash("Out"),
+            });
+        }
+
+        let id = ids.fresh(seed);
+        let type_index = self.intern_script_string(HUD_MESSAGE_TYPE);
+        self.actions.push(ScriptAction {
+            node_id: id,
+            template_id: id,
+            in_degree: 0,
+            link_start: u16::MAX,
+            link_count: 0,
+            param_start: u16::MAX,
+            param_count: 0,
+            type_index,
+            type_hash: crc32::hash(HUD_MESSAGE_TYPE),
+            prius_offset: 0,
+            prius_size: 0,
+        });
+        plugs.push(NodePlugs { links: Vec::new(), params });
+        self.set_node_plugs(&plugs);
+        self.push_message_prius(node, msg);
+        node
+    }
+
+    fn push_message_prius(&mut self, node: usize, msg: &WaveMessageRequest) {
+        self.script_priuses.push(PriusBlob {
+            offset: 0,
+            size: 0,
+            json: message_prius(msg),
+            owners: vec![node],
+            raw: Vec::new(),
+            dirty: true,
+        });
+    }
+
+    fn hook_message(
+        &mut self,
+        node: usize,
+        wave: u32,
+        when: MessageWhen,
+        delay: f64,
+    ) -> Result<()> {
+        let mut plugs = self.node_plugs();
+        let hook = self.wave_trigger(&plugs, wave, when).ok_or_else(|| {
+            ToolkitError::Parse(format!("wave {wave} has no {when:?} trigger for a message"))
+        })?;
+        let pin = plugs[hook]
+            .links
+            .first()
+            .map(|p| p.name_hash)
+            .unwrap_or_else(|| crc32::hash("Out"));
+        let (target, input) = if delay > 0.0 {
+            (self.push_delay_node(&mut plugs, node, delay), crc32::hash("In"))
+        } else {
+            (node, crc32::hash("Show"))
+        };
+        plugs[hook].links.push(ScriptPlug {
+            name_hash: pin,
+            index: target as u32,
+            other_hash: input,
+        });
+        self.set_node_plugs(&plugs);
+        Ok(())
+    }
+
+    /// A `DelayAction` that fires `message` after `seconds`; returns its index.
+    fn push_delay_node(&mut self, plugs: &mut Vec<NodePlugs>, message: usize, seconds: f64) -> usize {
+        let mut ids = IdAllocator::new(self, 0x4445_4C41_59);
+        let seed = (message as u64) << 20 ^ seconds.to_bits();
+        let mut value = [0u8; 16];
+        value[0..4].copy_from_slice(&(seconds as f32).to_le_bytes());
+        self.vars.push(ScriptVar {
+            value_type: ScriptVar::TYPE_FLOAT,
+            name_index: u16::MAX,
+            name_index2: u16::MAX,
+            name_index3: u16::MAX,
+            id: ids.fresh(seed ^ 0x5641_52),
+            value,
+        });
+        let id = ids.fresh(seed);
+        let type_index = self.intern_script_string(DELAY_TYPE);
+        let node = self.actions.len();
+        self.actions.push(ScriptAction {
+            node_id: id,
+            template_id: id,
+            in_degree: 0,
+            link_start: u16::MAX,
+            link_count: 0,
+            param_start: u16::MAX,
+            param_count: 0,
+            type_index,
+            type_hash: crc32::hash(DELAY_TYPE),
+            prius_offset: 0,
+            prius_size: 0,
+        });
+        plugs.push(NodePlugs {
+            links: vec![ScriptPlug {
+                name_hash: crc32::hash("Out"),
+                index: message as u32,
+                other_hash: crc32::hash("Show"),
+            }],
+            params: vec![ScriptPlug {
+                name_hash: crc32::hash("Duration"),
+                index: (self.vars.len() - 1) as u32,
+                other_hash: crc32::hash("Out"),
+            }],
+        });
+        node
+    }
+
+    /// A HUD message, or a delay whose only job is to fire HUD messages.
+    fn is_message_chain(&self, plugs: &[NodePlugs], node: usize) -> bool {
+        let is_message =
+            |i: usize| self.actions.get(i).is_some_and(|a| self.action_type(a) == HUD_MESSAGE_TYPE);
+        if is_message(node) {
+            return true;
+        }
+        self.actions.get(node).is_some_and(|a| self.action_type(a) == DELAY_TYPE)
+            && !plugs[node].links.is_empty()
+            && plugs[node].links.iter().all(|p| is_message(p.index as usize))
+    }
+
+    /// Disconnect HUD message nodes, and any delay feeding only them; other
+    /// nodes are left alone.
+    fn unhook_nodes(&mut self, nodes: &[usize]) {
+        let mut plugs = self.node_plugs();
+        let mut targets: Vec<usize> = nodes
+            .iter()
+            .copied()
+            .filter(|n| self.actions.get(*n).map(|a| self.action_type(a)) == Some(HUD_MESSAGE_TYPE))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let delays: Vec<usize> = (0..self.actions.len())
+            .filter(|d| {
+                self.is_message_chain(&plugs, *d)
+                    && !targets.contains(d)
+                    && plugs[*d].links.iter().all(|p| targets.contains(&(p.index as usize)))
+            })
+            .collect();
+        targets.extend(delays);
+        for np in &mut plugs {
+            np.links.retain(|p| !targets.contains(&(p.index as usize)));
+        }
+        self.set_node_plugs(&plugs);
+    }
+
+    pub fn has_message_trigger(&self, wave: u32, when: MessageWhen) -> bool {
+        self.wave_trigger(&self.node_plugs(), wave, when).is_some()
+    }
+
+    /// The listener a wave's start signal lands on, or the check that fires
+    /// once all of its enemies are dead.
+    fn wave_trigger(&self, plugs: &[NodePlugs], wave: u32, when: MessageWhen) -> Option<usize> {
+        (0..self.actions.len()).find(|i| {
+            self.trigger_wave(plugs, *i) == Some((wave, when))
+                && (when == MessageWhen::Cleared
+                    || !plugs.iter().any(|np| np.links.iter().any(|p| p.index as usize == *i)))
+        })
+    }
+
+    fn trigger_wave(&self, plugs: &[NodePlugs], node: usize) -> Option<(u32, MessageWhen)> {
+        let short = |s: &str| s.rsplit("::").next().unwrap_or(s).to_ascii_lowercase();
+        match self.action_type(&self.actions[node]) {
+            "SignalRelayAction" => {
+                let name = short(&self.prius_name_of(node)?);
+                // Every challenge opens wave 1 off the shared intro, not a wave relay.
+                if name == "arena_title_and_countdown_complete" {
+                    return Some((1, MessageWhen::Start));
+                }
+                let n = name.strip_prefix("wave_")?.strip_suffix("_start")?;
+                Some((n.parse().ok()?, MessageWhen::Start))
+            }
+            "OnNumAliveAction" => {
+                let group = crc32::hash("Group");
+                let p = plugs[node].params.iter().find(|p| p.name_hash == group)?;
+                let name = short(self.var_name(p.index as usize)?);
+                let n = name.strip_prefix("wave_")?.strip_suffix("_enemies")?;
+                Some((n.parse().ok()?, MessageWhen::Cleared))
+            }
+            _ => None,
+        }
+    }
+
+    /// HUD messages fired by a wave's start listener or clear check, directly
+    /// or through a delay of their own.
+    pub fn wave_messages(&self) -> Vec<WaveMessage> {
+        let plugs = self.node_plugs();
+        let show = crc32::hash("Show");
+        let duration = crc32::hash("Duration");
+        let mut feeders: Vec<Vec<usize>> = vec![Vec::new(); self.actions.len()];
+        for (src, np) in plugs.iter().enumerate() {
+            for p in &np.links {
+                if let Some(f) = feeders.get_mut(p.index as usize) {
+                    f.push(src);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (src, np) in plugs.iter().enumerate() {
+            for p in &np.links {
+                let node = p.index as usize;
+                if p.other_hash != show
+                    || self.actions.get(node).map(|a| self.action_type(a)) != Some(HUD_MESSAGE_TYPE)
+                {
+                    continue;
+                }
+                let own_delay = self.action_type(&self.actions[src]) == DELAY_TYPE
+                    && self.is_message_chain(&plugs, src);
+                let (trigger, delay) = if own_delay {
+                    let seconds = plugs[src]
+                        .params
+                        .iter()
+                        .find(|q| q.name_hash == duration)
+                        .and_then(|q| self.vars.get(q.index as usize))
+                        .and_then(ScriptVar::as_number)
+                        .unwrap_or(0.0);
+                    match feeders[src].first() {
+                        Some(t) => (*t, seconds),
+                        None => continue,
+                    }
+                } else {
+                    (src, 0.0)
+                };
+                let Some((wave, when)) = self.trigger_wave(&plugs, trigger) else {
+                    continue;
+                };
+                let blob = self.script_priuses.iter().position(|b| b.owners.contains(&node));
+                let field = |k: &str| {
+                    blob.and_then(|b| self.script_priuses[b].json.get(k))
+                        .and_then(|f| f.get("Value"))
+                };
+                out.push(WaveMessage {
+                    node,
+                    wave,
+                    when,
+                    style: message_style(
+                        field("HudMessageType").and_then(Value::as_str),
+                        field("MessageType").and_then(Value::as_str),
+                    ),
+                    text: field("LocTag").and_then(Value::as_str).unwrap_or("").to_string(),
+                    duration: field("Duration")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_else(default_message_seconds),
+                    delay: (delay * 100.0).round() / 100.0,
+                    prius_id: blob,
+                });
+            }
+        }
+        out
+    }
+}
+
+const HUD_MESSAGE_TYPE: &str = "HUDMessageAction";
+const DELAY_TYPE: &str = "DelayAction";
+/// The stock "Victory!" banner; its words come from the HUD, not the zone.
+const REWARD_BANNER_TYPE: &str = "UIArenaRewardAction";
+/// Param that carries `_Players` on every shipped HUD message; name unresolved.
+const MESSAGE_PLAYERS_PLUG: u32 = 0x3D24_E232;
+
+fn message_style(kind: Option<&str>, placement: Option<&str>) -> MessageStyle {
+    if kind == Some("kHelp") {
+        return MessageStyle::Help;
+    }
+    // An unset `MessageType` is the DDL default, `kGeneric`.
+    let placement = placement.unwrap_or("kGeneric");
+    MESSAGE_STYLES
+        .iter()
+        .find(|(_, _, p)| *p == Some(placement))
+        .map(|(s, _, _)| *s)
+        .unwrap_or(MessageStyle::Banner)
+}
+
+fn message_prius(msg: &WaveMessageRequest) -> Value {
+    let (kind, placement) = MESSAGE_STYLES
+        .iter()
+        .find(|(s, _, _)| *s == msg.style)
+        .map(|(_, k, p)| (*k, *p))
+        .unwrap_or(("kObjective", Some("kCenter")));
+    let mut json = serde_json::json!({
+        "LocTag": { "Type": "String", "Value": msg.text },
+        "HudMessageType": { "Type": "String", "Value": kind },
+        "Duration": { "Type": "Float", "Value": msg.duration },
+    });
+    if let Some(p) = placement {
+        json["MessageType"] = serde_json::json!({ "Type": "String", "Value": p });
+    }
+    json
 }
 
 fn closure(seeds: &[usize], adj: &[Vec<usize>]) -> std::collections::HashSet<usize> {
@@ -1480,15 +1979,109 @@ pub struct ZoneEdits {
     /// ids, which is how a spawner's `Locations` binding is repointed.
     #[serde(default)]
     pub script_var_ids: BTreeMap<usize, String>,
+    /// String variables by index — challenge title, victory text.
+    #[serde(default)]
+    pub script_var_strings: BTreeMap<usize, String>,
     /// Waves to duplicate, applied after every value edit.
     #[serde(default)]
     pub clone_waves: Vec<CloneWaveRequest>,
+    /// HUD messages to add, applied after cloning so copies can carry them.
+    #[serde(default)]
+    pub wave_messages: Vec<WaveMessageRequest>,
+    /// Message nodes (by action index) to disconnect from their trigger.
+    #[serde(default)]
+    pub remove_messages: Vec<usize>,
+    /// Text shown instead of the stock victory banner.
+    #[serde(default)]
+    pub victory_text: Option<String>,
+    #[serde(default)]
+    pub victory_style: MessageStyle,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct CloneWaveRequest {
     pub source: u32,
     pub new_number: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageStyle {
+    /// Big centred banner, as the stock "FIGHT!" message.
+    #[default]
+    Banner,
+    /// Smaller help-box message, as the stock weapon-swap tip.
+    Help,
+    /// The HUD's arena-wave banner, showing our text.
+    Wave,
+    /// The HUD's arena-reward slot: always the stock "Victory!" graphic, text ignored.
+    Victory,
+    // The remaining `MessageType` slots, not yet tried in game.
+    Generic,
+    Pickup,
+    Collectible,
+    Location,
+    Planet,
+    Corner,
+    Tutorial,
+}
+
+/// Style → (`HudMessageType`, `MessageType`) as written to the prius.
+const MESSAGE_STYLES: [(MessageStyle, &str, Option<&str>); 11] = [
+    (MessageStyle::Banner, "kObjective", Some("kCenter")),
+    (MessageStyle::Help, "kHelp", None),
+    (MessageStyle::Wave, "kObjective", Some("kArenaWave")),
+    (MessageStyle::Victory, "kObjective", Some("kArenaReward")),
+    (MessageStyle::Generic, "kObjective", Some("kGeneric")),
+    (MessageStyle::Pickup, "kObjective", Some("kPickup")),
+    (MessageStyle::Collectible, "kObjective", Some("kCollectible")),
+    (MessageStyle::Location, "kObjective", Some("kLocation")),
+    (MessageStyle::Planet, "kObjective", Some("kPlanet")),
+    (MessageStyle::Corner, "kObjective", Some("kCorner")),
+    (MessageStyle::Tutorial, "kObjective", Some("kTutorial")),
+];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageWhen {
+    #[default]
+    Start,
+    Cleared,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WaveMessageRequest {
+    /// An existing message node to rewrite and re-hook; `None` adds one.
+    #[serde(default)]
+    pub node: Option<usize>,
+    pub wave: u32,
+    pub text: String,
+    #[serde(default = "default_message_seconds")]
+    pub duration: f64,
+    #[serde(default)]
+    pub style: MessageStyle,
+    #[serde(default)]
+    pub when: MessageWhen,
+    /// Seconds between the trigger and the message, to clear the stock banners.
+    #[serde(default)]
+    pub delay: f64,
+}
+
+fn default_message_seconds() -> f64 {
+    4.0
+}
+
+/// A `HUDMessageAction` hooked to a wave's start relay or clear check.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WaveMessage {
+    pub node: usize,
+    pub wave: u32,
+    pub when: MessageWhen,
+    pub style: MessageStyle,
+    pub text: String,
+    pub duration: f64,
+    pub delay: f64,
+    pub prius_id: Option<usize>,
 }
 
 impl ZoneEdits {
@@ -1503,7 +2096,11 @@ impl ZoneEdits {
             && self.model_names.is_empty()
             && self.script_vars.is_empty()
             && self.script_var_ids.is_empty()
+            && self.script_var_strings.is_empty()
             && self.clone_waves.is_empty()
+            && self.wave_messages.is_empty()
+            && self.remove_messages.is_empty()
+            && self.victory_text.is_none()
     }
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLocation } from "react-router-dom";
 import CodeMirror from "@uiw/react-codemirror";
@@ -172,11 +172,113 @@ interface ArenaSpawner {
   locations: ArenaSpawnBinding[];
 }
 
+type MessageWhen = "start" | "cleared";
+/** One per HUD message slot (`MessageType`), plus the help box. */
+type MessageStyle =
+  | "banner"
+  | "help"
+  | "wave"
+  | "victory"
+  | "generic"
+  | "pickup"
+  | "collectible"
+  | "location"
+  | "planet"
+  | "corner"
+  | "tutorial";
+
+const STYLE_TEXT: Record<MessageStyle, string> = {
+  banner: "Banner",
+  help: "Help box",
+  wave: "Arena wave banner",
+  victory: "Stock Victory! (text ignored)",
+  generic: "Generic",
+  pickup: "Pickup",
+  collectible: "Collectible",
+  location: "Location",
+  planet: "Planet",
+  corner: "Corner",
+  tutorial: "Tutorial",
+};
+
+const STYLE_GROUPS: { label: string; styles: MessageStyle[] }[] = [
+  { label: "Tested in game", styles: ["banner", "help", "wave", "victory"] },
+  {
+    label: "Untested",
+    styles: ["generic", "pickup", "collectible", "location", "planet", "corner", "tutorial"],
+  },
+];
+
+/** Centre-screen styles that collide with the stock between-wave banners. */
+const CENTRE_STYLES: MessageStyle[] = ["banner", "wave", "victory"];
+
+function StyleOptions() {
+  return (
+    <>
+      {STYLE_GROUPS.map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.styles.map((s) => (
+            <option key={s} value={s}>
+              {STYLE_TEXT[s]}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
+interface ArenaVictory {
+  replaced: boolean;
+  text: string;
+  style: MessageStyle;
+}
+
+interface WaveMessage {
+  node: number;
+  wave: number;
+  when: MessageWhen;
+  style: MessageStyle;
+  text: string;
+  duration: number;
+  delay: number;
+  prius_id: number | null;
+}
+
+/** A message as edited in the UI; `node` is set for ones already in the zone. */
+interface MessageDraft {
+  key: string;
+  node?: number;
+  wave: number;
+  when: MessageWhen;
+  style: MessageStyle;
+  text: string;
+  duration: number;
+  delay: number;
+}
+
+interface ArenaText {
+  key: string;
+  label: string;
+  var: number;
+  value: string;
+}
+
+/// Seconds a start message waits so the stock "Wave N" banner has cleared.
+const START_DELAY = 3;
+
+/** HUD text is typed on one line; `\n` stands for a line break. */
+const toGameText = (s: string) => s.replace(/\\n/g, "\n");
+const fromGameText = (s: string) => s.replace(/\n/g, "\\n");
+
 interface ArenaWave {
   number: number;
   signals: string[];
   spawners: ArenaSpawner[];
   total: number;
+  messages: WaveMessage[];
+  can_message_start: boolean;
+  can_message_cleared: boolean;
 }
 
 interface ArenaZoneData {
@@ -184,6 +286,8 @@ interface ArenaZoneData {
   action_count: number;
   actor_count: number;
   waves: ArenaWave[];
+  texts: ArenaText[];
+  victory: ArenaVictory | null;
   node_type_counts: [string, number][];
   actor_groups: string[];
   script_priuses: ArenaPrius[];
@@ -227,10 +331,16 @@ export default function ArenaEditor() {
   const [assetEdits, setAssetEdits] = useState<Record<number, string>>({});
   const [varEdits, setVarEdits] = useState<Record<number, number>>({});
   const [varIdEdits, setVarIdEdits] = useState<Record<number, string>>({});
+  const [textEdits, setTextEdits] = useState<Record<number, string>>({});
+  const [victoryEdit, setVictoryEdit] = useState<string | undefined>(undefined);
+  const [victoryStyle, setVictoryStyle] = useState<MessageStyle | undefined>(undefined);
   const [cloneRequests, setCloneRequests] = useState<
     { source: number; new_number: number }[]
   >([]);
   const [cloneCounts, setCloneCounts] = useState<Record<number, number>>({});
+  const [messageDrafts, setMessageDrafts] = useState<Record<string, MessageDraft>>({});
+  const [removedMessages, setRemovedMessages] = useState<number[]>([]);
+  const messageSeq = useRef(0);
   const [rawSelected, setRawSelected] = useState<string | null>(null);
   const [rawSearch, setRawSearch] = useState("");
   const [rawError, setRawError] = useState("");
@@ -260,7 +370,12 @@ export default function ArenaEditor() {
     setAssetEdits({});
     setVarEdits({});
     setVarIdEdits({});
+    setTextEdits({});
+    setVictoryEdit(undefined);
+    setVictoryStyle(undefined);
     setCloneRequests([]);
+    setMessageDrafts({});
+    setRemovedMessages([]);
     setRawSelected(null);
     setRawError("");
   }, []);
@@ -339,7 +454,18 @@ export default function ArenaEditor() {
     Object.keys(assetEdits).length +
     Object.keys(varEdits).length +
     Object.keys(varIdEdits).length +
-    cloneRequests.length;
+    Object.keys(textEdits).length +
+    (victoryEdit !== undefined || victoryStyle !== undefined ? 1 : 0) +
+    cloneRequests.length +
+    Object.keys(messageDrafts).length +
+    removedMessages.length;
+
+  /** Text for the victory swap; a style-only change resends the current text. */
+  function victoryText(): string | null {
+    if (victoryEdit?.trim()) return toGameText(victoryEdit);
+    if (victoryStyle !== undefined && data?.victory?.replaced) return data.victory.text;
+    return null;
+  }
 
   function buildPayload() {
     const scriptPatches: Record<number, { path: string[]; value: unknown }[]> = {};
@@ -364,6 +490,18 @@ export default function ArenaEditor() {
       else actorJson[id] = text;
     }
 
+    // Clearing an existing message's text removes it; blank new ones are dropped.
+    const removed = [...removedMessages];
+    const messages = [];
+    for (const d of Object.values(messageDrafts)) {
+      if (d.text.trim()) {
+        const { node, wave, when, style, text, duration, delay } = d;
+        messages.push({ node, wave, when, style, text: toGameText(text), duration, delay });
+      } else if (d.node !== undefined) {
+        removed.push(d.node);
+      }
+    }
+
     return JSON.stringify({
       script_prius_patches: scriptPatches,
       actor_prius_patches: actorPatches,
@@ -372,7 +510,16 @@ export default function ArenaEditor() {
       actor_assets: assetEdits,
       script_vars: varEdits,
       script_var_ids: varIdEdits,
+      script_var_strings: Object.fromEntries(
+        Object.entries(textEdits)
+          .filter(([, t]) => t.trim() !== "")
+          .map(([v, t]) => [v, toGameText(t)]),
+      ),
       clone_waves: cloneRequests,
+      wave_messages: messages,
+      remove_messages: removed,
+      victory_text: victoryText(),
+      victory_style: victoryStyle ?? (data?.victory?.replaced ? data.victory.style : "banner"),
     });
   }
 
@@ -579,6 +726,167 @@ export default function ArenaEditor() {
     });
   }
 
+  function addMessage(wave: number, canStart: boolean) {
+    const key = `new${++messageSeq.current}`;
+    const draft: MessageDraft = canStart
+      ? { key, wave, when: "start", style: "banner", text: "", duration: 4, delay: START_DELAY }
+      : { key, wave, when: "cleared", style: "help", text: "", duration: 4, delay: 0 };
+    setMessageDrafts((prev) => ({ ...prev, [key]: draft }));
+  }
+
+  function updateMessage(d: MessageDraft, patch: Partial<MessageDraft>) {
+    setMessageDrafts((prev) => ({ ...prev, [d.key]: { ...d, ...patch } }));
+  }
+
+  /**
+   * Stock HUD after a clear: "Wave N complete" at +1 s, the 3-2-1 countdown,
+   * then "Wave N+1" — so cleared messages default to the help box, and start
+   * messages wait for the "Wave N" banner to go.
+   */
+  function changeWhen(d: MessageDraft, when: MessageWhen) {
+    updateMessage(
+      d,
+      when === "cleared"
+        ? { when, style: "help", delay: 0 }
+        : { when, delay: d.delay || START_DELAY },
+    );
+  }
+
+  function removeMessage(d: MessageDraft) {
+    setMessageDrafts((prev) => {
+      const next = { ...prev };
+      delete next[d.key];
+      return next;
+    });
+    if (d.node !== undefined) setRemovedMessages((prev) => [...prev, d.node as number]);
+  }
+
+  function renderMessages(
+    wave: number,
+    existing: WaveMessage[],
+    canStart: boolean,
+    canCleared: boolean,
+  ) {
+    const rows: MessageDraft[] = existing
+      .filter((m) => !removedMessages.includes(m.node))
+      .map(
+        (m) =>
+          messageDrafts[`n${m.node}`] ?? {
+            key: `n${m.node}`,
+            node: m.node,
+            wave: m.wave,
+            when: m.when,
+            style: m.style,
+            text: fromGameText(m.text),
+            duration: m.duration,
+            delay: m.delay,
+          },
+      );
+    for (const d of Object.values(messageDrafts)) {
+      if (d.node === undefined && d.wave === wave) rows.push(d);
+    }
+    if (!canStart && !canCleared && rows.length === 0) return null;
+
+    return (
+      <div className={styles.msgBlock}>
+        <div className={styles.msgHead}>
+          <span className={styles.msgLabel}>HUD messages</span>
+          <span className={styles.spacer} />
+          {(canStart || canCleared) && (
+            <button
+              className={styles.cloneBtn}
+              onClick={() => addMessage(wave, canStart)}
+              title="Show your own text on the HUD during this wave"
+            >
+              + Message
+            </button>
+          )}
+        </div>
+        {rows.length > 0 && (
+          <div className={`${styles.msgRow} ${styles.msgCols}`}>
+            <span>When</span>
+            <span>Style</span>
+            <span>Text</span>
+            <span className={styles.alignRight}>Delay s</span>
+            <span className={styles.alignRight}>Shown s</span>
+            <span />
+          </div>
+        )}
+        {rows.map((d) => {
+          const dirty = d.key in messageDrafts;
+          return (
+            <div className={styles.msgRow} key={d.key}>
+              <select
+                className={styles.fromSelect}
+                value={d.when}
+                onChange={(e) => changeWhen(d, e.target.value as MessageWhen)}
+              >
+                {(canStart || d.when === "start") && <option value="start">When it starts</option>}
+                {(canCleared || d.when === "cleared") && (
+                  <option value="cleared">When it&apos;s cleared</option>
+                )}
+              </select>
+              <select
+                className={`${styles.fromSelect} ${
+                  d.when === "cleared" && CENTRE_STYLES.includes(d.style)
+                    ? styles.fromSelectWarn
+                    : ""
+                }`}
+                value={d.style}
+                onChange={(e) => updateMessage(d, { style: e.target.value as MessageStyle })}
+                title={
+                  d.when === "cleared" && CENTRE_STYLES.includes(d.style)
+                    ? "A centre-screen style here collides with the stock “Wave complete” banner and countdown — the help box doesn't"
+                    : "Banner is the big centred FIGHT! style; help box is the smaller tip panel"
+                }
+              >
+                <StyleOptions />
+              </select>
+              <input
+                className={`${styles.msgText} ${dirty ? styles.msgTextDirty : ""}`}
+                value={d.text}
+                maxLength={160}
+                placeholder={d.node === undefined ? "Text to show…" : "Empty removes this message"}
+                onChange={(e) => updateMessage(d, { text: e.target.value })}
+              />
+              <input
+                className={styles.numInput}
+                type="number"
+                min={0}
+                max={60}
+                step={0.5}
+                value={d.delay}
+                title="Delay: seconds after the trigger before the message appears"
+                onChange={(e) =>
+                  updateMessage(d, { delay: Math.max(0, Number(e.target.value) || 0) })
+                }
+              />
+              <input
+                className={styles.numInput}
+                type="number"
+                min={1}
+                max={30}
+                step={0.5}
+                value={d.duration}
+                title="Seconds on screen"
+                onChange={(e) =>
+                  updateMessage(d, { duration: Math.max(0.5, Number(e.target.value) || 4) })
+                }
+              />
+              <button
+                className={styles.msgRemove}
+                onClick={() => removeMessage(d)}
+                title="Remove message"
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   /** Wave size with any pending `NumSpawns` edits folded in. */
   function waveTotal(w: ArenaWave) {
     return w.spawners.reduce((sum, s) => {
@@ -748,8 +1056,122 @@ export default function ArenaEditor() {
                     <strong>Duplicate</strong> copies the whole wave and runs the copies straight
                     after it. Reload the zone afterwards to tune them.
                   </p>
+                  <p>
+                    <strong>HUD messages</strong> show your own text when a wave starts or once
+                    its last enemy is down. The text is displayed as typed; a game localization
+                    key such as <code>HUD_BANNER_ARENA_FIGHT</code> shows that key&apos;s line
+                    instead. Copies of a wave carry its messages.
+                  </p>
+                  <p>
+                    The stock HUD runs on a fixed clock: 1 s after a wave is cleared comes
+                    &ldquo;Wave N complete&rdquo;, then the 3‑2‑1 countdown, then &ldquo;Wave
+                    N+1&rdquo;. Start messages therefore wait {START_DELAY} s by default, and
+                    cleared messages use the help box, which sits clear of the banners.
+                  </p>
+                  <p>
+                    <strong>Styles</strong> are the HUD&apos;s message slots. Banner, Help box and
+                    Arena wave banner show your text; Stock Victory! always draws the game&apos;s
+                    own Victory graphic whatever you type. The untested ones are there to try.
+                  </p>
                 </details>
                 <div className={styles.waveList}>
+                  {(data.texts.length > 0 || data.victory) && (
+                    <section className={styles.waveCard}>
+                      <header className={styles.waveHead}>
+                        <h4>Challenge text</h4>
+                        <span className={styles.muted}>
+                          a loc key, or your own text — \n for a line break
+                        </span>
+                      </header>
+                      {data.texts.map((t) => {
+                        const edited = textEdits[t.var];
+                        return (
+                          <div className={styles.textRow} key={t.key}>
+                            <span className={styles.templateName}>{t.label}</span>
+                            <input
+                              className={`${styles.msgText} ${
+                                edited !== undefined ? styles.msgTextDirty : ""
+                              }`}
+                              value={edited ?? fromGameText(t.value)}
+                              placeholder={t.value}
+                              maxLength={160}
+                              onChange={(e) => {
+                                const next = e.target.value;
+                                setTextEdits((prev) => {
+                                  const copy = { ...prev };
+                                  if (next === fromGameText(t.value)) delete copy[t.var];
+                                  else copy[t.var] = next;
+                                  return copy;
+                                });
+                              }}
+                            />
+                            {edited !== undefined ? (
+                              <button
+                                className={styles.msgRemove}
+                                title={`Revert to ${t.value}`}
+                                onClick={() =>
+                                  setTextEdits((prev) => {
+                                    const copy = { ...prev };
+                                    delete copy[t.var];
+                                    return copy;
+                                  })
+                                }
+                              >
+                                ↺
+                              </button>
+                            ) : (
+                              <span />
+                            )}
+                          </div>
+                        );
+                      })}
+                      {data.victory && (
+                        <div className={styles.victoryRow}>
+                          <span className={styles.templateName}>Victory banner</span>
+                          <input
+                            className={`${styles.msgText} ${
+                              victoryEdit !== undefined ? styles.msgTextDirty : ""
+                            }`}
+                            value={
+                              victoryEdit ??
+                              (data.victory.replaced ? fromGameText(data.victory.text) : "")
+                            }
+                            placeholder="Victory! — stock HUD text; type to replace it"
+                            title="The stock banner takes no text, so saving swaps it for a HUD message at the same moment"
+                            maxLength={160}
+                            onChange={(e) => setVictoryEdit(e.target.value)}
+                          />
+                          <select
+                            className={`${styles.fromSelect} ${
+                              victoryStyle !== undefined ? styles.fromSelectDirty : ""
+                            }`}
+                            value={
+                              victoryStyle ??
+                              (data.victory.replaced ? data.victory.style : "banner")
+                            }
+                            onChange={(e) => setVictoryStyle(e.target.value as MessageStyle)}
+                            title="How the replacement message is drawn"
+                          >
+                            <StyleOptions />
+                          </select>
+                          {victoryEdit !== undefined || victoryStyle !== undefined ? (
+                            <button
+                              className={styles.msgRemove}
+                              title="Discard this change"
+                              onClick={() => {
+                                setVictoryEdit(undefined);
+                                setVictoryStyle(undefined);
+                              }}
+                            >
+                              ↺
+                            </button>
+                          ) : (
+                            <span />
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  )}
                   {data.waves.map((w) => (
                     <section className={styles.waveCard} key={w.number}>
                       <header className={styles.waveHead}>
@@ -888,6 +1310,12 @@ export default function ArenaEditor() {
                       {w.spawners.length === 0 && (
                         <p className={styles.emptyText}>No spawners bound to this wave.</p>
                       )}
+                      {renderMessages(
+                        w.number,
+                        w.messages,
+                        w.can_message_start,
+                        w.can_message_cleared,
+                      )}
                       {w.signals.length > 0 && (
                         <details className={styles.signals}>
                           <summary>{w.signals.length} signals</summary>
@@ -905,26 +1333,44 @@ export default function ArenaEditor() {
                   {data.waves.length === 0 && (
                     <p className={styles.emptyText}>No waves found in this zone.</p>
                   )}
-                  {cloneRequests.map((c, i) => (
-                    <div className={styles.waveCard} key={`clone-${i}`}>
-                      <div className={styles.waveHead}>
-                        <h4>Wave {c.new_number}</h4>
-                        <span className={styles.waveTotal}>copy of wave {c.source}</span>
-                        <span className={styles.spacer} />
-                        <button
-                          className={styles.cloneBtn}
-                          onClick={() =>
-                            setCloneRequests((prev) => prev.filter((_, k) => k !== i))
-                          }
-                        >
-                          Remove
-                        </button>
+                  {cloneRequests.map((c, i) => {
+                    const src = data.waves.find((w) => w.number === c.source);
+                    return (
+                      <div className={styles.waveCard} key={`clone-${i}`}>
+                        <div className={styles.waveHead}>
+                          <h4>Wave {c.new_number}</h4>
+                          <span className={styles.waveTotal}>copy of wave {c.source}</span>
+                          <span className={styles.spacer} />
+                          <button
+                            className={styles.cloneBtn}
+                            onClick={() => {
+                              setCloneRequests((prev) => prev.filter((_, k) => k !== i));
+                              setMessageDrafts((prev) =>
+                                Object.fromEntries(
+                                  Object.entries(prev).filter(
+                                    ([, d]) => d.node !== undefined || d.wave !== c.new_number,
+                                  ),
+                                ),
+                              );
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <p className={styles.emptyText}>
+                          Created on save — reload the zone afterwards to tune it.
+                          {src && src.messages.length > 0 &&
+                            ` Carries wave ${c.source}'s ${src.messages.length} message(s).`}
+                        </p>
+                        {renderMessages(
+                          c.new_number,
+                          [],
+                          src?.can_message_start ?? false,
+                          src?.can_message_cleared ?? false,
+                        )}
                       </div>
-                      <p className={styles.emptyText}>
-                        Created on save — reload the zone afterwards to tune it.
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </>
             )}

@@ -84,6 +84,28 @@ pub struct ArenaWave {
     pub signals: Vec<String>,
     pub spawners: Vec<ArenaSpawner>,
     pub total: f64,
+    pub messages: Vec<zone_mod::WaveMessage>,
+    /// Whether a message can hook this wave's start / its all-dead check.
+    pub can_message_start: bool,
+    pub can_message_cleared: bool,
+}
+
+/// A string the zone hands to the HUD — the title card or the victory banner.
+#[derive(serde::Serialize)]
+pub struct ArenaText {
+    pub key: String,
+    pub label: String,
+    /// String var holding the text (a loc key or literal).
+    pub var: usize,
+    pub value: String,
+}
+
+/// The victory banner: stock (words from the HUD) until swapped for a message.
+#[derive(serde::Serialize)]
+pub struct ArenaVictory {
+    pub replaced: bool,
+    pub text: String,
+    pub style: zone_mod::MessageStyle,
 }
 
 #[derive(serde::Serialize)]
@@ -92,6 +114,8 @@ pub struct ArenaZoneData {
     pub action_count: usize,
     pub actor_count: usize,
     pub waves: Vec<ArenaWave>,
+    pub texts: Vec<ArenaText>,
+    pub victory: Option<ArenaVictory>,
     pub node_type_counts: Vec<(String, usize)>,
     pub actor_groups: Vec<String>,
     pub script_priuses: Vec<ArenaPrius>,
@@ -214,6 +238,15 @@ pub async fn read_arena_zone(zone_path: String) -> Result<ArenaZoneData, Toolkit
         action_count: zone.actions.len(),
         actor_count: zone.actors.len(),
         waves: detect_waves(&zone),
+        texts: challenge_texts(&zone),
+        victory: zone.has_victory_banner().then(|| match zone.victory_text() {
+            Some((text, style)) => ArenaVictory { replaced: true, text, style },
+            None => ArenaVictory {
+                replaced: false,
+                text: String::new(),
+                style: zone_mod::MessageStyle::Banner,
+            },
+        }),
         node_type_counts,
         actor_groups: string_list(&zone, crate::core::zone::TAG_ACTOR_GROUP_NAMES),
         script_priuses,
@@ -345,6 +378,40 @@ fn is_enemy(path: &str, instances: &[String]) -> bool {
             .any(|n| n.to_ascii_lowercase().starts_with("enm_"))
 }
 
+/// Every challenge copies a string var into the global `Challenge_Title`
+/// before the intro card. (`Challenge_Win_Text` is set on victory too, but
+/// the banner players see comes from `UIArenaRewardAction` instead.)
+fn challenge_texts(zone: &Zone) -> Vec<ArenaText> {
+    const TARGETS: [(&str, &str, &str); 1] = [("Challenge_Title", "title", "Challenge title")];
+    let mut out: Vec<ArenaText> = Vec::new();
+    for action in &zone.actions {
+        if zone.action_type(action) != "SetStringAction" {
+            continue;
+        }
+        let (Some(target), Some(value)) = (zone.param(action, "Target"), zone.param(action, "Value"))
+        else {
+            continue;
+        };
+        let name = zone.var_name(target.index as usize).unwrap_or_default();
+        let Some((_, key, label)) = TARGETS.iter().find(|(n, _, _)| *n == name) else {
+            continue;
+        };
+        let var = value.index as usize;
+        if out.iter().any(|t| t.key == *key) {
+            continue;
+        }
+        if let Some(text) = zone.string_value(var) {
+            out.push(ArenaText {
+                key: key.to_string(),
+                label: label.to_string(),
+                var,
+                value: text.to_string(),
+            });
+        }
+    }
+    out
+}
+
 /// Waves are named by their signal relays (`wave_03_A_start`) and by the actor
 /// group each spawner writes into (`wave_03_enemies`), so the wave set comes
 /// from the numbers those names carry.
@@ -376,6 +443,11 @@ fn detect_waves(zone: &Zone) -> Vec<ArenaWave> {
         spawners.entry(number).or_default().push(spawner);
     }
 
+    let mut messages: BTreeMap<u32, Vec<zone_mod::WaveMessage>> = BTreeMap::new();
+    for m in zone.wave_messages() {
+        messages.entry(m.wave).or_default().push(m);
+    }
+
     let numbers: std::collections::BTreeSet<u32> =
         signals.keys().chain(spawners.keys()).copied().collect();
     numbers
@@ -391,6 +463,10 @@ fn detect_waves(zone: &Zone) -> Vec<ArenaWave> {
                 signals: sig,
                 spawners: list,
                 total,
+                messages: messages.remove(&number).unwrap_or_default(),
+                can_message_start: zone.has_message_trigger(number, zone_mod::MessageWhen::Start),
+                can_message_cleared: zone
+                    .has_message_trigger(number, zone_mod::MessageWhen::Cleared),
             }
         })
         .collect()
