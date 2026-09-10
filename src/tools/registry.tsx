@@ -5,6 +5,7 @@ import { TbHexagon3D, TbListSearch } from "react-icons/tb";
 import { MdTexture, MdOutlinePalette } from "react-icons/md";
 import { PiImageSquareBold } from "react-icons/pi";
 import { VscJson } from "react-icons/vsc";
+import { GiSwordsPower } from "react-icons/gi";
 
 export interface ToolDefinition {
   id: string;
@@ -103,6 +104,14 @@ export const TOOLS: ToolDefinition[] = [
     path: "/tools/atmosphere-editor",
     icon: <RiCloudyLine />,
     category: "misc",
+  },
+  {
+    id: "arena-editor",
+    label: "Arena Editor",
+    description: "Retune Zurkie's arena challenges and swap the enemies they spawn",
+    path: "/tools/arena-editor",
+    icon: <GiSwordsPower />,
+    category: "config",
   },
   {
     id: "zonelightbin-module",

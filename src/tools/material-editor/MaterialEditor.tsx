@@ -5,6 +5,7 @@ import { useSettings } from "../../contexts/SettingsContext";
 import FilePickerInput from "../../components/shared/FilePickerInput";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
+import { deriveStagerTarget } from "../../utils/stagerTarget";
 import styles from "./MaterialEditor.module.css";
 
 const MATERIAL_FILTER = [{ name: "Insomniac Material", extensions: ["material"] }];
@@ -609,9 +610,7 @@ export default function MaterialEditor() {
       {sendToStager && (
         <SendToStagerModal
           sourceFile={sendToStager}
-          defaultTargetPath={
-            assetPath ? `0/${assetPath}` : `0/${sendToStager.split(/[\\/]/).pop()}`
-          }
+          defaultTargetPath={deriveStagerTarget(sendToStager, assetPath)}
           onClose={() => setSendToStager(null)}
           onSent={(proj) => {
             setSendToStager(null);

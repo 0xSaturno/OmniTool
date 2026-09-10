@@ -85,6 +85,16 @@ name = "model_dump"
 path = "src/bin/model_dump.rs"
 required-features = ["dev-tools"]
 
+[[bin]]
+name = "arena_dump"
+path = "src/bin/arena_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "zone_probe"
+path = "src/bin/zone_probe.rs"
+required-features = ["dev-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

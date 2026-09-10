@@ -1,6 +1,7 @@
 pub mod core;
 pub mod tools;
 mod commands;
+pub mod commands_arena;
 pub mod commands_model_inspector;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -51,6 +52,9 @@ pub fn run() {
             commands::extract_to_temp,
             commands::import_file_to_project,
             commands::download_hashes,
+            commands_arena::read_arena_zone,
+            commands_arena::write_arena_zone,
+            commands_arena::verify_arena_zone_roundtrip,
             commands::read_zonelightbin,
             commands::write_zonelightbin_sections,
             commands::diff_zonelightbin,

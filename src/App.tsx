@@ -9,6 +9,7 @@ import MaterialEditor from "./tools/material-editor/MaterialEditor";
 import Stager from "./tools/stager/Stager";
 import ConfigEditor from "./tools/config-editor/ConfigEditor";
 import AtmosphereEditor from "./tools/atmosphere-editor/AtmosphereEditor";
+import ArenaEditor from "./tools/arena-editor/ArenaEditor";
 import ZoneLightBinModule from "./tools/zonelightbin-module/ZoneLightBinModule";
 import TextureConverter from "./tools/texture-converter/TextureConverter";
 import SettingsModal from "./components/shared/SettingsModal";
@@ -27,6 +28,7 @@ const TOOL_PATHS = [
   "/tools/stager",
   "/tools/config-editor",
   "/tools/atmosphere-editor",
+  "/tools/arena-editor",
   "/tools/zonelightbin-module",
   "/tools/wwise-patcher",
   "/tools/bnk-explorer",
@@ -74,6 +76,9 @@ export default function App() {
           </div>
           <div style={{ display: show("/tools/atmosphere-editor", pathname) }}>
             <AtmosphereEditor />
+          </div>
+          <div style={{ display: show("/tools/arena-editor", pathname) }}>
+            <ArenaEditor />
           </div>
           <div style={{ display: show("/tools/wwise-patcher", pathname) }}>
             <WwisePatcher />

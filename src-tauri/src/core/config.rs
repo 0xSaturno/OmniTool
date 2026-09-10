@@ -424,7 +424,7 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
     for path in &ref_paths {
         let asset_id = crc64::hash(path);
         let str_off = get_or_add_string_offset(dat1, path);
-        let ext_hash = compute_extension_hash(path);
+        let ext_hash = extension_hash(path);
         refs_buf.extend_from_slice(&asset_id.to_le_bytes());
         refs_buf.extend_from_slice(&str_off.to_le_bytes());
         refs_buf.extend_from_slice(&ext_hash.to_le_bytes());
@@ -554,7 +554,7 @@ fn push_unique(s: &str, out: &mut Vec<String>, seen: &mut HashSet<String>) {
 }
 
 /// CRC32 of the lowercase file extension, *including* the leading dot.
-fn compute_extension_hash(path: &str) -> u32 {
+pub fn extension_hash(path: &str) -> u32 {
     let lower = path.to_ascii_lowercase();
     let dot = lower.rfind('.');
     let ext = match dot {
@@ -1612,7 +1612,7 @@ fn infer_type_and_count(v: &Value) -> (u8, usize) {
 // `ArrayKind = None`; otherwise a JSON array of N elements.
 // ---------------------------------------------------------------------------
 
-fn ddl_object_to_typed_json(obj: &ddl::DdlObject) -> Value {
+pub fn ddl_object_to_typed_json(obj: &ddl::DdlObject) -> Value {
     let mut map = serde_json::Map::new();
     for &id in &obj.field_order {
         let Some(field) = obj.fields.get(&id) else {
@@ -1665,7 +1665,7 @@ fn ddl_value_to_json(v: &ddl::DdlValue) -> Value {
     }
 }
 
-fn typed_json_to_ddl_object(v: &Value) -> Result<ddl::DdlObject> {
+pub fn typed_json_to_ddl_object(v: &Value) -> Result<ddl::DdlObject> {
     let map = v
         .as_object()
         .ok_or_else(|| ToolkitError::Parse("expected JSON object for DDL".into()))?;
