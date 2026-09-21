@@ -2,6 +2,7 @@ pub mod core;
 pub mod tools;
 mod commands;
 pub mod commands_arena;
+pub mod commands_arena_graph;
 pub mod commands_model_inspector;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,9 +24,7 @@ pub fn run() {
             commands::save_material,
             commands::material_hash_name,
             commands::get_app_dir,
-            commands::get_hashes_path,
-            commands::hashes_exist,
-            commands::load_hashes,
+            commands::load_asset_names,
             commands::load_toc,
             commands::list_toc_assets,
             commands::extract_asset_to_project,
@@ -51,10 +50,11 @@ pub fn run() {
             commands::write_atmosphere,
             commands::extract_to_temp,
             commands::import_file_to_project,
-            commands::download_hashes,
             commands_arena::read_arena_zone,
             commands_arena::write_arena_zone,
             commands_arena::verify_arena_zone_roundtrip,
+            commands_arena::preview_arena_clones,
+            commands_arena_graph::read_arena_graph,
             commands::read_zonelightbin,
             commands::write_zonelightbin_sections,
             commands::diff_zonelightbin,

@@ -8,6 +8,31 @@ import FilePickerInput from "../../components/shared/FilePickerInput";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import { deriveStagerTarget } from "../../utils/stagerTarget";
+import ArenaFlowView from "./ArenaFlowView";
+import ArenaGraphView from "./ArenaGraphView";
+import {
+  CENTRE_STYLES,
+  START_DELAY,
+  SPAWNABLE_STYLES,
+  STYLE_LABELS,
+  StyleOptions,
+  botSummary,
+  fromGameText,
+  isTyped,
+  parseTypedSafe,
+  toGameText,
+  type ArenaEditApi,
+  type ArenaPrius,
+  type ArenaSpawner,
+  type ArenaWave,
+  type ArenaZoneData,
+  type BlobKind,
+  type MessageDraft,
+  type MessageStyle,
+  type MessageWhen,
+  type Typed,
+  type WaveMessage,
+} from "./arenaModel";
 import styles from "./ArenaEditor.module.css";
 
 const ZONE_FILTER = [{ name: "Zone", extensions: ["zone"] }];
@@ -68,27 +93,6 @@ function softWrap(name: string) {
   return name.replace(/(?<=[a-z0-9])(?=[A-Z])/g, "​");
 }
 
-/** Pull the couple of bot fields worth showing without expanding the card. */
-function botSummary(blob: ArenaPrius): string[] {
-  const json = parseTypedSafe(blob.json) as Record<string, unknown>;
-  const dig = (path: string[]): unknown => {
-    let cur: unknown = json;
-    for (const seg of path) {
-      const entry = (cur as Record<string, Typed> | undefined)?.[seg];
-      if (!entry) return undefined;
-      cur = entry.Value;
-    }
-    return cur;
-  };
-  const out: string[] = [];
-  const health = dig(["BotBaseData", "Health"]);
-  if (typeof health === "number") out.push(`${health} HP`);
-  const pool = dig(["BotData", "AttackJobPool"]);
-  if (typeof pool === "string") out.push(pool.replace(/^k/, ""));
-  if (dig(["BotData", "OneHitDeath"]) === true) out.push("one-hit");
-  return out;
-}
-
 /** Number of editable leaves in a parsed prius, for the collapsed summary. */
 function countLeaves(parsed: Record<string, Typed>): number {
   let n = 0;
@@ -109,211 +113,7 @@ function friendlyBlobName(label: string) {
   return named.join(" / ");
 }
 
-const STYLE_ORDER = ["volume", "portal", "animclue", "static"];
-
-const STYLE_LABELS: Record<string, string> = {
-  volume: "Spawn volumes — enemy just appears",
-  portal: "Rift portals — enemy needs a portal entry animation",
-  animclue: "Anim clues — enemy plays a scripted entry",
-  static: "Generic static volumes — also used for triggers and bounce pads",
-};
-
-interface ArenaPrius {
-  id: number;
-  label: string;
-  owners: string[];
-  json: string;
-  size: number;
-}
-
-interface ArenaActorAsset {
-  index: number;
-  path: string;
-  asset_id: string;
-  instances: string[];
-  is_enemy: boolean;
-  prius_ids: number[];
-}
-
-interface ArenaAssetRef {
-  index: number;
-  path: string;
-  asset_id: string;
-  ext_hash: string;
-}
-
-interface ArenaSpawnBinding {
-  var: number;
-  kind: "actor" | "group" | "unresolved";
-  id: string;
-  label: string;
-  asset: string;
-  style: string;
-  via: string;
-}
-
-interface ArenaSpawnTarget {
-  id: string;
-  kind: "actor" | "group";
-  label: string;
-  asset: string;
-  count: number;
-  style: string;
-}
-
-interface ArenaSpawner {
-  node: number;
-  template: string;
-  num_spawns: number | null;
-  num_spawns_var: number | null;
-  max_simultaneous: number | null;
-  prius_id: number | null;
-  groups: string[];
-  locations: ArenaSpawnBinding[];
-}
-
-type MessageWhen = "start" | "cleared";
-/** One per HUD message slot (`MessageType`), plus the help box. */
-type MessageStyle =
-  | "banner"
-  | "help"
-  | "wave"
-  | "victory"
-  | "generic"
-  | "pickup"
-  | "collectible"
-  | "location"
-  | "planet"
-  | "corner"
-  | "tutorial";
-
-const STYLE_TEXT: Record<MessageStyle, string> = {
-  banner: "Banner",
-  help: "Help box",
-  wave: "Arena wave banner",
-  victory: "Stock Victory! (text ignored)",
-  generic: "Generic",
-  pickup: "Pickup",
-  collectible: "Collectible",
-  location: "Location",
-  planet: "Planet",
-  corner: "Corner",
-  tutorial: "Tutorial",
-};
-
-const STYLE_GROUPS: { label: string; styles: MessageStyle[] }[] = [
-  { label: "Tested in game", styles: ["banner", "help", "wave", "victory"] },
-  {
-    label: "Untested",
-    styles: ["generic", "pickup", "collectible", "location", "planet", "corner", "tutorial"],
-  },
-];
-
-/** Centre-screen styles that collide with the stock between-wave banners. */
-const CENTRE_STYLES: MessageStyle[] = ["banner", "wave", "victory"];
-
-function StyleOptions() {
-  return (
-    <>
-      {STYLE_GROUPS.map((g) => (
-        <optgroup key={g.label} label={g.label}>
-          {g.styles.map((s) => (
-            <option key={s} value={s}>
-              {STYLE_TEXT[s]}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </>
-  );
-}
-
-interface ArenaVictory {
-  replaced: boolean;
-  text: string;
-  style: MessageStyle;
-}
-
-interface WaveMessage {
-  node: number;
-  wave: number;
-  when: MessageWhen;
-  style: MessageStyle;
-  text: string;
-  duration: number;
-  delay: number;
-  prius_id: number | null;
-}
-
-/** A message as edited in the UI; `node` is set for ones already in the zone. */
-interface MessageDraft {
-  key: string;
-  node?: number;
-  wave: number;
-  when: MessageWhen;
-  style: MessageStyle;
-  text: string;
-  duration: number;
-  delay: number;
-}
-
-interface ArenaText {
-  key: string;
-  label: string;
-  var: number;
-  value: string;
-}
-
-/// Seconds a start message waits so the stock "Wave N" banner has cleared.
-const START_DELAY = 3;
-
-/** HUD text is typed on one line; `\n` stands for a line break. */
-const toGameText = (s: string) => s.replace(/\\n/g, "\n");
-const fromGameText = (s: string) => s.replace(/\n/g, "\\n");
-
-interface ArenaWave {
-  number: number;
-  signals: string[];
-  spawners: ArenaSpawner[];
-  total: number;
-  messages: WaveMessage[];
-  can_message_start: boolean;
-  can_message_cleared: boolean;
-}
-
-interface ArenaZoneData {
-  zone_name: string;
-  action_count: number;
-  actor_count: number;
-  waves: ArenaWave[];
-  texts: ArenaText[];
-  victory: ArenaVictory | null;
-  node_type_counts: [string, number][];
-  actor_groups: string[];
-  script_priuses: ArenaPrius[];
-  actor_priuses: ArenaPrius[];
-  actor_assets: ArenaActorAsset[];
-  model_names: string[];
-  asset_refs: ArenaAssetRef[];
-  spawn_targets: ArenaSpawnTarget[];
-}
-
-type Typed = { Type: string; ArrayKind?: string; Value: unknown };
-type BlobKind = "script" | "actor";
 type PatchMap = Record<string, Record<string, unknown>>;
-
-/** Quote 16+ digit integers so 64-bit ids survive `JSON.parse` for display. */
-function parseTypedSafe(text: string): Record<string, Typed> {
-  try {
-    return JSON.parse(text.replace(/("Value":\s*)(-?\d{16,})/g, '$1"$2"'));
-  } catch {
-    return {};
-  }
-}
-
-function isTyped(v: unknown): v is Typed {
-  return typeof v === "object" && v !== null && "Type" in v && "Value" in v;
-}
 
 export default function ArenaEditor() {
   const location = useLocation();
@@ -321,10 +121,11 @@ export default function ArenaEditor() {
   const [outPath, setOutPath] = useState("");
   const [overwriteInput, setOverwriteInput] = useState(false);
   const [data, setData] = useState<ArenaZoneData | null>(null);
-  const [tab, setTab] = useState<"waves" | "pacing" | "enemies" | "raw">("waves");
+  const [tab, setTab] = useState<"waves" | "pacing" | "enemies" | "graph" | "raw">("waves");
   const [showAllPacing, setShowAllPacing] = useState(false);
   const [pacingSearch, setPacingSearch] = useState("");
   const [showAllAssets, setShowAllAssets] = useState(false);
+  const [graphMode, setGraphMode] = useState<"easy" | "advanced">("easy");
 
   const [patches, setPatches] = useState<PatchMap>({});
   const [rawEdits, setRawEdits] = useState<Record<string, string>>({});
@@ -338,6 +139,11 @@ export default function ArenaEditor() {
     { source: number; new_number: number }[]
   >([]);
   const [cloneCounts, setCloneCounts] = useState<Record<number, number>>({});
+  /** The zone as read from disk; `data` is this plus any previewed copies. */
+  const [baseData, setBaseData] = useState<ArenaZoneData | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  /** Copies whose source edits have already been carried over. */
+  const seeded = useRef(new Set<number>());
   const [messageDrafts, setMessageDrafts] = useState<Record<string, MessageDraft>>({});
   const [removedMessages, setRemovedMessages] = useState<number[]>([]);
   const messageSeq = useRef(0);
@@ -378,12 +184,14 @@ export default function ArenaEditor() {
     setRemovedMessages([]);
     setRawSelected(null);
     setRawError("");
+    seeded.current.clear();
   }, []);
 
   const handleZonePathChange = useCallback(
     (p: string) => {
       setZonePath(p);
       setData(null);
+      setBaseData(null);
       resetEdits();
       setLog([]);
     },
@@ -397,11 +205,13 @@ export default function ArenaEditor() {
     }
     setRunning(true);
     setData(null);
+    setBaseData(null);
     resetEdits();
     setLog([]);
     try {
       pushLog("info", `Reading ${zonePath} …`);
       const result = await invoke<ArenaZoneData>("read_arena_zone", { zonePath });
+      setBaseData(result);
       setData(result);
       pushLog(
         "success",
@@ -416,6 +226,117 @@ export default function ArenaEditor() {
     } finally {
       setRunning(false);
     }
+  }
+
+  // Copies are applied in memory by the backend so they show up as real,
+  // editable waves; saving applies them the same way, so indices match.
+  useEffect(() => {
+    if (!baseData) return;
+    if (cloneRequests.length === 0) {
+      setData(baseData);
+      return;
+    }
+    let live = true;
+    setPreviewing(true);
+    invoke<ArenaZoneData>("preview_arena_clones", {
+      zonePath,
+      clonesJson: JSON.stringify(cloneRequests),
+    })
+      .then((result) => {
+        if (!live) return;
+        setData(result);
+        seedCopies(result);
+      })
+      .catch((e) => live && pushLog("error", `Could not preview the wave copy: ${e}`))
+      .finally(() => live && setPreviewing(false));
+    return () => {
+      live = false;
+    };
+  }, [cloneRequests, baseData, zonePath]);
+
+  /**
+   * A new copy starts from the wave as currently edited: carry the source's
+   * pending edits over to the copy's own vars, blobs and messages once.
+   */
+  function seedCopies(result: ArenaZoneData) {
+    for (const info of result.clones) {
+      if (seeded.current.has(info.new_number)) continue;
+      seeded.current.add(info.new_number);
+      const src = result.waves.find((w) => w.number === info.source);
+      const copy = result.waves.find((w) => w.number === info.new_number);
+      if (!src || !copy) continue;
+      const pairs = src.spawners.flatMap((s, k) => (copy.spawners[k] ? [[s, copy.spawners[k]] as const] : []));
+
+      setVarEdits((prev) => {
+        const next = { ...prev };
+        for (const [s, c] of pairs) {
+          if (s.num_spawns_var !== null && c.num_spawns_var !== null && prev[s.num_spawns_var] !== undefined) {
+            next[c.num_spawns_var] = prev[s.num_spawns_var];
+          }
+        }
+        return next;
+      });
+      setVarIdEdits((prev) => {
+        const next = { ...prev };
+        const carry = (from: number | null, to: number | null) => {
+          if (from !== null && to !== null && prev[from] !== undefined) next[to] = prev[from];
+        };
+        for (const [s, c] of pairs) {
+          carry(s.template_var, c.template_var);
+          s.locations.forEach((b, k) => carry(b.var, c.locations[k]?.var ?? null));
+        }
+        return next;
+      });
+      setPatches((prev) => {
+        const next = { ...prev };
+        for (const [s, c] of pairs) {
+          const from = s.prius_id !== null ? prev[blobKey("script", s.prius_id)] : undefined;
+          if (from && c.prius_id !== null && c.prius_id !== s.prius_id) {
+            next[blobKey("script", c.prius_id)] = { ...from };
+          }
+        }
+        return next;
+      });
+      setMessageDrafts((prev) => {
+        const next = { ...prev };
+        for (const d of Object.values(prev)) {
+          if (d.node === undefined && d.wave === info.source) {
+            const key = `new${++messageSeq.current}`;
+            next[key] = { ...d, key, wave: info.new_number };
+          }
+        }
+        src.messages.forEach((m, k) => {
+          const d = prev[`n${m.node}`];
+          const cm = copy.messages[k];
+          if (d && cm && d.wave === info.source) {
+            next[`n${cm.node}`] = { ...d, key: `n${cm.node}`, node: cm.node, wave: info.new_number };
+          }
+        });
+        return next;
+      });
+      setRemovedMessages((prev) => [
+        ...prev,
+        ...src.messages.flatMap((m, k) =>
+          prev.includes(m.node) && copy.messages[k] ? [copy.messages[k].node] : [],
+        ),
+      ]);
+    }
+  }
+
+  /** The wave a pending copy was made from, if `number` is a copy. */
+  function cloneSourceOf(number: number): number | undefined {
+    return cloneRequests.find((c) => c.new_number === number)?.source;
+  }
+
+  /** Why a wave (or the wave a copy came from) can't be duplicated, if it can't. */
+  function cloneBlocker(number: number): string | null {
+    const source = cloneSourceOf(number) ?? number;
+    const wave = baseData?.waves.find((w) => w.number === source);
+    return wave ? wave.clone_warning : "not a wave in the loaded zone";
+  }
+
+  function canDuplicate(number: number) {
+    return cloneBlocker(number) === null;
   }
 
   const blobKey = (kind: BlobKind, id: number) => `${kind}:${id}`;
@@ -711,7 +632,9 @@ export default function ArenaEditor() {
    * Queue `count` duplications. Every copy is taken from the original wave —
    * the backend chains them onto each other so they still run in order.
    */
-  function queueClone(source: number, count: number) {
+  function queueClone(wave: number, count: number) {
+    const source = cloneSourceOf(wave) ?? wave;
+    if (!canDuplicate(source)) return;
     setCloneRequests((prev) => {
       let highest = Math.max(
         ...(data?.waves.map((w) => w.number) ?? [0]),
@@ -726,12 +649,37 @@ export default function ArenaEditor() {
     });
   }
 
-  function addMessage(wave: number, canStart: boolean) {
+  function addMessage(wave: number, when: MessageWhen) {
     const key = `new${++messageSeq.current}`;
-    const draft: MessageDraft = canStart
-      ? { key, wave, when: "start", style: "banner", text: "", duration: 4, delay: START_DELAY }
-      : { key, wave, when: "cleared", style: "help", text: "", duration: 4, delay: 0 };
+    const draft: MessageDraft =
+      when === "start"
+        ? { key, wave, when, style: "banner", text: "", duration: 4, delay: START_DELAY }
+        : { key, wave, when, style: "help", text: "", duration: 4, delay: 0 };
     setMessageDrafts((prev) => ({ ...prev, [key]: draft }));
+  }
+
+  /** A wave's messages: its own (as edited) plus any moved or added to it. */
+  function messageRows(wave: number, existing: WaveMessage[]): MessageDraft[] {
+    const own = existing
+      .filter((m) => !removedMessages.includes(m.node))
+      .map(
+        (m): MessageDraft =>
+          messageDrafts[`n${m.node}`] ?? {
+            key: `n${m.node}`,
+            node: m.node,
+            wave: m.wave,
+            when: m.when,
+            style: m.style,
+            text: fromGameText(m.text),
+            duration: m.duration,
+            delay: m.delay,
+          },
+      );
+    const ownKeys = new Set(own.map((d) => d.key));
+    const incoming = Object.values(messageDrafts).filter(
+      (d) => d.wave === wave && !ownKeys.has(d.key),
+    );
+    return [...own.filter((d) => d.wave === wave), ...incoming];
   }
 
   function updateMessage(d: MessageDraft, patch: Partial<MessageDraft>) {
@@ -767,24 +715,7 @@ export default function ArenaEditor() {
     canStart: boolean,
     canCleared: boolean,
   ) {
-    const rows: MessageDraft[] = existing
-      .filter((m) => !removedMessages.includes(m.node))
-      .map(
-        (m) =>
-          messageDrafts[`n${m.node}`] ?? {
-            key: `n${m.node}`,
-            node: m.node,
-            wave: m.wave,
-            when: m.when,
-            style: m.style,
-            text: fromGameText(m.text),
-            duration: m.duration,
-            delay: m.delay,
-          },
-      );
-    for (const d of Object.values(messageDrafts)) {
-      if (d.node === undefined && d.wave === wave) rows.push(d);
-    }
+    const rows = messageRows(wave, existing);
     if (!canStart && !canCleared && rows.length === 0) return null;
 
     return (
@@ -795,7 +726,7 @@ export default function ArenaEditor() {
           {(canStart || canCleared) && (
             <button
               className={styles.cloneBtn}
-              onClick={() => addMessage(wave, canStart)}
+              onClick={() => addMessage(wave, canStart ? "start" : "cleared")}
               title="Show your own text on the HUD during this wave"
             >
               + Message
@@ -893,6 +824,130 @@ export default function ArenaEditor() {
       const edited = s.num_spawns_var !== null ? varEdits[s.num_spawns_var] : undefined;
       return sum + (edited ?? s.num_spawns ?? 0);
     }, 0);
+  }
+
+  /** The enemy a spawner builds, following a pending template swap. */
+  function currentTemplate(s: ArenaSpawner): string {
+    const id = s.template_var !== null ? varIdEdits[s.template_var] : undefined;
+    if (!id) return s.template;
+    for (const a of data?.actor_assets ?? []) {
+      const k = a.instance_ids.indexOf(id);
+      if (k >= 0) return a.instances[k];
+    }
+    return s.template;
+  }
+
+  /**
+   * Remove the newest copy. Only the newest can go: removing an earlier one
+   * would shift every later copy's indices under its pending edits.
+   */
+  function removeLastClone() {
+    const gone = cloneRequests[cloneRequests.length - 1];
+    if (!gone) return;
+    const info = data?.clones.find((c) => c.new_number === gone.new_number);
+    setCloneRequests((prev) => prev.slice(0, -1));
+    seeded.current.delete(gone.new_number);
+    setMessageDrafts((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(
+          ([, d]) =>
+            d.wave !== gone.new_number && !(info && d.node !== undefined && d.node >= info.first_node),
+        ),
+      ),
+    );
+    if (!info) return;
+    const below = <T,>(rec: Record<number, T>, limit: number) =>
+      Object.fromEntries(Object.entries(rec).filter(([k]) => Number(k) < limit)) as Record<number, T>;
+    const ownBlob = (key: string) =>
+      key.startsWith("script:") && Number(key.slice("script:".length)) >= info.first_prius;
+    setVarEdits((prev) => below(prev, info.first_var));
+    setVarIdEdits((prev) => below(prev, info.first_var));
+    setPatches((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => !ownBlob(k))));
+    setRawEdits((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => !ownBlob(k))));
+    setRemovedMessages((prev) => prev.filter((n) => n < info.first_node));
+  }
+
+  /** Write a var-id edit, dropping it again when it matches the shipped value. */
+  function setVarId(varIndex: number, id: string, original: string | null) {
+    setVarIdEdits((prev) => {
+      const next = { ...prev };
+      if (id === original) delete next[varIndex];
+      else next[varIndex] = id;
+      return next;
+    });
+  }
+
+  function buildEditApi(d: ArenaZoneData): ArenaEditApi {
+    const title = d.texts.find((t) => t.key === "title");
+    return {
+      data: d,
+      numSpawns: (s) =>
+        (s.num_spawns_var !== null ? varEdits[s.num_spawns_var] : undefined) ?? s.num_spawns ?? 0,
+      setNumSpawns: (s, value) => {
+        if (s.num_spawns_var === null) return;
+        setVarEdits((prev) => ({ ...prev, [s.num_spawns_var as number]: value }));
+      },
+      bindingId: (b) => varIdEdits[b.var] ?? b.id,
+      setBinding: (b, id) => setVarId(b.var, id, b.id),
+      templateId: (s) =>
+        (s.template_var !== null ? varIdEdits[s.template_var] : undefined) ?? s.template_id,
+      setTemplate: (s, id) => {
+        if (s.template_var !== null) setVarId(s.template_var, id, s.template_id);
+      },
+      priusValue: (kind, id, path, fallback) => patchedValue(kind, id, path, fallback),
+      setPrius: (kind, id, path, value) => setPatch(kind, id, path, value),
+      assetPath: (a) => assetEdits[a.index] ?? a.path,
+      setAssetPath: (a, path) =>
+        setAssetEdits((prev) => {
+          const next = { ...prev };
+          if (path === a.path) delete next[a.index];
+          else next[a.index] = path;
+          return next;
+        }),
+      clones: cloneRequests,
+      previewing,
+      cloneSource: cloneSourceOf,
+      cloneBlocker,
+      queueClone,
+      isNewestClone: (n) => cloneRequests[cloneRequests.length - 1]?.new_number === n,
+      removeLastClone,
+      messageRows,
+      addMessage,
+      updateMessage,
+      moveMessage: (m, wave, when) => {
+        const defaults =
+          when === m.when
+            ? {}
+            : when === "cleared"
+              ? { style: CENTRE_STYLES.includes(m.style) ? ("help" as const) : m.style, delay: 0 }
+              : { delay: m.delay || START_DELAY };
+        updateMessage(m, { wave, when, ...defaults });
+      },
+      removeMessage,
+      isDirtyMessage: (m) => m.key in messageDrafts,
+      titleText: title
+        ? {
+            value: textEdits[title.var] ?? fromGameText(title.value),
+            edited: textEdits[title.var] !== undefined,
+            set: (v) =>
+              setTextEdits((prev) => {
+                const next = { ...prev };
+                if (v === fromGameText(title.value)) delete next[title.var];
+                else next[title.var] = v;
+                return next;
+              }),
+          }
+        : null,
+      victory: d.victory
+        ? {
+            text: victoryEdit ?? (d.victory.replaced ? fromGameText(d.victory.text) : ""),
+            style: victoryStyle ?? (d.victory.replaced ? d.victory.style : "banner"),
+            edited: victoryEdit !== undefined || victoryStyle !== undefined,
+            setText: setVictoryEdit,
+            setStyle: setVictoryStyle,
+          }
+        : null,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -995,7 +1050,7 @@ export default function ArenaEditor() {
             </span>
             <span className={styles.summaryStats}>
               {[
-                [data.waves.length + cloneRequests.length, "waves"],
+                [data.waves.length, "waves"],
                 [data.waves.reduce((n, w) => n + waveTotal(w), 0), "wave enemies"],
                 [data.actor_assets.filter((a) => a.is_enemy).length, "enemy assets"],
                 [data.action_count, "script nodes"],
@@ -1028,6 +1083,12 @@ export default function ArenaEditor() {
               Enemies
             </button>
             <button
+              className={`${styles.tab} ${tab === "graph" ? styles.tabActive : ""}`}
+              onClick={() => setTab("graph")}
+            >
+              Graph
+            </button>
+            <button
               className={`${styles.tab} ${tab === "raw" ? styles.tabActive : ""}`}
               onClick={() => setTab("raw")}
             >
@@ -1055,8 +1116,11 @@ export default function ArenaEditor() {
                     a swapped-in enemy spawns but never enters the arena.
                   </p>
                   <p>
-                    <strong>Duplicate</strong> copies the whole wave and runs the copies straight
-                    after it. Reload the zone afterwards to tune them.
+                    <strong>Duplicate</strong> copies the whole wave, as currently edited, and runs
+                    the copies straight after it. Copies are editable right away and independent
+                    of the original from then on. A copy takes the next free number, so the HUD
+                    calls a copy of wave 2 &ldquo;wave 6&rdquo;. Wave 1 can&apos;t be duplicated: it
+                    starts off the shared intro, so a copy would run alongside it.
                   </p>
                   <p>
                     <strong>HUD messages</strong> show your own text when a wave starts or once
@@ -1174,14 +1238,38 @@ export default function ArenaEditor() {
                       )}
                     </section>
                   )}
-                  {data.waves.map((w) => (
-                    <section className={styles.waveCard} key={w.number}>
+                  {data.waves.map((w) => {
+                    const copyOf = cloneSourceOf(w.number);
+                    const blocker = cloneBlocker(w.number);
+                    const newest = cloneRequests[cloneRequests.length - 1]?.new_number === w.number;
+                    return (
+                    <section
+                      className={`${styles.waveCard} ${copyOf !== undefined ? styles.waveCardCopy : ""}`}
+                      key={w.number}
+                    >
                       <header className={styles.waveHead}>
                         <h4>Wave {w.number}</h4>
+                        {copyOf !== undefined && (
+                          <span
+                            className={styles.copyTag}
+                            title={`Plays straight after wave ${copyOf}; the HUD calls it wave ${w.number}. Created on save.`}
+                          >
+                            copy of {copyOf}
+                          </span>
+                        )}
                         <span className={styles.waveTotal}>
                           {waveTotal(w)} enem{waveTotal(w) === 1 ? "y" : "ies"}
                         </span>
                         <span className={styles.spacer} />
+                        {newest && (
+                          <button
+                            className={styles.cloneBtn}
+                            onClick={removeLastClone}
+                            title="Remove this copy (the newest copy is removed first)"
+                          >
+                            Remove copy
+                          </button>
+                        )}
                         <span className={styles.dupLabel}>copies</span>
                         <input
                           className={styles.cloneCount}
@@ -1189,6 +1277,7 @@ export default function ArenaEditor() {
                           min={1}
                           max={20}
                           value={cloneCounts[w.number] ?? 1}
+                          disabled={blocker !== null}
                           onChange={(e) =>
                             setCloneCounts((prev) => ({
                               ...prev,
@@ -1203,7 +1292,12 @@ export default function ArenaEditor() {
                         <button
                           className={styles.cloneBtn}
                           onClick={() => queueClone(w.number, cloneCounts[w.number] ?? 1)}
-                          title="Duplicate this wave and run the copies straight after it"
+                          disabled={blocker !== null || previewing}
+                          title={
+                            blocker
+                              ? `Can't duplicate: ${blocker}`
+                              : "Duplicate this wave; the copies run straight after it and are editable right away"
+                          }
                         >
                           Duplicate
                         </button>
@@ -1225,7 +1319,7 @@ export default function ArenaEditor() {
                               className={styles.templateName}
                               title={`script node ${s.node}`}
                             >
-                              {s.template || `node ${s.node}`}
+                              {currentTemplate(s) || `node ${s.node}`}
                             </span>
                             {s.num_spawns_var !== null ? (
                               <input
@@ -1254,7 +1348,16 @@ export default function ArenaEditor() {
                             {s.locations.length === 0 && (
                               <span className={styles.muted}>—</span>
                             )}
-                            {s.locations.map((b, bi) => (
+                            {s.locations.map((b, bi) => {
+                            const current = varIdEdits[b.var] ?? b.id;
+                            const target = data.spawn_targets.find((t) => t.id === current);
+                            const currentLabel = target?.label ?? b.label;
+                            const spawnable = SPAWNABLE_STYLES.includes(target?.style ?? b.style);
+                            // A binding read by an ActorPick needs a group; a direct one an actor.
+                            const offered = data.spawn_targets.filter(
+                              (t) => t.kind === b.kind && SPAWNABLE_STYLES.includes(t.style),
+                            );
+                            return (
                             <div className={styles.fromRow} key={`${s.node}-${bi}`}>
                               {b.kind === "unresolved" ? (
                                 <span className={styles.muted} title={b.via}>
@@ -1264,30 +1367,24 @@ export default function ArenaEditor() {
                                 <select
                                   className={`${styles.fromSelect} ${
                                     varIdEdits[b.var] !== undefined ? styles.fromSelectDirty : ""
-                                  } ${
-                                    b.style === "static" || b.style === "other"
-                                      ? styles.fromSelectWarn
-                                      : ""
-                                  }`}
+                                  } ${spawnable ? "" : styles.fromSelectWarn}`}
                                   title={
-                                    b.style === "static" || b.style === "other"
-                                      ? `${b.asset || "unknown asset"} is not a purpose-built spawn point — var ${b.var}`
-                                      : `${b.asset} · var ${b.var} · ${b.via}`
+                                    spawnable
+                                      ? `${b.asset} · var ${b.var} · ${b.via}`
+                                      : `${currentLabel} is a position marker, not a spawn point — the game falls back to the portals. Pick a spawn volume.`
                                   }
-                                  value={varIdEdits[b.var] ?? b.id}
+                                  value={current}
                                   onChange={(e) =>
                                     setVarIdEdits((prev) => ({ ...prev, [b.var]: e.target.value }))
                                   }
                                 >
-                                  {!data.spawn_targets.some((t) => t.id === b.id) && (
-                                    <option value={b.id}>{b.label} (current)</option>
+                                  {!offered.some((t) => t.id === current) && (
+                                    <option value={current}>
+                                      {currentLabel} {spawnable ? "(current)" : "(not a spawn point)"}
+                                    </option>
                                   )}
-                                  {STYLE_ORDER.map((style) => {
-                                    // A binding read by an ActorPick needs a
-                                    // group; a direct one needs a single actor.
-                                    const opts = data.spawn_targets.filter(
-                                      (t) => t.style === style && t.kind === b.kind,
-                                    );
+                                  {SPAWNABLE_STYLES.map((style) => {
+                                    const opts = offered.filter((t) => t.style === style);
                                     if (opts.length === 0) return null;
                                     return (
                                       <optgroup key={style} label={STYLE_LABELS[style]}>
@@ -1304,7 +1401,8 @@ export default function ArenaEditor() {
                                 </select>
                               )}
                             </div>
-                            ))}
+                            );
+                            })}
                             </div>
                           </div>
                         );
@@ -1331,48 +1429,11 @@ export default function ArenaEditor() {
                         </details>
                       )}
                     </section>
-                  ))}
+                    );
+                  })}
                   {data.waves.length === 0 && (
                     <p className={styles.emptyText}>No waves found in this zone.</p>
                   )}
-                  {cloneRequests.map((c, i) => {
-                    const src = data.waves.find((w) => w.number === c.source);
-                    return (
-                      <div className={styles.waveCard} key={`clone-${i}`}>
-                        <div className={styles.waveHead}>
-                          <h4>Wave {c.new_number}</h4>
-                          <span className={styles.waveTotal}>copy of wave {c.source}</span>
-                          <span className={styles.spacer} />
-                          <button
-                            className={styles.cloneBtn}
-                            onClick={() => {
-                              setCloneRequests((prev) => prev.filter((_, k) => k !== i));
-                              setMessageDrafts((prev) =>
-                                Object.fromEntries(
-                                  Object.entries(prev).filter(
-                                    ([, d]) => d.node !== undefined || d.wave !== c.new_number,
-                                  ),
-                                ),
-                              );
-                            }}
-                          >
-                            Remove
-                          </button>
-                        </div>
-                        <p className={styles.emptyText}>
-                          Created on save — reload the zone afterwards to tune it.
-                          {src && src.messages.length > 0 &&
-                            ` Carries wave ${c.source}'s ${src.messages.length} message(s).`}
-                        </p>
-                        {renderMessages(
-                          c.new_number,
-                          [],
-                          src?.can_message_start ?? false,
-                          src?.can_message_cleared ?? false,
-                        )}
-                      </div>
-                    );
-                  })}
                 </div>
               </>
             )}
@@ -1444,7 +1505,7 @@ export default function ArenaEditor() {
                   const path = assetEdits[asset.index] ?? asset.path;
                   const waves = (data.waves ?? [])
                     .filter((w) =>
-                      w.spawners.some((s) => asset.instances.includes(s.template)),
+                      w.spawners.some((s) => asset.instances.includes(currentTemplate(s))),
                     )
                     .map((w) => w.number);
                   const stats = priuses.flatMap(botSummary);
@@ -1521,6 +1582,43 @@ export default function ArenaEditor() {
                 })}
                 {visibleAssets.length === 0 && (
                   <p className={styles.emptyText}>No enemy actors detected in this zone.</p>
+                )}
+              </>
+            )}
+
+            {tab === "graph" && (
+              <>
+                <div className={styles.modeBar}>
+                  <button
+                    className={`${styles.modeBtn} ${graphMode === "easy" ? styles.modeActive : ""}`}
+                    onClick={() => setGraphMode("easy")}
+                  >
+                    Easy
+                  </button>
+                  <button
+                    className={`${styles.modeBtn} ${graphMode === "advanced" ? styles.modeActive : ""}`}
+                    onClick={() => setGraphMode("advanced")}
+                  >
+                    Advanced
+                  </button>
+                  <span className={styles.modeHint}>
+                    {graphMode === "easy"
+                      ? "Waves, spawners, enemies and messages as nodes — every edit here is one the other tabs can make."
+                      : "The zone's raw script graph, read-only."}
+                  </span>
+                </div>
+                {graphMode === "easy" ? (
+                  <ArenaFlowView api={buildEditApi(data)} />
+                ) : (
+                  <ArenaGraphView
+                    zonePath={zonePath}
+                    scriptPriuses={data.script_priuses}
+                    onOpenPrius={(id) => {
+                      setRawSelected(blobKey("script", id));
+                      setRawError("");
+                      setTab("raw");
+                    }}
+                  />
                 )}
               </>
             )}
@@ -1610,7 +1708,7 @@ export default function ArenaEditor() {
               <button
                 className={styles.runBtn}
                 onClick={saveZone}
-                disabled={running || !!rawError || dirtyCount === 0}
+                disabled={running || previewing || !!rawError || dirtyCount === 0}
               >
                 {running ? "Saving…" : "Save Zone"}
               </button>

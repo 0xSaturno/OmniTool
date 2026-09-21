@@ -1,0 +1,382 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1;
+  min-height: 560px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-left: 0.4rem;
+}
+
+.hint {
+  color: var(--text-muted);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.canvas {
+  flex: 1;
+  position: relative;
+  min-height: 520px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  user-select: none;
+}
+
+.canvas input,
+.canvas select {
+  user-select: text;
+}
+
+/* While a wire is being dragged, nothing on the page should select. */
+:global(body.arena-wiring),
+:global(body.arena-wiring *) {
+  user-select: none !important;
+}
+
+.canvas :global(.react-flow) {
+  --xy-background-color: var(--bg-base);
+  --xy-minimap-background-color: var(--bg-surface);
+  --xy-controls-button-background-color: var(--bg-elevated);
+  --xy-controls-button-background-color-hover: var(--bg-hover);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-button-color: var(--text-primary);
+}
+
+/* ---- nodes ---- */
+
+.node {
+  height: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-top: 3px solid;
+  border-radius: 7px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  font-size: 11.5px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+:global(.react-flow__node.selected) > .node {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 12px rgba(0, 0, 0, 0.5);
+}
+
+.nodeFlow {
+  border-top-color: #3fb950;
+}
+
+.nodeWave,
+.nodeClone {
+  border-top-color: #58a6ff;
+}
+
+.nodeClone {
+  border-style: dashed;
+  border-top-style: solid;
+  background: var(--bg-surface);
+}
+
+.nodeSpawner {
+  border-top-color: #f0883e;
+}
+
+.nodeEnemy {
+  border-top-color: #ff7b72;
+}
+
+.nodePoint {
+  border-top-color: var(--border);
+  border-left: 3px solid;
+}
+
+.nodeMessage {
+  border-top-color: #39c5cf;
+}
+
+.unused {
+  opacity: 0.55;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 10px;
+  flex-shrink: 0;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.meta {
+  padding: 0 10px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.metaWarn {
+  color: var(--warning);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 10px 6px;
+  min-width: 0;
+}
+
+.row,
+.portRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.portRow {
+  margin: 0 -10px;
+  justify-content: flex-start;
+}
+
+.outRow select {
+  flex: 1;
+  min-width: 0;
+  max-width: 190px;
+}
+
+.portLabel {
+  color: #39c5cf;
+  font-size: 11px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inline .muted {
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.chip {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+/* ---- inputs ---- */
+
+.text,
+.num,
+.select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 2px 5px;
+  min-width: 0;
+}
+
+.text {
+  width: 100%;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.num {
+  width: 64px;
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.numSmall {
+  width: 48px;
+}
+
+.text:focus,
+.num:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.dirty {
+  border-color: var(--accent);
+}
+
+.warn {
+  border-color: var(--warning);
+}
+
+.btn {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.btn:disabled,
+.num:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btnRight {
+  margin-left: auto;
+}
+
+.previewing {
+  color: var(--accent);
+}
+
+.remove {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.remove:hover {
+  color: var(--error);
+}
+
+.nodeMessage .head .select {
+  flex: 1;
+}
+
+/* ---- handles & wires ---- */
+
+.handle {
+  width: 9px;
+  height: 9px;
+  min-width: 0;
+  min-height: 0;
+  background: var(--text-secondary);
+  border: 2px solid var(--bg-base);
+}
+
+.handleMsg {
+  background: #39c5cf;
+}
+
+.handleEnemy {
+  background: #ff7b72;
+}
+
+.handlePoint {
+  background: #c58af9;
+}
+
+.edgeFlow :global(.react-flow__edge-path) {
+  stroke: #3fb950;
+  stroke-width: 2;
+}
+
+.edgeOwn :global(.react-flow__edge-path) {
+  stroke: #58a6ff;
+  stroke-width: 1.4;
+  opacity: 0.6;
+}
+
+.edgeEnemy :global(.react-flow__edge-path) {
+  stroke: #ff7b72;
+  stroke-width: 1.6;
+  opacity: 0.75;
+}
+
+.edgePoint :global(.react-flow__edge-path) {
+  stroke: #c58af9;
+  stroke-width: 1.6;
+  opacity: 0.75;
+}
+
+.edgeMessage :global(.react-flow__edge-path) {
+  stroke: #39c5cf;
+  stroke-width: 1.6;
+}
+
+.edgeEdited :global(.react-flow__edge-path) {
+  stroke-width: 2.6;
+  opacity: 1;
+  stroke-dasharray: 7 4;
+}

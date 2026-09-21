@@ -1,24 +1,9 @@
-import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../../contexts/SettingsContext";
 import styles from "./SettingsModal.module.css";
 
 export default function SettingsModal() {
   const { settings, updateSettings, isSettingsOpen, setSettingsOpen } = useSettings();
-
-  const [hashesPath, setHashesPath] = useState("");
-  const [hashesExist, setHashesExist] = useState<boolean | null>(null);
-  const [fetchState, setFetchState] = useState<"idle" | "fetching" | "done" | "error">("idle");
-  const [fetchMsg, setFetchMsg] = useState("");
-
-  useEffect(() => {
-    if (!isSettingsOpen) return;
-    invoke<string>("get_hashes_path").then((p) => {
-      setHashesPath(p);
-      invoke<boolean>("hashes_exist").then(setHashesExist).catch(() => setHashesExist(false));
-    });
-  }, [isSettingsOpen]);
 
   if (!isSettingsOpen) return null;
 
@@ -33,20 +18,6 @@ export default function SettingsModal() {
     const result = await open({ directory: true, title: "Select Overstrike Folder" });
     if (typeof result === "string") {
       updateSettings({ overstrikeDir: result });
-    }
-  }
-
-  async function fetchHashes() {
-    setFetchState("fetching");
-    setFetchMsg("");
-    try {
-      const result: string = await invoke("download_hashes");
-      setFetchState("done");
-      setFetchMsg(result);
-      setHashesExist(true);
-    } catch (e) {
-      setFetchState("error");
-      setFetchMsg(String(e));
     }
   }
 
@@ -70,7 +41,10 @@ export default function SettingsModal() {
               />
               <button className={styles.browseBtn} onClick={pickArchivesDir}>Browse</button>
             </div>
-            <p className={styles.hint}>Used by Asset Browser to load game files</p>
+            <p className={styles.hint}>
+              Used to load game files. Asset names come from the game's <code>dag</code> file in
+              this folder.
+            </p>
           </div>
 
           <div className={styles.field}>
@@ -115,33 +89,6 @@ export default function SettingsModal() {
             </label>
             <p className={styles.hint}>
               When enabled, BC6H and other HDR formats export as 32-bit float TIFF.
-            </p>
-          </div>
-
-          <div className={styles.field}>
-            <label>Asset Hashes</label>
-            <div className={styles.hashesRow}>
-              <span className={styles.hashesPath}>{hashesPath || "…"}</span>
-              <span className={`${styles.hashBadge} ${hashesExist ? styles.badgeOk : styles.badgeMissing}`}>
-                {hashesExist === null ? "…" : hashesExist ? "Present" : "Missing"}
-              </span>
-            </div>
-            <div className={styles.fetchRow}>
-              <button
-                className={styles.fetchBtn}
-                onClick={fetchHashes}
-                disabled={fetchState === "fetching"}
-              >
-                {fetchState === "fetching" ? "Downloading…" : "Fetch from GitHub"}
-              </button>
-              {fetchMsg && (
-                <span className={fetchState === "error" ? styles.fetchError : styles.fetchOk}>
-                  {fetchState === "done" ? `✓ ${fetchMsg}` : fetchMsg}
-                </span>
-              )}
-            </div>
-            <p className={styles.hint}>
-              Hash map used to resolve asset IDs to readable paths in the Asset Browser.
             </p>
           </div>
         </div>

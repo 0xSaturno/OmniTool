@@ -990,56 +990,22 @@ pub async fn get_app_dir() -> Result<String, ToolkitError> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// `(hex id, path)` for every asset named in `<game_dir>/dag`. Ids stay strings
+/// to avoid u64 precision loss in JS.
 #[tauri::command]
-pub async fn get_hashes_path() -> Result<String, ToolkitError> {
-    let path = filesystem::hashes_path()?;
-    let exists = path.exists();
-    info!("get_hashes_path: {} (exists={})", path.display(), exists);
-    Ok(path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn hashes_exist() -> Result<bool, ToolkitError> {
-    Ok(filesystem::hashes_path()?.exists())
-}
-
-#[tauri::command]
-pub async fn load_hashes() -> Result<Vec<(String, String)>, ToolkitError> {
+pub async fn load_asset_names(game_dir: String) -> Result<Vec<(String, String)>, ToolkitError> {
     let start = Instant::now();
-    let path = filesystem::hashes_path()?;
-    eprintln!("[asset_browser] reading hashes from {}", path.display());
-    let text = std::fs::read_to_string(&path)?;
-
-    let mut hashes = Vec::new();
-    let parse_into = |text: &str, hashes: &mut Vec<(String, String)>| {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let mut parts = line.splitn(3, ',');
-            let Some(hex_str) = parts.next() else {
-                continue;
-            };
-            let Some(path_str) = parts.next() else {
-                continue;
-            };
-            // Validate hex but keep as string to avoid u64 precision loss in JS
-            if u64::from_str_radix(hex_str, 16).is_err() {
-                debug!("load_hashes: skipping malformed hex {:?}", hex_str);
-                continue;
-            }
-            hashes.push((hex_str.to_uppercase(), path_str.to_string()));
-        }
-    };
-    parse_into(&text, &mut hashes);
-
+    let names = crate::core::dag::name_table(Path::new(&game_dir))?;
+    let pairs: Vec<(String, String)> = names
+        .iter()
+        .map(|(id, path)| (format!("{id:016X}"), path.clone()))
+        .collect();
     eprintln!(
-        "[asset_browser] loaded {} hashes in {:?}",
-        hashes.len(),
+        "[asset_browser] loaded {} asset names from dag in {:?}",
+        pairs.len(),
         start.elapsed()
     );
-    Ok(hashes)
+    Ok(pairs)
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,7 +1048,7 @@ fn norm_dir(p: &str) -> String {
 /// Overstrike hashes that path with the DAT1 CRC64 to get the id it writes
 /// into the TOC (`StageInstallerHelper.IsAssetFile`). Hashing the entry names
 /// the same way recovers the paths of mod-added assets, which by definition
-/// never appear in the shipped `hashes` list.
+/// never appear in the shipped `dag`.
 ///
 /// `overstrike_dir` may point at the Overstrike folder or straight at its
 /// `Mods Library`. When `game_dir` is given, the profile whose `path` matches
@@ -2082,11 +2048,6 @@ fn read_f32_at(data: &[u8], off: usize) -> Option<f32> {
     Some(f32::from_le_bytes(bytes.try_into().ok()?))
 }
 
-fn read_i32_at(data: &[u8], off: usize) -> Option<i32> {
-    let bytes = data.get(off..off + 4)?;
-    Some(i32::from_le_bytes(bytes.try_into().ok()?))
-}
-
 fn push_f32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_f32_at(data, off) {
         values.push(AtmosphereKnownValue {
@@ -2098,31 +2059,8 @@ fn push_f32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off
     }
 }
 
-/// `asset id -> path` from the shipped hash list, loaded once. Empty when the
-/// list is missing — references then show as raw ids.
-fn atmosphere_hash_lookup() -> &'static HashMap<u64, String> {
-    static LOOKUP: OnceLock<HashMap<u64, String>> = OnceLock::new();
-    LOOKUP.get_or_init(|| {
-        let mut map = HashMap::new();
-        if let Ok(path) = filesystem::hashes_path() {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                for line in text.lines() {
-                    let mut parts = line.splitn(3, ',');
-                    let (Some(hex), Some(asset_path)) = (parts.next(), parts.next()) else {
-                        continue;
-                    };
-                    if let Ok(id) = u64::from_str_radix(hex.trim(), 16) {
-                        map.insert(id, asset_path.to_string());
-                    }
-                }
-            }
-        }
-        map
-    })
-}
-
 /// An 8-byte asset reference. Unset slots read `FFFF…`/0 in shipped files;
-/// set ones are packed asset ids, resolved to a path when the hash list has it.
+/// set ones are packed asset ids, resolved to a path when the dag names it.
 fn push_asset_ref(
     values: &mut Vec<AtmosphereKnownValue>,
     data: &[u8],
@@ -2169,30 +2107,70 @@ fn push_u32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off
     }
 }
 
-fn push_i32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
-    if let Some(v) = read_i32_at(data, off) {
+fn push_u8(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
+    if let Some(&v) = data.get(off) {
         values.push(AtmosphereKnownValue {
             name: name.to_string(),
             offset: off as u32,
-            value_type: "i32".to_string(),
+            value_type: "u8".to_string(),
             value: v.to_string(),
         });
     }
 }
 
-fn expected_value_type_for_offset(off: usize) -> Option<&'static str> {
-    match off {
-        36 | 72 | 76 | 80 | 84 | 88 | 92 | 96 | 100 | 104 | 108 | 112 | 116 | 120 | 124
-        | 128 | 132 | 144 | 152 | 156 | 160 | 164 | 168 | 176 | 180 | 184 | 188 | 192
-        | 196 | 200 | 204 => Some("float"),
-        32 | 40 | 44 | 136 | 140 | 148 => Some("u32"),
-        172 => Some("i32"),
-        _ => None,
+/// A `u32` offset of a path string from the DAT1 start, `0xFFFFFFFF` when unset.
+fn push_path(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], dat1: &[u8], name: &str, off: usize) {
+    let Some(raw) = read_u32_at(data, off) else {
+        return;
+    };
+    let value = if raw == u32::MAX {
+        "<unset>".to_string()
+    } else {
+        let tail = dat1.get(raw as usize..).unwrap_or_default();
+        let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        match std::str::from_utf8(&tail[..end]) {
+            Ok("") => "<empty>".to_string(),
+            Ok(path) => path.to_string(),
+            Err(_) => format!("<bad offset {raw:#X}>"),
+        }
+    };
+    values.push(AtmosphereKnownValue {
+        name: name.to_string(),
+        offset: off as u32,
+        value_type: "path".to_string(),
+        value,
+    });
+}
+
+fn push_atmosphere_field(
+    values: &mut Vec<AtmosphereKnownValue>,
+    header: &[u8],
+    dat1: &[u8],
+    field: &crate::core::atmosphere::Field,
+    names: &HashMap<u64, String>,
+) {
+    use crate::core::atmosphere::FieldKind;
+    let (name, off) = (field.name, field.offset);
+    match field.kind {
+        FieldKind::F32 => push_f32(values, header, name, off),
+        FieldKind::U32 => push_u32(values, header, name, off),
+        FieldKind::U8 => push_u8(values, header, name, off),
+        FieldKind::Vec3 | FieldKind::Vec4 => {
+            let count = field.kind.size() / 4;
+            for (i, axis) in ["X", "Y", "Z", "W"].iter().take(count).enumerate() {
+                push_f32(values, header, &format!("{name}.{axis}"), off + 4 * i);
+            }
+        }
+        FieldKind::AssetRef | FieldKind::AssetId => push_asset_ref(values, header, name, off, names),
+        FieldKind::PathOffset => push_path(values, header, dat1, name, off),
     }
 }
 
 #[tauri::command]
-pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, ToolkitError> {
+pub async fn read_atmosphere(
+    atmosphere_path: String,
+    game_dir: Option<String>,
+) -> Result<AtmosphereData, ToolkitError> {
     let bytes = std::fs::read(&atmosphere_path)?;
     if bytes.len() < 36 {
         return Err(ToolkitError::Parse(format!(
@@ -2233,73 +2211,26 @@ pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, 
 
     let mut known_values = Vec::new();
     if let Some(header) = dat1.get_section_data(ATMOSPHERE_SECTION_HEADER) {
-        push_u32(&mut known_values, header, "z1", 32);
-        // Was labelled `time_of_day`, but it reads 1000.0 in shipped
-        // atmospheres — the offset is unverified, so don't claim a name.
-        push_f32(&mut known_values, header, "unverified_f36", 36);
-        push_u32(&mut known_values, header, "z2", 40);
-        push_u32(&mut known_values, header, "z3", 44);
-
-        push_f32(&mut known_values, header, "curve_pair_0_x", 72);
-        push_f32(&mut known_values, header, "curve_pair_0_y", 76);
-        push_f32(&mut known_values, header, "curve_pair_1_x", 80);
-        push_f32(&mut known_values, header, "curve_pair_1_y", 84);
-        push_f32(&mut known_values, header, "curve_pair_2_x", 88);
-        push_f32(&mut known_values, header, "curve_pair_2_y", 92);
-        push_f32(&mut known_values, header, "curve_pair_3_x", 96);
-        push_f32(&mut known_values, header, "curve_pair_3_y", 100);
-        push_f32(&mut known_values, header, "curve_pair_4_x", 104);
-        push_f32(&mut known_values, header, "curve_pair_4_y", 108);
-
-        // Asset references are grouped at the front of the cooked struct in
-        // schema order, 8 bytes each (strings take 16).
-        let hash_lookup = atmosphere_hash_lookup();
-        push_asset_ref(&mut known_values, header, "IconPath", 0, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "PreviewModel", 8, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "LightGridAtmosphere", 16, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "SkySettings.SkyObjects", 56, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "SkySettings.SkyBoxCubeMap", 64, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "AssetSwap.PlatformSwaps", 72, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.FillLightCubeMap", 80, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.LightGridModConfig", 88, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.KeylightMaterial", 96, &hash_lookup);
-        push_asset_ref(
-            &mut known_values,
-            header,
-            "BloomSettings.BloomDirtinessAsset",
-            104,
-            &hash_lookup,
-        );
-
-        // Names below are the DDL schema's own (`AtmosphereDef`), matched to
-        // these offsets against all 95 shipped atmospheres — see
-        // docs/ATMOSPHERE_LAYOUT.md for the evidence behind each one.
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.X", 112);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Y", 116);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Z", 120);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightIntensity", 124);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightAzimuth", 128);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightElevation", 132);
-        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetAzimuth", 136);
-        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetElevation", 140);
-        push_f32(&mut known_values, header, "EnvLighting.ShadowDrawDist", 144);
-        push_u32(&mut known_values, header, "EnvLighting.CsmLodCount", 148);
-
-        push_f32(&mut known_values, header, "unk3_f0", 152);
-        push_f32(&mut known_values, header, "unk3_f1", 156);
-        push_f32(&mut known_values, header, "unk3_f2", 160);
-        push_f32(&mut known_values, header, "unk3_f3", 164);
-        push_f32(&mut known_values, header, "unk3_f4", 168);
-        push_i32(&mut known_values, header, "unk3_i0", 172);
-        push_f32(&mut known_values, header, "unk3_f5", 176);
-        push_f32(&mut known_values, header, "unk3_f6", 180);
-        push_f32(&mut known_values, header, "unk3_f7", 184);
-        push_f32(&mut known_values, header, "unk3_f8", 188);
-
-        push_f32(&mut known_values, header, "ambience_rgba_r", 192);
-        push_f32(&mut known_values, header, "ambience_rgba_g", 196);
-        push_f32(&mut known_values, header, "ambience_rgba_b", 200);
-        push_f32(&mut known_values, header, "ambience_rgba_a", 204);
+        if header.len() != crate::core::atmosphere::HEADER_SIZE {
+            notes.push(format!(
+                "header is {} bytes, expected {}; field names may not line up",
+                header.len(),
+                crate::core::atmosphere::HEADER_SIZE
+            ));
+        }
+        let hash_lookup = match game_dir.as_deref().filter(|d| !d.is_empty()) {
+            Some(dir) => crate::core::dag::name_table(Path::new(dir)).unwrap_or_else(|e| {
+                notes.push(format!("asset names unavailable ({e}); references show as ids"));
+                Default::default()
+            }),
+            None => {
+                notes.push("no game folder set; references show as ids".to_string());
+                Default::default()
+            }
+        };
+        for field in crate::core::atmosphere::FIELDS {
+            push_atmosphere_field(&mut known_values, header, dat1_bytes, field, &hash_lookup);
+        }
     } else {
         notes.push(format!(
             "missing section {ATMOSPHERE_SECTION_HEADER:#010X} (atmosphere header/content)"
@@ -2380,8 +2311,8 @@ pub async fn write_atmosphere(
 
     for edit in values {
         let off = edit.offset as usize;
-        let expected = expected_value_type_for_offset(off).ok_or_else(|| {
-            ToolkitError::Parse(format!("offset {} is not editable in phase 2", edit.offset))
+        let expected = crate::core::atmosphere::editable_type(off).ok_or_else(|| {
+            ToolkitError::Parse(format!("offset {} is not an editable value", edit.offset))
         })?;
 
         if !edit.value_type.eq_ignore_ascii_case(expected) {
@@ -2407,14 +2338,14 @@ pub async fn write_atmosphere(
                 ))
             })?;
             header_data[off..off + 4].copy_from_slice(&parsed.to_le_bytes());
-        } else if expected == "i32" {
-            let parsed = edit.value.parse::<i32>().map_err(|e| {
+        } else if expected == "u8" {
+            let parsed = edit.value.parse::<u8>().map_err(|e| {
                 ToolkitError::Parse(format!(
-                    "invalid i32 at offset {}: {} ({e})",
+                    "invalid u8 at offset {}: {} ({e})",
                     edit.offset, edit.value
                 ))
             })?;
-            header_data[off..off + 4].copy_from_slice(&parsed.to_le_bytes());
+            header_data[off] = parsed;
         } else {
             let parsed = edit.value.parse::<u32>().map_err(|e| {
                 ToolkitError::Parse(format!(
@@ -2561,38 +2492,6 @@ pub async fn extract_to_temp(
     std::fs::write(&out_path, &raw)?;
     info!("extract_to_temp: {} → {}", asset_id, out_path.display());
     Ok(out_path.to_string_lossy().into_owned())
-}
-
-/// Download the hashes file from the SpaceDepot release and save it next to the exe.
-#[tauri::command]
-pub async fn download_hashes() -> Result<String, ToolkitError> {
-    use std::io::Read;
-
-    const URL: &str =
-        "https://github.com/SpaceDepot/rcra-depot/releases/download/hashes/hashes";
-
-    let path = filesystem::hashes_path()?;
-
-    let bytes = tauri::async_runtime::spawn_blocking(|| -> std::result::Result<Vec<u8>, String> {
-        let response = ureq::get(URL)
-            .timeout(std::time::Duration::from_secs(120))
-            .call()
-            .map_err(|e| format!("request failed: {e}"))?;
-
-        let mut buf = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|e| ToolkitError::Parse(format!("task error: {e}")))?
-    .map_err(ToolkitError::Parse)?;
-
-    std::fs::write(&path, &bytes)?;
-    info!("download_hashes: {} bytes → {}", bytes.len(), path.display());
-    Ok(format!("{} bytes", bytes.len()))
 }
 
 /// Copy a file directly into a project at an exact relative path (no rename suffix).
@@ -3392,13 +3291,14 @@ fn lower_thread_priority() {
 fn lower_thread_priority() {}
 
 /// Extract outbound references (`direction="to"`) up to `depth` levels, or
-/// scan the entire TOC to find inbound references (`direction="from"`).
+/// find inbound references (`direction="from"`).
 ///
-/// Outbound mode is fast: it extracts only the target asset (and any
-/// in-TOC descendants when `depth > 1`).
+/// Outbound mode extracts only the target asset (and any in-TOC descendants
+/// when `depth > 1`).
 ///
-/// Inbound mode is expensive — it scans every span-0 asset in the TOC,
-/// in parallel via rayon. Expect tens of seconds on a full game TOC.
+/// Inbound mode walks the game's dependency graph (`<archives_dir>/dag`) for
+/// shipped assets, and scans only assets living in `d\mods\*` archives, whose
+/// dag edges may no longer be true.
 #[tauri::command]
 pub async fn get_asset_references(
     app: tauri::AppHandle,
@@ -3409,11 +3309,7 @@ pub async fn get_asset_references(
     depth: Option<u32>,
     source_mode: Option<String>,
     scan_id: Option<String>,
-    // `asset_id_allowlist`: optional hex-string allowlist limiting the
-    // inbound scan to specific asset ids (typically pre-filtered by the
-    // frontend to ref-bearing extensions like `.config`, `.actor`, `.zone`).
-    asset_id_allowlist: Option<Vec<String>>,
-    // `limit_threads`: when true, the inbound scan runs on a private rayon
+    // `limit_threads`: when true, the inbound mod scan runs on a private rayon
     // pool sized to ~75 % of the available cores so the rest of the system
     // stays responsive. Default is the global pool (all cores).
     limit_threads: Option<bool>,
@@ -3549,47 +3445,91 @@ pub async fn get_asset_references(
             let target = id;
             let toc_for_scan = Arc::clone(&toc);
             let archives_dir_owned = archives_dir_path.clone();
+            let game_dag = crate::core::dag::load_game_dag(&archives_dir_path)?;
+            let dag = &game_dag.dag;
 
-            // Optional asset-id allowlist (hex). When supplied, only ids
-            // present in the set are scanned — letting the frontend pass
-            // a curated list of ref-bearing types and skip everything
-            // else without paying any extract/decompress cost.
-            let allow_set: Option<HashSet<u64>> = asset_id_allowlist.as_ref().map(|v| {
-                v.iter()
-                    .filter_map(|s| u64::from_str_radix(s.trim(), 16).ok())
-                    .collect()
-            });
-            let total_assets_in_toc = assets
-                .iter()
-                .filter(|a| a.span_index == 0 && a.asset_id != target)
-                .count();
+            // Mods replace or add assets through d\mods\* archives, which makes the
+            // dag's edges for those assets stale; they are scanned directly instead.
+            let is_modded = |a: &TocAsset| {
+                archive_names
+                    .get(a.archive_index as usize)
+                    .is_some_and(|n| is_mod_archive(n))
+            };
+            let modded: HashSet<u64> = match mode {
+                SourceMode::Live => assets.iter().filter(|a| is_modded(a)).map(|a| a.asset_id).collect(),
+                SourceMode::RequireTocBak => HashSet::new(),
+            };
 
-            // Filter to span-0 only and exclude the target itself.
+            let item_for = |asset_id: u64, depth: u32, referenced_in: Vec<String>| {
+                let toc_asset = by_id.get(&asset_id);
+                AssetReferenceItem {
+                    depth,
+                    asset_id: format!("{asset_id:016X}"),
+                    filename: game_dag.names.get(&asset_id).cloned(),
+                    referenced_in,
+                    in_toc: toc_asset.is_some(),
+                    archive_name: toc_asset
+                        .and_then(|a| archive_names.get(a.archive_index as usize).cloned()),
+                    size: toc_asset.map(|a| a.size),
+                }
+            };
+
+            // Walk the dag upwards level by level, tagging each parent with the
+            // child it loads so deeper rows show which asset they reach it through.
+            let mut row_of: HashMap<u64, usize> = HashMap::new();
+            let mut frontier: Vec<u64> = vec![target];
+            if dag.index_of(target).is_none() {
+                notes.push(
+                    "Target is not in the game's dependency graph (added by a mod?); only mod assets were scanned."
+                        .to_string(),
+                );
+            }
+            for level in 1..=max_depth {
+                let mut next = Vec::new();
+                for &child in &frontier {
+                    let Some(ci) = dag.index_of(child) else { continue };
+                    let tag = format!("{child:016X}::DAG");
+                    for &p in game_dag.dependents.direct(ci) {
+                        let parent = dag.id(p as usize);
+                        if parent == target || modded.contains(&parent) {
+                            continue;
+                        }
+                        if let Some(&row) = row_of.get(&parent) {
+                            let item = &mut result_items[row];
+                            if item.depth == level && !item.referenced_in.contains(&tag) {
+                                item.referenced_in.push(tag.clone());
+                            }
+                            continue;
+                        }
+                        row_of.insert(parent, result_items.len());
+                        result_items.push(item_for(parent, level, vec![tag.clone()]));
+                        next.push(parent);
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+            let direct_count = result_items.iter().filter(|r| r.depth == 1).count();
+            notes.push(format!(
+                "Dependency graph: {direct_count} asset(s) load this directly, {} within depth {max_depth}.",
+                result_items.len()
+            ));
+
             let to_scan: Vec<TocAsset> = assets
                 .iter()
-                .filter(|a| a.span_index == 0 && a.asset_id != target)
-                .filter(|a| match &allow_set {
-                    Some(set) => set.contains(&a.asset_id),
-                    None => true,
-                })
+                .filter(|a| a.asset_id != target && modded.contains(&a.asset_id) && is_modded(a))
                 .cloned()
                 .collect();
             let total_to_scan = to_scan.len();
-            if let Some(set) = &allow_set {
-                notes.push(format!(
-                    "Type filter: scanning {} of {} span-0 assets ({} allowlisted ids).",
-                    total_to_scan,
-                    total_assets_in_toc,
-                    set.len()
-                ));
-            }
 
             // Optional thread-pool throttle. When the user opts in we
             // run the par_iter inside a private pool sized to ~50 % of
             // the available cores AND lower each worker's OS priority
             // to BELOW_NORMAL on Windows so the foreground UI / other
             // apps win the scheduler whenever they want CPU.
-            let throttle = limit_threads.unwrap_or(false);
+            let throttle = limit_threads.unwrap_or(false) && total_to_scan > 0;
             let scoped_pool = if throttle {
                 let avail = std::thread::available_parallelism()
                     .map(|n| n.get())
@@ -3639,7 +3579,7 @@ pub async fn get_asset_references(
                 let total = total_to_scan;
                 let started = start;
                 std::thread::spawn(move || {
-                    if scan_id.is_empty() {
+                    if scan_id.is_empty() || total == 0 {
                         return;
                     }
                     // Per-process CPU + RAM sampler. Two refreshes
@@ -3751,27 +3691,37 @@ pub async fn get_asset_references(
                 scanned = total_to_scan;
             }
 
+            // One mod asset can have records in several spans; merge them.
+            let mut mod_rows: HashMap<u64, usize> = HashMap::new();
+            for mut hit in hits {
+                let hit_id = u64::from_str_radix(&hit.asset_id, 16).unwrap_or(0);
+                if let Some(&row) = mod_rows.get(&hit_id) {
+                    let item = &mut result_items[row];
+                    for tag in hit.referenced_in {
+                        if !item.referenced_in.contains(&tag) {
+                            item.referenced_in.push(tag);
+                        }
+                    }
+                    continue;
+                }
+                hit.filename = game_dag.names.get(&hit_id).cloned();
+                mod_rows.insert(hit_id, result_items.len());
+                result_items.push(hit);
+            }
+
             if cancelled {
                 notes.push(format!(
-                    "Cancelled after scanning {}/{} assets ({} hits so far).",
-                    scanned,
-                    total_to_scan,
-                    hits.len()
+                    "Mod scan cancelled after {scanned}/{total_to_scan} records ({} hits so far).",
+                    mod_rows.len()
                 ));
-            } else {
+            } else if total_to_scan > 0 {
                 notes.push(format!(
-                    "Scanned {} span-0 assets in parallel; {} reference the target. Mmapped {} archive(s).",
-                    total_to_scan,
-                    hits.len(),
-                    cache.len()
+                    "Scanned {total_to_scan} record(s) from installed mods; {} reference the target. \
+                     Mod assets are checked at depth 1 only.",
+                    mod_rows.len()
                 ));
             }
-            if max_depth > 1 {
-                notes.push(
-                    "Inbound search only supports depth=1; ignoring higher depth.".to_string(),
-                );
-            }
-            result_items = hits;
+            result_items.sort_by_key(|r| r.depth);
         }
         other => {
             return Err(ToolkitError::Parse(format!(

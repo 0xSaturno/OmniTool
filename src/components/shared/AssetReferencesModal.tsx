@@ -83,6 +83,8 @@ function basename(path: string): string {
 /** Decode a backend `<hex>::<label>` source tag into a display string.
  *  - `Strings Block` tags collapse into the source asset's basename
  *    (since the section type carries no extra info).
+ *  - `DAG` tags come from the dependency graph; `<hex>` is the asset this
+ *    row loads on the way to the target.
  *  - All other tags drop the hex prefix and keep the section label
  *    as-is. The hex id is exposed via the chip's `title` for hover. */
 function resolveSource(
@@ -104,6 +106,12 @@ function resolveSource(
 
   if (label === "Strings Block") {
     return { display: sourceName || label, tooltip: `${tooltip} · Strings Block` };
+  }
+  if (label === "DAG") {
+    if (hex === originHex.toUpperCase()) {
+      return { display: "Dependency graph", tooltip: `Loads ${tooltip} directly` };
+    }
+    return { display: `via ${sourceName}`, tooltip: `Loads ${tooltip}, which leads to the target` };
   }
   // For structured ref-section tags, keep the section label visible but
   // also annotate with the source asset on hover.
@@ -148,12 +156,6 @@ export default function AssetReferencesModal({
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const activeScanIdRef = useRef<string | null>(null);
   const [limitThreads, setLimitThreads] = useState(true);
-  const [typeFilterEnabled, setTypeFilterEnabled] = useState(true);
-  // Sensible default of extensions known to embed inbound references.
-  // Editable so power users can broaden / narrow the scan.
-  const [typeFilterText, setTypeFilterText] = useState(
-    ".config,.conduit,.actor,.zone,.nodegraph,.cinematic2,.material,.materialgraph,.model,.atmosphere",
-  );
 
   // Listen once for backend-emitted progress events. Match by scan id so
   // stale events from prior scans don't update the bar.
@@ -190,26 +192,6 @@ export default function AssetReferencesModal({
       setError("");
       setProgress(null);
 
-      // Build the optional asset-id allowlist for inbound scans. Only
-      // applied when the user has the "filter by type" toggle on AND we
-      // have a hash map to derive filenames from.
-      let assetIdAllowlist: string[] | undefined;
-      if (dir === "from" && typeFilterEnabled && hashMap) {
-        const exts = typeFilterText
-          .split(",")
-          .map((s) => s.trim().toLowerCase())
-          .filter((s) => s.length > 0)
-          .map((s) => (s.startsWith(".") ? s : `.${s}`));
-        if (exts.length > 0) {
-          const ids: string[] = [];
-          hashMap.forEach((path, hex) => {
-            const lower = path.toLowerCase();
-            if (exts.some((e) => lower.endsWith(e))) ids.push(hex);
-          });
-          assetIdAllowlist = ids;
-        }
-      }
-
       try {
         const r = await invoke<ReferenceResult>("get_asset_references", {
           tocPath,
@@ -219,7 +201,6 @@ export default function AssetReferencesModal({
           depth: d,
           sourceMode,
           scanId,
-          assetIdAllowlist,
           limitThreads: dir === "from" ? limitThreads : undefined,
         });
         setResult(r);
@@ -233,16 +214,7 @@ export default function AssetReferencesModal({
         setProgress(null);
       }
     },
-    [
-      tocPath,
-      assetId,
-      archivesDir,
-      sourceMode,
-      hashMap,
-      typeFilterEnabled,
-      typeFilterText,
-      limitThreads,
-    ],
+    [tocPath, assetId, archivesDir, sourceMode, limitThreads],
   );
 
   const cancelScan = useCallback(() => {
@@ -447,7 +419,7 @@ export default function AssetReferencesModal({
               onChange={(e) => setDirection(e.target.value as Direction)}
             >
               <option value="to">References To (outbound)</option>
-              <option value="from">References From (inbound, slow)</option>
+              <option value="from">References From (inbound)</option>
             </select>
           </div>
           <div className={styles.field}>
@@ -456,8 +428,7 @@ export default function AssetReferencesModal({
               className={styles.select}
               value={depth}
               onChange={(e) => setDepth(parseInt(e.target.value, 10))}
-              disabled={direction === "from"}
-              title={direction === "from" ? "Depth is fixed to 1 for inbound search" : ""}
+              title={direction === "from" ? "Mod assets are only checked at depth 1" : ""}
             >
               {[1, 2, 3, 4, 5].map((d) => (
                 <option key={d} value={d}>
@@ -505,7 +476,7 @@ export default function AssetReferencesModal({
                 gap: "0.35rem",
                 fontSize: "0.78rem",
               }}
-              title="Run the scan on ~50% of CPU cores at BELOW_NORMAL priority so the rest of the system stays responsive"
+              title="Scan mod assets on ~50% of CPU cores at BELOW_NORMAL priority so the rest of the system stays responsive"
             >
               <input
                 type="checkbox"
@@ -513,41 +484,15 @@ export default function AssetReferencesModal({
                 onChange={(e) => setLimitThreads(e.target.checked)}
                 disabled={loading}
               />
-              Limit CPU usage (safe mode)
+              Limit CPU usage while scanning mod assets
             </label>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.35rem",
-                fontSize: "0.78rem",
-              }}
-              title="Restrict the scan to assets whose resolved filename ends with one of the listed extensions"
-            >
-              <input
-                type="checkbox"
-                checked={typeFilterEnabled}
-                onChange={(e) => setTypeFilterEnabled(e.target.checked)}
-                disabled={loading}
-              />
-              Scan only ref-bearing types
-            </label>
-            <input
-              className={styles.input}
-              style={{ flex: 1, minWidth: 240, fontSize: "0.75rem" }}
-              value={typeFilterText}
-              onChange={(e) => setTypeFilterText(e.target.value)}
-              disabled={loading || !typeFilterEnabled}
-              placeholder=".config,.actor,.zone,…"
-              title="Comma-separated list of file extensions to include in the scan"
-            />
           </div>
         )}
 
         {direction === "from" && !loading && !result && (
           <div className={styles.warn}>
-            Inbound scan extracts every span-0 asset in the TOC (in parallel).
-            On a full game TOC this typically takes 30–120 seconds.
+            Shipped assets come from the game's dependency graph. Assets installed by mods
+            (<code>d\mods\*</code> archives) are scanned directly, at depth 1 only.
           </div>
         )}
 
@@ -565,8 +510,8 @@ export default function AssetReferencesModal({
             >
               <span>
                 {progress
-                  ? `Scanning ${progress.scanned.toLocaleString()} / ${progress.total.toLocaleString()} assets`
-                  : "Preparing inbound scan…"}
+                  ? `Scanning mod assets ${progress.scanned.toLocaleString()} / ${progress.total.toLocaleString()}`
+                  : "Reading dependency graph…"}
               </span>
               <span style={{ fontFamily: "var(--font-mono)" }}>
                 {progress

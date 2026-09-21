@@ -146,6 +146,67 @@ fn main() {
         );
     }
 
+    // --zone-json <out.json>: what `read_arena_zone` hands the editor, for UI previews.
+    if let Some(p) = args.iter().position(|a| a == "--zone-json") {
+        let data = tauri::async_runtime::block_on(omnitool_lib::commands_arena::read_arena_zone(
+            args[1].clone(),
+        ))
+        .unwrap();
+        std::fs::write(&args[p + 1], serde_json::to_string(&data).unwrap()).unwrap();
+        println!("zone json -> {}", args[p + 1]);
+        return;
+    }
+
+    // --preview-json <clones.json> <out.json>: `preview_arena_clones` output.
+    if let Some(p) = args.iter().position(|a| a == "--preview-json") {
+        let clones = std::fs::read_to_string(&args[p + 1]).unwrap();
+        let data = tauri::async_runtime::block_on(
+            omnitool_lib::commands_arena::preview_arena_clones(args[1].clone(), clones),
+        )
+        .unwrap();
+        std::fs::write(&args[p + 2], serde_json::to_string(&data).unwrap()).unwrap();
+        for c in &data.clones {
+            println!(
+                "clone {} <- {}: first node {} var {} prius {} warning {:?}",
+                c.new_number, c.source, c.first_node, c.first_var, c.first_prius, c.warning
+            );
+        }
+        return;
+    }
+
+    // --graph-json <out.json>: the graph plus script priuses, for UI previews.
+    if let Some(p) = args.iter().position(|a| a == "--graph-json") {
+        let g = omnitool_lib::commands_arena_graph::build_graph(&zone);
+        let priuses: Vec<serde_json::Value> = zone
+            .script_priuses
+            .iter()
+            .enumerate()
+            .map(|(id, b)| {
+                serde_json::json!({ "id": id, "json": serde_json::to_string_pretty(&b.json).unwrap() })
+            })
+            .collect();
+        let out = serde_json::json!({ "graph": g, "priuses": priuses });
+        std::fs::write(&args[p + 1], serde_json::to_string(&out).unwrap()).unwrap();
+        println!("graph json -> {}", args[p + 1]);
+        return;
+    }
+
+    if args.iter().any(|a| a == "--graph") {
+        let g = omnitool_lib::commands_arena_graph::build_graph(&zone);
+        println!(
+            "\n=== graph === {} nodes, {} links, {} signals, pins named {}/{}",
+            g.nodes.len(),
+            g.links.len(),
+            g.signals.len(),
+            g.pins_named,
+            g.pins_total
+        );
+        for s in &g.sections {
+            println!("  {:<6} {:<48} {} nodes", s.kind, s.label, s.nodes.len());
+        }
+        return;
+    }
+
     // --edits <edits.json> <out.zone>: apply a ZoneEdits payload as the editor would.
     if let Some(p) = args.iter().position(|a| a == "--edits") {
         let edits: ZoneEdits =

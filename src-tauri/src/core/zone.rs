@@ -664,20 +664,17 @@ impl Zone {
     pub fn save(mut self, edits: &ZoneEdits) -> Result<Vec<u8>> {
         let old_paths = self.path_like_strings();
 
-        self.apply_actor_asset_edits(edits)?;
-        self.apply_model_name_edits(edits);
-        self.apply_script_var_edits(edits)?;
-        self.apply_prius_edits(edits)?;
-        // Successive copies of the same wave chain onto the previous copy.
-        let mut chain_tail: BTreeMap<u32, usize> = BTreeMap::new();
-        for req in &edits.clone_waves {
-            let after = chain_tail.get(&req.source).copied();
-            let report = self.clone_wave(req.source, req.new_number, after)?;
-            chain_tail.insert(req.source, report.tail_node);
+        // Copies first: the editor previews them the same way, so value edits
+        // can address a copy's own vars and blobs by index.
+        for report in self.apply_clones(&edits.clone_waves)? {
             if let Some(w) = &report.warning {
                 eprintln!("[zone] clone_wave: {w}");
             }
         }
+        self.apply_actor_asset_edits(edits)?;
+        self.apply_model_name_edits(edits);
+        self.apply_script_var_edits(edits)?;
+        self.apply_prius_edits(edits)?;
         self.unhook_nodes(&edits.remove_messages);
         for m in &edits.wave_messages {
             self.add_wave_message(m)?;
@@ -1018,6 +1015,10 @@ pub struct CloneReport {
     pub inbound_replicated: usize,
     /// The copy's clear-check node — where the next copy in a chain attaches.
     pub tail_node: usize,
+    /// First node, var and script prius the copy added; everything it owns is at or past these.
+    pub first_node: usize,
+    pub first_var: usize,
+    pub first_prius: usize,
     pub warning: Option<String>,
 }
 
@@ -1183,6 +1184,20 @@ impl Zone {
         self.clone_wave_inner(source, new_number, after, true)
     }
 
+    /// Apply a list of copies in order; successive copies of one wave chain
+    /// onto the previous copy.
+    pub fn apply_clones(&mut self, requests: &[CloneWaveRequest]) -> Result<Vec<CloneReport>> {
+        let mut chain_tail: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut reports = Vec::with_capacity(requests.len());
+        for req in requests {
+            let after = chain_tail.get(&req.source).copied();
+            let report = self.clone_wave(req.source, req.new_number, after)?;
+            chain_tail.insert(req.source, report.tail_node);
+            reports.push(report);
+        }
+        Ok(reports)
+    }
+
     /// `rename` off keeps the copy on the source wave's signal and group names,
     /// which is only useful for narrowing down routing problems.
     pub fn clone_wave_inner(
@@ -1201,6 +1216,7 @@ impl Zone {
         };
         let mut plugs = self.node_plugs();
         let mut ids = IdAllocator::new(self, (new_number as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let first_prius = self.script_priuses.len();
 
         let clone_base = self.actions.len();
         let index_of: std::collections::HashMap<usize, usize> = seg
@@ -1418,6 +1434,9 @@ impl Zone {
             priuses_added,
             inbound_replicated: replicated,
             tail_node: clone_tail,
+            first_node: clone_base,
+            first_var: var_base,
+            first_prius,
             warning,
         })
     }

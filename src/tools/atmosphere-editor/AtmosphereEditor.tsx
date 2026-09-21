@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLocation } from "react-router-dom";
 import FilePickerInput from "../../components/shared/FilePickerInput";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
+import { useSettings } from "../../contexts/SettingsContext";
 import styles from "./AtmosphereEditor.module.css";
 
 const ATM_FILTER = [{ name: "Atmosphere", extensions: ["atmosphere"] }];
@@ -35,6 +36,7 @@ interface AtmosphereData {
 
 export default function AtmosphereEditor() {
   const location = useLocation();
+  const { settings } = useSettings();
   const [atmospherePath, setAtmospherePath] = useState("");
   const [outPath, setOutPath] = useState("");
   const [data, setData] = useState<AtmosphereData | null>(null);
@@ -42,6 +44,15 @@ export default function AtmosphereEditor() {
   const [stringsText, setStringsText] = useState("");
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [valueFilter, setValueFilter] = useState("");
+
+  const visibleValues = useMemo(() => {
+    const q = valueFilter.trim().toLowerCase();
+    if (!data || !q) return data?.known_values ?? [];
+    return data.known_values.filter(
+      (v) => v.name.toLowerCase().includes(q) || v.value.toLowerCase().includes(q) || String(v.offset) === q,
+    );
+  }, [data, valueFilter]);
 
   useEffect(() => {
     if (location.pathname !== "/tools/atmosphere-editor") return;
@@ -68,7 +79,10 @@ export default function AtmosphereEditor() {
     setLog([]);
     try {
       pushLog("info", `Reading ${atmospherePath} ...`);
-      const result = await invoke<AtmosphereData>("read_atmosphere", { atmospherePath });
+      const result = await invoke<AtmosphereData>("read_atmosphere", {
+        atmospherePath,
+        gameDir: settings.archivesDir || null,
+      });
       setData(result);
       setStringsText(result.strings.join("\n"));
       pushLog(
@@ -172,6 +186,13 @@ export default function AtmosphereEditor() {
       {data && (
         <>          <section className={`${styles.sectionPane} ${styles.tablePane}`}>
           <h3>Known Values</h3>
+          <input
+            className={styles.valueInput}
+            style={{ marginBottom: "0.5rem" }}
+            placeholder="Filter by name, value or offset (e.g. Fog, Clouds, 1120)"
+            value={valueFilter}
+            onChange={(e) => setValueFilter(e.target.value)}
+          />
           <table className={styles.table}>
             <thead>
               <tr>
@@ -182,7 +203,7 @@ export default function AtmosphereEditor() {
               </tr>
             </thead>
             <tbody>
-              {data.known_values.map((v) => (
+              {visibleValues.map((v) => (
                 <tr key={`${v.name}-${v.offset}`}>
                   <td>{v.name}</td>
                   <td>{v.offset}</td>
@@ -192,6 +213,14 @@ export default function AtmosphereEditor() {
                       className={styles.valueInput}
                       value={valueEdits.has(v.offset) ? valueEdits.get(v.offset)! : v.value}
                       onChange={(e) => updateValue(v.offset, e.target.value)}
+                      readOnly={v.value_type === "asset" || v.value_type === "path"}
+                      title={
+                        v.value_type === "asset"
+                          ? "Read-only. Editing the matching path in Strings updates this id."
+                          : v.value_type === "path"
+                            ? "Read-only. Path stored in the file's string pool."
+                            : undefined
+                      }
                     />
                   </td>
                 </tr>

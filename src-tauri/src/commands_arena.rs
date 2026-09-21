@@ -26,6 +26,8 @@ pub struct ArenaActorAsset {
     pub path: String,
     pub asset_id: String,
     pub instances: Vec<String>,
+    /// Instance ids (hex), parallel to `instances`.
+    pub instance_ids: Vec<String>,
     pub is_enemy: bool,
     pub prius_ids: Vec<usize>,
 }
@@ -69,6 +71,9 @@ pub struct ArenaSpawner {
     pub node: usize,
     /// Enemy actor instance the spawner's factory builds.
     pub template: String,
+    /// The factory's `Templates` var; rewriting its id swaps the enemy.
+    pub template_var: Option<usize>,
+    pub template_id: Option<String>,
     pub num_spawns: Option<f64>,
     /// Script var backing `NumSpawns` — the editable handle for the count.
     pub num_spawns_var: Option<usize>,
@@ -88,6 +93,8 @@ pub struct ArenaWave {
     /// Whether a message can hook this wave's start / its all-dead check.
     pub can_message_start: bool,
     pub can_message_cleared: bool,
+    /// Why this wave can't be duplicated cleanly, if it can't.
+    pub clone_warning: Option<String>,
 }
 
 /// A string the zone hands to the HUD — the title card or the victory banner.
@@ -124,6 +131,20 @@ pub struct ArenaZoneData {
     pub model_names: Vec<String>,
     pub asset_refs: Vec<ArenaAssetRef>,
     pub spawn_targets: Vec<ArenaSpawnTarget>,
+    /// Wave copies applied for a preview; empty for a plain read.
+    pub clones: Vec<ArenaCloneInfo>,
+}
+
+/// Where a previewed copy's nodes, vars and prius blobs begin — edits at or
+/// past these indices belong to that copy.
+#[derive(serde::Serialize)]
+pub struct ArenaCloneInfo {
+    pub source: u32,
+    pub new_number: u32,
+    pub first_node: usize,
+    pub first_var: usize,
+    pub first_prius: usize,
+    pub warning: Option<String>,
 }
 
 #[tauri::command]
@@ -132,7 +153,44 @@ pub async fn read_arena_zone(zone_path: String) -> Result<ArenaZoneData, Toolkit
     eprintln!("[arena_editor] reading {zone_path}");
     let bytes = std::fs::read(&zone_path)?;
     let zone = Zone::parse(&bytes)?;
+    let data = build_arena_data(&zone, &zone_path, Vec::new());
+    eprintln!(
+        "[arena_editor] {} actions, {} actors, {} waves in {:?}",
+        data.action_count,
+        data.actor_count,
+        data.waves.len(),
+        start.elapsed()
+    );
+    Ok(data)
+}
 
+/// The zone as it will be once `clones_json` is applied, so copies can be
+/// edited before saving. Save applies copies first, so indices line up.
+#[tauri::command]
+pub async fn preview_arena_clones(
+    zone_path: String,
+    clones_json: String,
+) -> Result<ArenaZoneData, ToolkitError> {
+    let clones: Vec<zone_mod::CloneWaveRequest> = serde_json::from_str(&clones_json)
+        .map_err(|e| ToolkitError::Parse(format!("invalid clone list: {e}")))?;
+    let bytes = std::fs::read(&zone_path)?;
+    let mut zone = Zone::parse(&bytes)?;
+    let infos = zone
+        .apply_clones(&clones)?
+        .into_iter()
+        .map(|r| ArenaCloneInfo {
+            source: r.source_wave,
+            new_number: r.new_wave,
+            first_node: r.first_node,
+            first_var: r.first_var,
+            first_prius: r.first_prius,
+            warning: r.warning,
+        })
+        .collect();
+    Ok(build_arena_data(&zone, &zone_path, infos))
+}
+
+pub fn build_arena_data(zone: &Zone, zone_path: &str, clones: Vec<ArenaCloneInfo>) -> ArenaZoneData {
     let mut node_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for a in &zone.actions {
         *node_counts.entry(zone.action_type(a)).or_insert(0) += 1;
@@ -204,7 +262,16 @@ pub async fn read_arena_zone(zone_path: String) -> Result<ArenaZoneData, Toolkit
                 .map(str::to_string)
                 .collect();
             let prius_ids = prius_ids_for_asset(&zone, index as u32);
+            // Same filter as `instances_of_asset`, so the two lists line up.
+            let instance_ids = zone
+                .actors
+                .iter()
+                .filter(|a| a.asset_index == index as u32)
+                .filter(|a| zone.actor_names.get(a.name_index as usize).is_some())
+                .map(|a| format!("{:016X}", a.instance_id))
+                .collect();
             ArenaActorAsset {
+                instance_ids,
                 index,
                 path: path.clone(),
                 asset_id: format!(
@@ -230,7 +297,7 @@ pub async fn read_arena_zone(zone_path: String) -> Result<ArenaZoneData, Toolkit
         })
         .collect();
 
-    let data = ArenaZoneData {
+    ArenaZoneData {
         zone_name: Path::new(&zone_path)
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -255,16 +322,8 @@ pub async fn read_arena_zone(zone_path: String) -> Result<ArenaZoneData, Toolkit
         model_names: zone.model_names.clone(),
         asset_refs,
         spawn_targets: spawn_targets(&zone),
-    };
-
-    eprintln!(
-        "[arena_editor] {} actions, {} actors, {} waves in {:?}",
-        data.action_count,
-        data.actor_count,
-        data.waves.len(),
-        start.elapsed()
-    );
-    Ok(data)
+        clones,
+    }
 }
 
 #[tauri::command]
@@ -467,6 +526,16 @@ fn detect_waves(zone: &Zone) -> Vec<ArenaWave> {
                 can_message_start: zone.has_message_trigger(number, zone_mod::MessageWhen::Start),
                 can_message_cleared: zone
                     .has_message_trigger(number, zone_mod::MessageWhen::Cleared),
+                clone_warning: match zone.wave_segment(number) {
+                    Err(e) => Some(format!("no wave segment found: {e}")),
+                    // Wave 1 starts off the shared intro, not a countdown chain.
+                    Ok(seg) if seg.feeders.contains(&seg.tail) => Some(
+                        "its start and end resolve to the same node, so a copy would run \
+                         alongside this wave instead of after it"
+                            .into(),
+                    ),
+                    Ok(_) => None,
+                },
             }
         })
         .collect()
@@ -658,6 +727,7 @@ fn read_spawner(zone: &Zone, index: usize, action: &zone_mod::ScriptAction) -> A
     let num_plug = zone.param(action, "NumSpawns");
     let num_spawns_var = num_plug.map(|p| p.index as usize);
     let num_spawns = num_spawns_var.and_then(|v| zone.vars.get(v)).and_then(|v| v.as_number());
+    let template_var = spawner_template_var(zone, action);
 
     let groups: Vec<String> = zone
         .plugs
@@ -683,6 +753,10 @@ fn read_spawner(zone: &Zone, index: usize, action: &zone_mod::ScriptAction) -> A
     ArenaSpawner {
         node: index,
         template: spawner_template(zone, action).unwrap_or_default(),
+        template_var,
+        template_id: template_var
+            .and_then(|v| zone.vars.get(v))
+            .map(|v| format!("{:016X}", v.id_value())),
         num_spawns,
         num_spawns_var,
         max_simultaneous,
@@ -723,14 +797,18 @@ fn spawn_bindings(zone: &Zone, action: &zone_mod::ScriptAction) -> Vec<ArenaSpaw
 
 /// `Factories` names a runtime var; the factory node that writes it carries the
 /// `Templates` binding whose value is an actor instance id.
-fn spawner_template(zone: &Zone, action: &zone_mod::ScriptAction) -> Option<String> {
+fn spawner_template_var(zone: &Zone, action: &zone_mod::ScriptAction) -> Option<usize> {
     let factories = zone.param(action, "Factories")?;
     let writer = zone.var_writer(factories.index as usize)?;
     let factory = zone.actions.get(writer)?;
     let template = zone
         .param(factory, "Templates")
         .or_else(|| zone.param(factory, "Template"))?;
-    let id = zone.vars.get(template.index as usize)?.id_value();
+    Some(template.index as usize)
+}
+
+fn spawner_template(zone: &Zone, action: &zone_mod::ScriptAction) -> Option<String> {
+    let id = zone.vars.get(spawner_template_var(zone, action)?)?.id_value();
     zone.actors
         .iter()
         .find(|a| a.instance_id == id)
@@ -738,7 +816,7 @@ fn spawner_template(zone: &Zone, action: &zone_mod::ScriptAction) -> Option<Stri
 }
 
 /// Pull the digits out of the first `wave_<n>` / `WAVE_<n>` token in `name`.
-fn wave_number(name: &str) -> Option<u32> {
+pub(crate) fn wave_number(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
     let mut from = 0usize;
     while let Some(pos) = lower[from..].find("wave_") {
@@ -756,7 +834,7 @@ fn wave_number(name: &str) -> Option<u32> {
 }
 
 /// Signal and var names are namespaced as `0x<hash>::<name>`; show the readable half.
-fn short_signal(name: impl AsRef<str>) -> String {
+pub(crate) fn short_signal(name: impl AsRef<str>) -> String {
     let name = name.as_ref();
     name.rsplit(':').next().unwrap_or(name).to_string()
 }

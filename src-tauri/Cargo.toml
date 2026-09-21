@@ -36,6 +36,11 @@ path = "src/bin/roundtrip.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
+name = "roundtrip_gltf"
+path = "src/bin/roundtrip_gltf.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "sections"
 path = "src/bin/sections.rs"
 required-features = ["dev-tools"]
@@ -95,6 +100,11 @@ name = "zone_probe"
 path = "src/bin/zone_probe.rs"
 required-features = ["dev-tools"]
 
+[[bin]]
+name = "dag_dump"
+path = "src/bin/dag_dump.rs"
+required-features = ["dev-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -114,7 +124,6 @@ zip            = "2"
 walkdir        = "2"
 tauri-plugin-shell = "2"
 libloading     = "0.8"
-ureq           = { version = "2", features = ["tls"] }
 texture2ddecoder = "0.1.2"
 image = "0.25.10"
 base64 = "0.22.1"

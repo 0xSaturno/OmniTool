@@ -8,6 +8,7 @@ use crate::tools::model_converter::sections::{
     built::{get_uv_scale, get_uv1_scale, get_position_scale},
     morph::TAG_ANIM_MORPH_INFO,
 };
+use crate::tools::model_converter::layout::plan_blocks;
 
 const TAG_BUILT:     u32 = 0x283D0383;
 const TAG_MUSCLEDEF: u32 = 0x380A5744;
@@ -142,12 +143,23 @@ pub fn parse_gltf(path: &str) -> Result<GltfModel> {
 // Injector
 
 pub fn inject_gltf(model: &mut ModelFile, gltf: &GltfModel) -> Result<()> {
-    clear_muscle_deformation(model);
-    change_lod_distances(model);
-    update_look_groups(model)?;
-
-    let mesh_updates = inject_vertexes(model, gltf)?;
+    let (mesh_updates, geometry_changed) = inject_vertexes(model, gltf)?;
     update_meshes(model, &mesh_updates)?;
+
+    // Only LOD0 is exported, so once LOD0 geometry actually differs from vanilla
+    // the remaining LODs are stale and have to be retargeted onto it. When the
+    // import matches vanilla — a re-import of an untouched export — the LOD
+    // ladder and the muscle rig are left exactly as the game shipped them.
+    if geometry_changed {
+        clear_muscle_deformation(model);
+        change_lod_distances(model);
+        update_look_groups(model)?;
+    } else {
+        log::info!(
+            "[inject_gltf] incoming geometry matches the source model; leaving LOD distances, \
+             look groups and muscle deformation untouched"
+        );
+    }
 
     Ok(())
 }
@@ -274,6 +286,73 @@ fn build_gltf_mesh_index_map(gltf: &GltfModel, mesh_count: usize) -> Result<std:
     Ok(gltf_by_index)
 }
 
+/// Subsets whose incoming glTF data differs from what the model already holds,
+/// compared in everything glTF actually carries: counts, quantised positions,
+/// quantised UVs and winding. Anything else the round-trip cannot express —
+/// packed tangents, vertex colors — is excluded, so an unedited export comes
+/// back as an empty set.
+///
+/// Only these subsets need to leave the geometry block they share with their
+/// LOD and look variants; one that comes back unchanged keeps its place, which
+/// is what lets a re-import reproduce the vanilla pools exactly.
+fn changed_subsets(
+    meshes: &[MeshDefinition],
+    gltf: &GltfModel,
+    gltf_by_index: &std::collections::HashMap<usize, usize>,
+    vertexes: &[Vertex],
+    idx_data: &[u8],
+    pos_scale: f32,
+    uv_scale: f32,
+) -> std::collections::HashSet<usize> {
+    let q = |a: f32, s: f32| (a / s).round() as i32;
+    let mut changed = std::collections::HashSet::new();
+
+    for (&mi, &gi) in gltf_by_index.iter() {
+        let mesh = &meshes[mi];
+        let incoming = &gltf.meshes[gi];
+        if mesh.vertex_count as usize != incoming.vertexes.len()
+            || mesh.index_count as usize != incoming.faces.len() * 3
+        {
+            changed.insert(mi);
+            continue;
+        }
+
+        let vs = mesh.vertex_start as usize;
+        let differs = incoming.vertexes.iter().enumerate().any(|(vi, av)| {
+            let Some(ov) = vertexes.get(vs + vi) else { return true };
+            let (u, v) = av.uv.unwrap_or((ov.u, ov.v));
+            q(ov.x, pos_scale) != q(av.position.0, pos_scale)
+                || q(ov.y, pos_scale) != q(av.position.1, pos_scale)
+                || q(ov.z, pos_scale) != q(av.position.2, pos_scale)
+                || q(ov.u, uv_scale) != q(u, uv_scale)
+                || q(ov.v, uv_scale) != q(v, uv_scale)
+        });
+        if differs {
+            changed.insert(mi);
+            continue;
+        }
+
+        // Winding is flipped on export, so compare in the same reversed order.
+        let base: i64 = if mesh.has_relative_indices() { 0 } else { mesh.vertex_start as i64 };
+        let vanilla = |k: usize| -> Option<i64> {
+            let p = (mesh.index_start as usize + k) * 2;
+            idx_data
+                .get(p..p + 2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]) as i64 - base)
+        };
+        let differs = incoming.faces.iter().enumerate().any(|(fi, f)| {
+            vanilla(fi * 3) != Some(f.2 as i64)
+                || vanilla(fi * 3 + 1) != Some(f.1 as i64)
+                || vanilla(fi * 3 + 2) != Some(f.0 as i64)
+        });
+        if differs {
+            changed.insert(mi);
+        }
+    }
+
+    changed
+}
+
 fn should_rebuild_skin(meshes: &[MeshDefinition], gltf: &GltfModel) -> Result<bool> {
     for (i, mesh_data_gltf) in gltf.meshes.iter().enumerate() {
         let mesh_index = parse_mesh_index_from_gltf_name(&mesh_data_gltf.name).unwrap_or(i);
@@ -367,7 +446,7 @@ fn align_skin_data_16(skin_data: &mut Option<Vec<u8>>, cur_offset: &mut usize) -
     Ok(())
 }
 
-fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<Vec<MeshUpdate>> {
+fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<(Vec<MeshUpdate>, bool)> {
     use crate::tools::model_converter::sections::joints::{TAG_JOINTS, Joint};
     
     let mut bone_map = std::collections::HashMap::new();
@@ -440,38 +519,47 @@ fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<Vec<MeshUp
     let mut cur_skin_offset = 0usize;
     let mut cur_rcra_weight = 0usize;
 
-    // Contiguous relayout pre-pass
-    // Lay out every mesh contiguously at new positions: gltf-injected meshes
-    // use their gltf sizes, untouched meshes keep their original sizes.
-    // A grown mesh's added tail gets its own space instead of overflowing into
-    // the next mesh. Untouched meshes' bytes are copied verbatim into the new
-    // buffer — their per-mesh data stays identical; only their `vertex_start`
-    // pointer shifts. (The old global-repack glitch came from not copying
-    // untouched-mesh bytes into the new layout; see HANDOFF_mesh_glitch.md.)
+    // Block relayout pre-pass
+    // Lay every geometry block out at a new position: gltf-injected subsets use
+    // their gltf sizes, untouched ones keep their original sizes. A grown block's
+    // added tail gets its own space instead of overflowing into the next block.
+    // Untouched blocks' bytes are copied verbatim into the new buffer — their
+    // per-vertex data stays identical; only the `vertex_start` pointer shifts.
+    // (The old global-repack glitch came from not copying untouched bytes into
+    // the new layout; see HANDOFF_mesh_glitch.md.) Subsets that share one source
+    // range share one destination block, so aliased LOD/look variants are not
+    // duplicated — see layout::plan_blocks.
     let n_meshes = meshes.len();
     let gltf_by_index = build_gltf_mesh_index_map(gltf, n_meshes)?;
-    let mut new_vstart = vec![0u32; n_meshes];
-    let mut new_istart = vec![0u32; n_meshes];
+    let changed = changed_subsets(
+        &meshes,
+        gltf,
+        &gltf_by_index,
+        &vert_sec.vertexes,
+        &idx_data,
+        built_pos_scale,
+        built_uv_scale,
+    );
+    let geometry_changed = !changed.is_empty();
+    // Only subsets that actually differ leave their shared block. An unchanged
+    // one is rewritten in place with identical bytes, so its LOD/look aliases
+    // keep sharing the single copy the game shipped.
+    let injected_counts: std::collections::HashMap<usize, (u32, u32)> = changed
+        .iter()
+        .map(|&mi| {
+            let am = &gltf.meshes[gltf_by_index[&mi]];
+            (mi, (am.vertexes.len() as u32, (am.faces.len() * 3) as u32))
+        })
+        .collect();
+    let block_layout = plan_blocks(&meshes, &injected_counts)?;
+    let new_vstart = block_layout.vertex_start.clone();
+    let new_istart = block_layout.index_start.clone();
     let mut force_relative = vec![false; n_meshes];
     let orig_vertexes_for_raw_w: Vec<Vertex>;
     let mut orig_colors_for_copy: Option<Vec<u32>> = None;
     {
-        let mut cv: u64 = 0;
-        let mut ci: u64 = 0;
-        for mi in 0..n_meshes {
-            new_vstart[mi] = u32::try_from(cv)
-                .map_err(|_| ToolkitError::Parse(format!("vertex_start overflow for mesh {}", mi)))?;
-            new_istart[mi] = u32::try_from(ci)
-                .map_err(|_| ToolkitError::Parse(format!("index_start overflow for mesh {}", mi)))?;
-            let (vc, ic) = if let Some(&ai) = gltf_by_index.get(&mi) {
-                let am = &gltf.meshes[ai];
-                (am.vertexes.len() as u64, (am.faces.len() * 3) as u64)
-            } else {
-                (meshes[mi].vertex_count as u64, meshes[mi].index_count as u64)
-            };
-            cv += vc;
-            ci += ic;
-        }
+        let cv = block_layout.total_vertices as u64;
+        let ci = block_layout.total_indices as u64;
         for mi in 0..n_meshes {
             if meshes[mi].has_relative_indices() {
                 continue;
@@ -504,11 +592,12 @@ fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<Vec<MeshUp
         // counterpart, matching inject_rivet.py's `[0xFFFFFFFF] * len(verts)`.
         let mut new_colors: Option<Vec<u32>> =
             colors_sec.as_ref().map(|_| vec![0xFFFF_FFFFu32; new_vert_total]);
-        // Copy untouched meshes' slices from originals into the new layout.
+        // Copy untouched blocks' slices from originals into the new layout.
         // gltf meshes' slots are left zeroed; the per-mesh loop below fills
-        // them from gltf data.
+        // them from gltf data. Only a block's owner copies — its aliases share
+        // the same destination bytes.
         for mi in 0..n_meshes {
-            if gltf_by_index.contains_key(&mi) { continue; }
+            if gltf_by_index.contains_key(&mi) || !block_layout.is_owner(mi) { continue; }
             let om = &meshes[mi];
             let old_vs = om.vertex_start as usize;
             let old_vc = om.vertex_count as usize;
@@ -956,71 +1045,92 @@ fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<Vec<MeshUp
         });
     }
 
-    // When rebuild_skin is true, copy skin data for meshes NOT present in the
-    // gltf. Without this, untouched meshes (e.g. claws, LODs) lose their
-    // skinning and render with displaced/glitched vertices.
-    if rebuild_skin {
+    // Re-point every subset the gltf did not carry. The relayout moved their
+    // bytes, so `mesh.vertex_start` is stale for all of them — not just the
+    // skinned ones, and not just when skin is being rebuilt. Leaving any of
+    // them out makes every subset past the first moved block read another
+    // subset's vertices.
+    //
+    // When rebuild_skin is true their skin payload is re-emitted here too;
+    // without it untouched subsets (claws, LODs) lose their skinning and
+    // render displaced. Aliased subsets emit once and share the owner's
+    // pointers, so a shared block does not get a private copy of the weights.
+    {
         let injected_set: std::collections::HashSet<usize> = updates.iter().map(|u| u.mesh_index).collect();
+        let mut emitted_skin: std::collections::HashMap<usize, (u16, u16, u32)> =
+            std::collections::HashMap::new();
         for (mi, mesh) in meshes.iter().enumerate() {
             if injected_set.contains(&mi) { continue; }
-            if !mesh.is_skinned() { continue; }
 
-            let new_first_skin_batch = cur_skin_batch as u16;
-            let mut new_skin_batches_count = 0u16;
+            let mut new_first_skin_batch = mesh.first_skin_batch;
+            let mut new_skin_batches_count = mesh.skin_batches_count;
             let mut new_first_weight_index = mesh.first_weight_index;
 
-            if let (Some(ref orig_sd), Some(ref orig_sb)) =
-                (original_skin_data.as_ref(), original_skin_batches.as_ref())
-            {
-                let start_batch = mesh.first_skin_batch as usize;
-                let batch_count = mesh.skin_batches_count as usize;
-                let end_batch = start_batch + batch_count;
-                if end_batch <= orig_sb.len() {
-                    if let Some(ref mut batches) = skin_batches {
-                        for bi in start_batch..end_batch {
-                            let orig_batch = &orig_sb[bi];
-                            let start = orig_batch.offset as usize;
-                            let end = if bi + 1 < orig_sb.len() {
-                                orig_sb[bi + 1].offset as usize
-                            } else {
-                                orig_sd.len()
-                            };
-                            if start <= end && end <= orig_sd.len() {
-                                align_skin_data_16(&mut skin_data, &mut cur_skin_offset)?;
-                                let sd = skin_data.as_mut().ok_or_else(|| {
-                                    ToolkitError::Parse("missing skin_data section while rebuilding skinned mesh".into())
-                                })?;
+            if rebuild_skin && mesh.is_skinned() {
+                let owner = block_layout.owner[mi];
+                if let Some(&(fsb, sbc, fwi)) = emitted_skin.get(&owner) {
+                    new_first_skin_batch = fsb;
+                    new_skin_batches_count = sbc;
+                    new_first_weight_index = fwi;
+                } else {
+                    new_first_skin_batch = cur_skin_batch as u16;
+                    new_skin_batches_count = 0;
 
-                                let mut copied_batch = orig_batch.clone();
-                                copied_batch.offset = cur_skin_offset as u32;
-                                batches.push(copied_batch);
-                                sd.extend_from_slice(&orig_sd[start..end]);
-                                cur_skin_offset = sd.len();
-                                cur_skin_batch += 1;
-                                new_skin_batches_count += 1;
+                    if let (Some(ref orig_sd), Some(ref orig_sb)) =
+                        (original_skin_data.as_ref(), original_skin_batches.as_ref())
+                    {
+                        let start_batch = mesh.first_skin_batch as usize;
+                        let batch_count = mesh.skin_batches_count as usize;
+                        let end_batch = start_batch + batch_count;
+                        if end_batch <= orig_sb.len() {
+                            if let Some(ref mut batches) = skin_batches {
+                                for bi in start_batch..end_batch {
+                                    let orig_batch = &orig_sb[bi];
+                                    let start = orig_batch.offset as usize;
+                                    let end = if bi + 1 < orig_sb.len() {
+                                        orig_sb[bi + 1].offset as usize
+                                    } else {
+                                        orig_sd.len()
+                                    };
+                                    if start <= end && end <= orig_sd.len() {
+                                        align_skin_data_16(&mut skin_data, &mut cur_skin_offset)?;
+                                        let sd = skin_data.as_mut().ok_or_else(|| {
+                                            ToolkitError::Parse("missing skin_data section while rebuilding skinned mesh".into())
+                                        })?;
+
+                                        let mut copied_batch = orig_batch.clone();
+                                        copied_batch.offset = cur_skin_offset as u32;
+                                        batches.push(copied_batch);
+                                        sd.extend_from_slice(&orig_sd[start..end]);
+                                        cur_skin_offset = sd.len();
+                                        cur_skin_batch += 1;
+                                        new_skin_batches_count += 1;
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
 
-            if mesh.is_rcra_skinned() {
-                if let Some(ref orig_re) = original_rcra_entries {
-                    let start = mesh.first_weight_index as usize;
-                    let end = start + mesh.vertex_count as usize;
-                    if end <= orig_re.len() {
-                        if let Some(ref mut entries) = rcra_entries {
-                            new_first_weight_index = entries.len() as u32;
-                            entries.extend_from_slice(&orig_re[start..end]);
+                    if mesh.is_rcra_skinned() {
+                        if let Some(ref orig_re) = original_rcra_entries {
+                            let start = mesh.first_weight_index as usize;
+                            let end = start + mesh.vertex_count as usize;
+                            if end <= orig_re.len() {
+                                if let Some(ref mut entries) = rcra_entries {
+                                    new_first_weight_index = entries.len() as u32;
+                                    entries.extend_from_slice(&orig_re[start..end]);
+                                }
+                            }
                         }
                     }
+
+                    emitted_skin.insert(
+                        owner,
+                        (new_first_skin_batch, new_skin_batches_count, new_first_weight_index),
+                    );
                 }
             }
 
-            // Add an update so update_meshes fixes the skin batch pointers
-            // for this untouched mesh. vertex_start/index_start come from the
-            // contiguous-relayout pre-pass — untouched mesh bytes were copied
-            // into the new layout above, so mesh.vertex_start is now stale.
             updates.push(MeshUpdate {
                 mesh_index: mi,
                 vertex_start: new_vstart[mi],
@@ -1098,7 +1208,7 @@ fn inject_vertexes(model: &mut ModelFile, gltf: &GltfModel) -> Result<Vec<MeshUp
         }
     }
 
-    Ok(updates)
+    Ok((updates, geometry_changed))
 }
 
 fn normalize_weights(groups: &[u8], weights: &[f32]) -> ((Vec<u8>, Vec<f32>), bool) {

@@ -6,6 +6,16 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 pub const DAT1_MAGIC: u32 = 0x44415431;
 pub const PAD_TO: usize = 16;
 
+/// Sections that start on a 64-byte boundary rather than the usual 16. Both are
+/// arrays of 64-byte records — Model Subset and Model Locator — and every sample
+/// model places them at a multiple of 64; aligning them to 16 reproduces the
+/// right bytes at the wrong offsets.
+const ALIGN_64: [u32; 2] = [0x78D9CBDE, 0x9F614FAB];
+
+fn section_alignment(tag: u32) -> usize {
+    if ALIGN_64.contains(&tag) { 64 } else { PAD_TO }
+}
+
 #[derive(Debug, Clone)]
 pub struct SectionHeader {
     pub tag: u32,
@@ -114,8 +124,9 @@ impl Dat1 {
 
         let mut cursor = first_offset;
         for &i in &order {
-            if cursor % PAD_TO != 0 {
-                cursor += PAD_TO - (cursor % PAD_TO);
+            let align = section_alignment(self.sections[i].tag);
+            if cursor % align != 0 {
+                cursor += align - (cursor % align);
             }
             self.sections[i].offset = cursor as u32;
             let sz = self.section_data[i].len();

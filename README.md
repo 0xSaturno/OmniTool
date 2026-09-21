@@ -28,9 +28,8 @@ Built with Tauri + React + Rust.
 
 ## Getting Started
 
-1. Open **Settings** and point the archives folder at the game directory containing the `toc` file.
-2. Click **Fetch from GitHub** to download the asset hash map — this gives the Asset Browser readable paths instead of raw IDs.
-3. Load the Asset Browser and start extracting.
+1. Open **Settings** and point the archives folder at the game directory containing the `toc` and `dag` files. Asset names are read from the game's own `dag`, so nothing needs to be downloaded.
+2. Load the Asset Browser and start extracting.
 
 ---
 

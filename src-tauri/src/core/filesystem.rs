@@ -23,10 +23,3 @@ pub fn projects_dir() -> Result<PathBuf> {
     }
     Ok(dir)
 }
-
-/// Get path to `hashes` file
-pub fn hashes_path() -> Result<PathBuf> {
-    let path = app_dir()?.join("hashes");
-    debug!("hashes_path: {}", path.display());
-    Ok(path)
-}

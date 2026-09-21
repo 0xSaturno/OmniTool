@@ -140,6 +140,43 @@
   border-bottom-color: var(--accent);
 }
 
+.modeBar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.modeBtn {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 0.15rem 0.8rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.modeBtn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.modeBtn:nth-child(2) {
+  border-radius: 0 4px 4px 0;
+  margin-left: -0.25rem;
+}
+
+.modeActive {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.modeHint {
+  margin-left: 0.6rem;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
 .tabBody {
   flex: 1;
   min-height: 0;
@@ -163,6 +200,26 @@
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+}
+
+.waveCardCopy {
+  border-style: dashed;
+  border-color: var(--accent-muted);
+}
+
+.copyTag {
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+  border-radius: 3px;
+  background: var(--accent-muted);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.cloneBtn:disabled,
+.cloneCount:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .waveCard h4 {
