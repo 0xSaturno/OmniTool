@@ -5,12 +5,27 @@ use crate::core::error::Result;
 pub const TAG_JOINTS:           u32 = 0x15DF9D3B;
 pub const TAG_JOINTS_TRANSFORM: u32 = 0xDCC88A19;
 
+/// Joint flags; bit 0 is named by elimination, the others are corpus-verified.
+pub mod joint_flags {
+    pub const SEGMENT_SCALE_COMPENSATE: u16 = 1 << 0;
+    /// Left side of a Mirror Ids pair.
+    pub const MIRROR_PAIRED_LEFT: u16 = 1 << 1;
+    pub const MIRROR_PAIRED_RIGHT: u16 = 1 << 2;
+    /// Maya end joint (the `*_end` tips).
+    pub const END_JOINT: u16 = 1 << 3;
+    /// Drives or collides with cloth (Cloth Meta Data influence joints).
+    pub const CLOTH_JOINT: u16 = 1 << 4;
+    /// A later joint shares this one's parent; never set on root-level joints.
+    pub const HAS_NEXT_SIBLING: u16 = 1 << 5;
+}
+
 #[derive(Debug, Clone)]
 pub struct Joint {
     pub parent: i16,
     pub index: u16,
-    pub unknown1: u16,
-    pub unknown2: u16,
+    /// Descendants in depth-first order; the next sibling sits at index + 1 + this.
+    pub subtree_count: u16,
+    pub flags: u16,
     pub hash: u32,
     pub string_offset: u32,
 }
@@ -25,8 +40,8 @@ impl Joint {
             joints.push(Self {
                 parent:        cur.read_i16::<LE>()?,
                 index:         cur.read_u16::<LE>()?,
-                unknown1:      cur.read_u16::<LE>()?,
-                unknown2:      cur.read_u16::<LE>()?,
+                subtree_count: cur.read_u16::<LE>()?,
+                flags:         cur.read_u16::<LE>()?,
                 hash:          cur.read_u32::<LE>()?,
                 string_offset: cur.read_u32::<LE>()?,
             });
@@ -35,7 +50,7 @@ impl Joint {
     }
 }
 
-/// Joint transform section: 3x4 matrices (position + quaternion) followed by 4x4 matrices
+/// Model Bind Pose: per joint a local (scale.xyz0, rotation quat, translation.xyz0), then inverse bind 4x4s at the next 64-byte boundary.
 pub struct JointsTransform {
     pub matrixes34: Vec<[f32; 12]>,
     pub matrixes44: Vec<[f32; 16]>,
@@ -68,6 +83,11 @@ impl JointsTransform {
         }
 
         Ok(Self { matrixes34: m34, matrixes44: m44 })
+    }
+
+    pub fn get_scale(&self, index: usize) -> (f32, f32, f32) {
+        let m = &self.matrixes34[index];
+        (m[0], m[1], m[2])
     }
 
     pub fn get_position(&self, index: usize) -> (f32, f32, f32) {

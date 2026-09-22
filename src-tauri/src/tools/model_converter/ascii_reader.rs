@@ -3,12 +3,13 @@ use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::{
     geo::{TAG_VERTEXES, TAG_UV1, TAG_COLORS, TAG_INDEXES, Vertex, VertexesSection, Uv1Section, ColorsSection, IndexesSection, DEFAULT_UV_SCALE},
     meshes::{TAG_MESHES, MeshDefinition},
-    skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry},
+    skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, TAG_SKIN_JOINT_REMAP, SkinBatch, RcraSkinEntry},
     look::{TAG_LOOK, LookSection},
     built::{get_uv_scale, get_uv1_scale, get_position_scale},
     morph::TAG_ANIM_MORPH_INFO,
 };
 use crate::tools::model_converter::layout::plan_blocks;
+use crate::tools::model_converter::{bounds, skin_build};
 
 const TAG_BUILT:     u32 = 0x283D0383;
 const TAG_MUSCLEDEF: u32 = 0x380A5744;
@@ -24,7 +25,7 @@ pub struct AsciiVertex {
     /// Second UV layer, matching Model UV1 Vert. `None` when the file declares
     /// only one layer.
     pub uv1:      Option<(f32, f32)>,
-    pub groups:   Vec<u8>,
+    pub groups:   Vec<u16>,
     pub weights:  Vec<f32>,
 }
 
@@ -137,7 +138,7 @@ fn parse_meshes(lines: &[&str], raw_lines: &[&str], ptr: &mut usize, bones_count
                 let gp = read_split(lines, ptr)?;
                 let wp = read_split(lines, ptr)?;
                 (
-                    gp.iter().filter_map(|s| s.parse::<u8>().ok()).collect(),
+                    gp.iter().filter_map(|s| s.parse::<u16>().ok()).collect(),
                     wp.iter().filter_map(|s| s.parse::<f32>().ok()).collect(),
                 )
             } else { (vec![], vec![]) };
@@ -257,7 +258,7 @@ fn update_look_groups(model: &mut ModelFile) -> Result<()> {
         }
     }
     model.dat1.set_section_data(TAG_LOOK, look_sec.save())?;
-    Ok(())
+    crate::tools::model_converter::sections::looks::sync_lod_subset_bits(&mut model.dat1)
 }
 
 struct MeshUpdate {
@@ -268,10 +269,21 @@ struct MeshUpdate {
     index_count: u32,
     first_skin_batch: u16,
     first_weight_index: u32,
+    /// Subset bytes 0x2A-0x2B: skin batch count | anim-vert batch count << 8.
     skin_batches_count: u16,
     force_relative: bool,
     /// false for untouched meshes — skip the flag-strip so their original flags are preserved
     strip_flags: bool,
+    /// Bounds / area / UV density recomputed from replaced geometry.
+    stats: Option<bounds::SubsetStats>,
+}
+
+/// Packs the subset's two batch-count bytes, refusing counts the u8 field cannot hold.
+fn pack_batch_counts(batches: usize, anim_vert_batches: u8, name: &str) -> Result<u16> {
+    let n = u8::try_from(batches).map_err(|_| {
+        ToolkitError::Parse(format!("mesh '{name}' needs {batches} skin batches; a subset holds at most 255"))
+    })?;
+    Ok(n as u16 | (anim_vert_batches as u16) << 8)
 }
 
 fn parse_mesh_index_from_ascii_name(name: &str) -> Option<usize> {
@@ -451,11 +463,12 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
         .map(|d| SkinBatch::parse_all(d).ok()).flatten();
     let mut rcra_entries: Option<Vec<RcraSkinEntry>> = model.dat1.get_section_data(TAG_RCRA_SKIN)
         .map(|d| Some(RcraSkinEntry::parse_all(d))).flatten();
+    // Kept whole: batches copied from the original model still point at its remap tables.
+    let mut skin_remap: Option<Vec<u8>> = model.dat1.get_section_data(TAG_SKIN_JOINT_REMAP).map(|d| d.to_vec());
     let original_skin_data = skin_data.clone();
     let original_skin_batches = skin_batches.clone();
     let original_rcra_entries = rcra_entries.clone();
     let rebuild_skin = should_rebuild_skin(&meshes, ascii)?;
-    let skin_batch_templates = if rebuild_skin { skin_batches.clone() } else { None };
     if rebuild_skin {
         if let Some(ref mut sd) = skin_data {
             sd.clear();
@@ -625,6 +638,8 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
     }
 
     let mut updates = Vec::with_capacity(ascii.meshes.len());
+    // Parallel to `updates`: whether that subset's geometry was replaced.
+    let mut recompute_stats: Vec<bool> = Vec::with_capacity(n_meshes);
 
     for (i, mesh_data_ascii) in ascii.meshes.iter().enumerate() {
         let mesh_index = parse_mesh_index_from_ascii_name(&mesh_data_ascii.name).unwrap_or(i);
@@ -687,23 +702,11 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
             mesh.first_weight_index
         };
 
-        // Start skin batch tracking
-        let batch_vertex_count = mesh_data_ascii.vertexes.len();
-        let mut batch_vertex_index = 0usize;
-        let mut sum_batch_vertex_index = 0usize;
         let mut fallback_weight_count = 0usize;
         let mut fallback_reused_prev_count = 0usize;
-        let mut last_valid_weights: Option<(Vec<u8>, Vec<f32>)> = None;
-        let mut next_mesh_template_index = 1usize;
-        let mesh_batch_templates = if has_skin {
-            let start_batch = mesh.first_skin_batch as usize;
-            let batch_count = mesh.skin_batches_count as usize;
-            original_skin_batches
-                .as_ref()
-                .and_then(|all| all.get(start_batch..start_batch + batch_count))
-        } else {
-            None
-        };
+        let mut last_valid_weights: Option<skin_build::Influences> = None;
+        // Influences of every vertex of a rebuilt mesh; batched once the mesh is complete.
+        let mut mesh_influences: Vec<skin_build::Influences> = Vec::new();
         if has_skin && rebuild_skin {
             if skin_data.is_none() || skin_batches.is_none() {
                 return Err(ToolkitError::Parse(format!(
@@ -717,27 +720,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                     mesh_data_ascii.name
                 )));
             }
-            if mesh_skin_changed {
-                align_skin_data_16(&mut skin_data, &mut cur_skin_offset)?;
-                if let Some(ref mut batches) = skin_batches {
-                    let mut batch = mesh_batch_templates
-                        .and_then(|templates| templates.get(0))
-                        .cloned()
-                        .or_else(|| {
-                            skin_batch_templates
-                                .as_ref()
-                                .and_then(|templates| templates.get(cur_skin_batch))
-                                .cloned()
-                        })
-                        .unwrap_or_default();
-                    batch.offset = cur_skin_offset as u32;
-                    batch.vertex_count = 0;
-                    batch.first_vertex = 0;
-                    // rebuilt skin batches get unk1=0
-                    batch.unk1 = 0;
-                    batches.push(batch);
-                }
-            } else {
+            if !mesh_skin_changed {
                 let orig_skin_data_ref = original_skin_data.as_ref().ok_or_else(|| {
                     ToolkitError::Parse(format!(
                         "mesh '{}' is skinned but source model has no skin_data",
@@ -752,7 +735,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                 })?;
 
                 let start_batch = mesh.first_skin_batch as usize;
-                let batch_count = mesh.skin_batches_count as usize;
+                let batch_count = mesh.skin_batch_count() as usize;
                 let end_batch = start_batch + batch_count;
                 if end_batch > orig_skin_batches_ref.len() {
                     return Err(ToolkitError::Parse(format!(
@@ -824,8 +807,6 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                 }
             }
         }
-
-        let mut weights_group: Vec<(Vec<u8>, Vec<f32>)> = Vec::new();
 
         let vertex_count = mesh_data_ascii.vertexes.len();
         for (vi, av) in mesh_data_ascii.vertexes.iter().enumerate() {
@@ -903,36 +884,37 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                 } else {
                     last_valid_weights = Some(w.clone());
                 }
-                if has_rcra_skin {
-                    if let Some(ref mut entries) = rcra_entries {
-                        let mut bs = [1u8, 0, 0, 0];
-                        let mut ws = [255u8, 0, 0, 0];
-                        for j in 0..w.0.len().min(4) {
-                            bs[j] = w.0[j];
-                            ws[j] = (w.1.get(j).copied().unwrap_or(0.0) * 256.0).clamp(0.0, 255.0) as u8;
-                        }
-                        entries.push(RcraSkinEntry { bones: bs, weights: ws });
-                    }
-                    cur_rcra_weight += 1;
-                }
-                weights_group.push(w);
-
-                if weights_group.len() == 16 || (vi == vertex_count - 1 && !weights_group.is_empty()) {
-                    flush_weights_group(
-                        &mut weights_group, &mut skin_data, &mut cur_skin_offset,
-                        &mut skin_batches, &mut cur_skin_batch,
-                        &mut batch_vertex_index, &mut sum_batch_vertex_index, batch_vertex_count,
-                        mesh_batch_templates,
-                        &mut next_mesh_template_index,
-                        skin_batch_templates.as_deref(),
-                    )?;
-                }
+                mesh_influences.push(w);
             }
 
             cur_vertex += 1;
         }
 
         if has_skin && rebuild_skin && mesh_skin_changed {
+            let (Some(data), Some(batches)) = (skin_data.as_mut(), skin_batches.as_mut()) else {
+                return Err(ToolkitError::Parse("missing skin_data/skin_batch section while rebuilding skinned mesh".into()));
+            };
+            let written = skin_build::write_subset(
+                &mesh_influences,
+                0,
+                &mut skin_build::SkinOutput {
+                    data,
+                    batches,
+                    remap: skin_remap.as_mut(),
+                    gpu: if has_rcra_skin { rcra_entries.as_mut() } else { None },
+                },
+            )?;
+            cur_skin_batch += written.batches;
+            if has_rcra_skin {
+                cur_rcra_weight += mesh_influences.len();
+            }
+            if written.clamped_vertices > 0 {
+                log::warn!(
+                    "[inject_ascii] mesh '{}' (#{}): {} vertices blend joints 256+ indices apart and the model has no \
+                     Skin Joint Remap section; their lightest out-of-range influences were dropped",
+                    mesh_data_ascii.name, mesh_index, written.clamped_vertices
+                );
+            }
             log::warn!(
                 "[inject_ascii] mesh #{} fallback_weights={}/{} reused_prev={} unresolved={}",
                 mesh_index,
@@ -957,14 +939,16 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
 
         let skin_batches_count = if has_skin {
             if rebuild_skin {
-                let cur_skin_batch_u16 = u16::try_from(cur_skin_batch).map_err(|_| {
+                u16::try_from(cur_skin_batch).map_err(|_| {
                     ToolkitError::Parse(format!(
                         "too many skin batches while rebuilding '{}' (index {})",
                         mesh_data_ascii.name,
                         mesh_index
                     ))
                 })?;
-                cur_skin_batch_u16 - first_skin_batch
+                // Rebuilt batches carry no morph split, so their anim-vert count is 0.
+                let anim_vert = if mesh_skin_changed { 0 } else { mesh.anim_vert_batch_count() };
+                pack_batch_counts(cur_skin_batch - first_skin_batch as usize, anim_vert, &mesh_data_ascii.name)?
             } else {
                 mesh.skin_batches_count
             }
@@ -983,7 +967,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
             skin_batches_count,
             force_relative: force_relative[mesh_index],
             strip_flags: true,
+            stats: None,
         });
+        recompute_stats.push(changed.contains(&mesh_index));
     }
 
     // Re-point every subset the ASCII did not carry. The relayout moved their
@@ -1015,13 +1001,14 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                     new_first_weight_index = fwi;
                 } else {
                     new_first_skin_batch = cur_skin_batch as u16;
-                    new_skin_batches_count = 0;
+                    // Copied verbatim, so the anim-vert byte (and the morph data it describes) stays valid.
+                    new_skin_batches_count = (mesh.anim_vert_batch_count() as u16) << 8;
 
                     if let (Some(ref orig_sd), Some(ref orig_sb)) =
                         (original_skin_data.as_ref(), original_skin_batches.as_ref())
                     {
                         let start_batch = mesh.first_skin_batch as usize;
-                        let batch_count = mesh.skin_batches_count as usize;
+                        let batch_count = mesh.skin_batch_count() as usize;
                         let end_batch = start_batch + batch_count;
                         if end_batch <= orig_sb.len() {
                             if let Some(ref mut batches) = skin_batches {
@@ -1083,7 +1070,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
                 skin_batches_count: new_skin_batches_count,
                 force_relative: force_relative[mi],
                 strip_flags: false,
+                stats: None,
             });
+            recompute_stats.push(false);
         }
     }
 
@@ -1091,7 +1080,31 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
     // Must run *before* vert_sec.save(), because Vertex::save_rcra() reads the
     // computed tangents and packs them into the top bits of the normal u32 and
     // the i16 W field.
-    calculate_tangents(&mut vert_sec, uv1_sec.as_ref(), &idx_sec, &updates, &meshes, built_uv1_scale);
+    calculate_tangents(&mut vert_sec, &idx_sec, &updates, &meshes);
+
+    // Culling bounds, surface area and texel density of every subset whose geometry was replaced.
+    let orig_indices = IndexesSection::parse(&idx_data)?.values;
+    for (u, &recompute) in updates.iter_mut().zip(&recompute_stats) {
+        if !recompute {
+            continue;
+        }
+        let relative = u.force_relative || meshes[u.mesh_index].has_relative_indices();
+        let bias = bounds::stream_bias(&orig_vertexes_for_raw_w, &orig_indices, &meshes[u.mesh_index], built_pos_scale);
+        u.stats = bounds::subset_stats(
+            &vert_sec.vertexes,
+            &idx_sec.values,
+            u.vertex_start as usize,
+            u.vertex_count as usize,
+            u.index_start as usize,
+            u.index_count as usize,
+            if relative { u.vertex_start as usize } else { 0 },
+            built_pos_scale,
+        )
+        .map(|mut s| {
+            s.uv_density = (s.uv_density.0 * bias.0, s.uv_density.1 * bias.1);
+            s
+        });
+    }
 
     // Refresh BUILT total vertex/index counts to match the rebuilt sections.
     // The game validates section sizes against these — if we grow VERTEXES /
@@ -1104,6 +1117,9 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
             vert_sec.vertexes.len() as u32,
             idx_sec.values.len() as u32,
         );
+        if geometry_changed {
+            bounds::grow_built_bounds(&mut built, &vert_sec.vertexes, built_pos_scale);
+        }
         model.dat1.set_section_data(TAG_BUILT, built)?;
     }
 
@@ -1147,13 +1163,16 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
         if let Some(re) = rcra_entries {
             model.dat1.set_section_data(TAG_RCRA_SKIN, RcraSkinEntry::save_all(&re))?;
         }
+        if let Some(remap) = skin_remap {
+            model.dat1.set_section_data(TAG_SKIN_JOINT_REMAP, remap)?;
+        }
     }
 
     Ok((updates, geometry_changed))
 }
 
-fn normalize_weights(groups: &[u8], weights: &[f32]) -> ((Vec<u8>, Vec<f32>), bool) {
-    let mut ng: Vec<u8> = Vec::new();
+fn normalize_weights(groups: &[u16], weights: &[f32]) -> (skin_build::Influences, bool) {
+    let mut ng: Vec<u16> = Vec::new();
     let mut nw: Vec<f32> = Vec::new();
     let mut sum = 0.0f32;
     for (&g, &w) in groups.iter().zip(weights.iter()) {
@@ -1167,141 +1186,20 @@ fn normalize_weights(groups: &[u8], weights: &[f32]) -> ((Vec<u8>, Vec<f32>), bo
     ((ng, nw), used_fallback)
 }
 
-fn flush_weights_group(
-    group: &mut Vec<(Vec<u8>, Vec<f32>)>,
-    skin_data: &mut Option<Vec<u8>>,
-    cur_offset: &mut usize,
-    skin_batches: &mut Option<Vec<SkinBatch>>,
-    cur_batch: &mut usize,
-    batch_vertex_index: &mut usize,
-    sum_batch_vertex_index: &mut usize,
-    batch_vertex_count: usize,
-    mesh_batch_templates: Option<&[SkinBatch]>,
-    next_mesh_template_index: &mut usize,
-    skin_batch_templates: Option<&[SkinBatch]>,
-) -> Result<()> {
-    if group.is_empty() { return Ok(()); }
-    let max_groups = group.iter().map(|w| w.0.len()).max().unwrap_or(1);
-
-    let sd = skin_data.as_mut().ok_or_else(|| {
-        ToolkitError::Parse("missing skin_data section while rebuilding skinned mesh".into())
-    })?;
-    sd.push((max_groups - 1) as u8);
-    for w in group.iter() {
-        if max_groups == 1 {
-            sd.push(*w.0.first().unwrap_or(&1));
-        } else {
-            let mut bone_ids = vec![0u8; max_groups];
-            let mut iweights = vec![0i32; max_groups];
-            bone_ids[0] = *w.0.first().unwrap_or(&1);
-            iweights[0] = 256;
-            for k in 1..w.0.len().min(max_groups) {
-                bone_ids[k] = w.0[k];
-                let bw = (w.1.get(k).copied().unwrap_or(0.0) * 256.0).clamp(0.0, 255.0).round() as i32;
-                iweights[k] = bw;
-                iweights[0] -= bw;
-            }
-            if iweights[0] < 0 {
-                iweights[0] = 0;
-            } else if iweights[0] > 255 {
-                iweights[0] = 255;
-                iweights[1] = 1;
-                bone_ids[1] = bone_ids[0];
-            }
-            for k in 0..max_groups {
-                if k > 0 && iweights[k] == 0 { bone_ids[k] = bone_ids[k - 1]; }
-                sd.push(bone_ids[k]);
-                sd.push(iweights[k] as u8);
-            }
-        }
-        *batch_vertex_index += 1;
-    }
-    *cur_offset = sd.len();
-
-    group.clear();
-
-    // End current sub-batch and start next when all mesh verts are processed or sub-batch is full
-    let finished_mesh = *sum_batch_vertex_index + *batch_vertex_index == batch_vertex_count;
-    if finished_mesh || *batch_vertex_index == 2560 {
-        let batches = skin_batches.as_mut().ok_or_else(|| {
-            ToolkitError::Parse("missing skin_batch section while rebuilding skinned mesh".into())
-        })?;
-        if *cur_batch >= batches.len() {
-            return Err(ToolkitError::Parse(format!(
-                "internal skin_batch indexing error: batch {} out of {}",
-                *cur_batch,
-                batches.len()
-            )));
-        }
-
-        let vertex_count_u16 = u16::try_from(*batch_vertex_index).map_err(|_| {
-            ToolkitError::Parse(format!(
-                "skin batch vertex_count overflow: {}",
-                *batch_vertex_index
-            ))
-        })?;
-        let first_vertex_u16 = u16::try_from(*sum_batch_vertex_index).map_err(|_| {
-            ToolkitError::Parse(format!(
-                "skin batch first_vertex overflow: {}",
-                *sum_batch_vertex_index
-            ))
-        })?;
-
-        batches[*cur_batch].vertex_count = vertex_count_u16;
-        batches[*cur_batch].first_vertex = first_vertex_u16;
-        *cur_batch += 1;
-
-        *sum_batch_vertex_index += *batch_vertex_index;
-        *batch_vertex_index = 0;
-
-        if !finished_mesh {
-            align_skin_data_16(skin_data, cur_offset)?;
-            let mut next_batch = mesh_batch_templates
-                .and_then(|templates| templates.get(*next_mesh_template_index))
-                .cloned()
-                .or_else(|| {
-                    batches
-                        .get(*cur_batch - 1)
-                        .cloned()
-                })
-                .or_else(|| {
-                    skin_batch_templates
-                        .and_then(|templates| templates.get(*cur_batch))
-                        .cloned()
-                })
-                .unwrap_or_default();
-            next_batch.offset = *cur_offset as u32;
-            next_batch.vertex_count = 0;
-            next_batch.first_vertex = 0;
-            // See initial-batch push: rebuilt continuation batches use
-            // unk1=0
-            next_batch.unk1 = 0;
-            batches.push(next_batch);
-            *next_mesh_template_index += 1;
-        }
-    }
-
-    Ok(())
-}
-
-/// Compute per-vertex tangent + bitangent from triangle positions and UVs,
+/// Compute per-vertex tangent + bitangent from triangle positions and UV0,
 /// accumulating across all faces of every mesh we re-wrote. The results are
 /// stored on each `Vertex` so `save_rcra()` packs them into the nxyz u32 + W
-/// i16 fields (the actual on-disk tangent encoding for RCRA vertices).
+/// i16 fields. Shipped tangents follow UV0 even where UV1 differs.
 fn calculate_tangents(
     vert_sec: &mut VertexesSection,
-    uv1_sec: Option<&Uv1Section>,
     idx_sec: &IndexesSection,
     updates: &[MeshUpdate],
     meshes: &[MeshDefinition],
-    built_uv_scale: f32,
 ) {
     let n = vert_sec.vertexes.len();
     if n == 0 { return; }
     let mut tangents = vec![[0.0f64; 3]; n];
     let mut bitangents = vec![[0.0f64; 3]; n];
-
-    let uv_scale = built_uv_scale as f64;
 
     for u in updates {
         // Skip untouched meshes copied verbatim from vanilla — their tangents
@@ -1317,12 +1215,6 @@ fn calculate_tangents(
         let vc_offset: usize = if relative { 0 } else { vs };
 
         let uv_at = |abs_vi: usize| -> (f64, f64) {
-            if let Some(uv1) = uv1_sec {
-                if abs_vi < uv1.uvs.len() {
-                    let (ru, rv) = uv1.uvs[abs_vi];
-                    return (ru as f64 * uv_scale, rv as f64 * uv_scale);
-                }
-            }
             if abs_vi < vert_sec.vertexes.len() {
                 let v = &vert_sec.vertexes[abs_vi];
                 (v.u as f64, v.v as f64)
@@ -1428,6 +1320,13 @@ fn update_meshes(model: &mut ModelFile, updates: &[MeshUpdate]) -> Result<()> {
             m.skin_batches_count = u.skin_batches_count;
             if m.is_rcra_skinned() {
                 m.first_weight_index = u.first_weight_index;
+            }
+            if let Some(s) = u.stats {
+                m.bsphere_center = s.bsphere_center;
+                m.bsphere_radius = s.bsphere_radius;
+                m.aabb_extents = s.aabb_extents;
+                m.surface_area_sqrt = s.surface_area_sqrt;
+                (m.uv_density_u, m.uv_density_v) = s.uv_density;
             }
             // Preserve the vanilla flags. ALERT's gltf_to_model.py masks these
             // to 0x111, but that drops per-mesh bits the model actually uses

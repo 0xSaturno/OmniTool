@@ -74,7 +74,8 @@ use crate::core::material_names;
 use crate::core::toc::{Toc, TocAsset};
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
-    gltf_reader::{inject_gltf, parse_gltf},
+    gltf_import::{import_gltf, material_slot_plan, ImportOptions, SlotPlan},
+    gltf_reader::parse_gltf,
     gltf_writer::model_to_glb_for_looks as do_model_to_glb_for_looks,
     ascii_writer::model_to_ascii_for_looks as do_model_to_ascii_for_looks,
     model::ModelFile,
@@ -718,23 +719,89 @@ pub async fn ascii_to_model(
     Ok(output_path.to_string_lossy().into_owned())
 }
 
+fn gltf_sidecar(gltf_path: &str) -> String {
+    format!("{gltf_path}.omni.json")
+}
+
+/// Import options saved next to a glTF as `<gltf>.omni.json`, else defaults.
+fn gltf_import_options(gltf_path: &str) -> Result<ImportOptions, ToolkitError> {
+    let sidecar = gltf_sidecar(gltf_path);
+    match std::fs::read_to_string(&sidecar) {
+        Ok(text) => {
+            eprintln!("[gltf_to_model] using import options from {sidecar}");
+            serde_json::from_str(&text).map_err(|e| ToolkitError::Parse(format!("{sidecar}: {e}")))
+        }
+        Err(_) => Ok(ImportOptions::default()),
+    }
+}
+
+/// The target model's material slots and the glTF materials an import would add as new slots.
+#[tauri::command]
+pub async fn gltf_material_slots(gltf_path: String, src_model_path: String) -> Result<SlotPlan, ToolkitError> {
+    let gltf = parse_gltf(&gltf_path)?;
+    let model = ModelFile::parse(&std::fs::read(&src_model_path)?)?;
+    material_slot_plan(&model, &gltf, &gltf_import_options(&gltf_path)?)
+}
+
+/// `materials` (slot name -> `.material` path) overrides the saved options; with `remember` they are saved.
 #[tauri::command]
 pub async fn gltf_to_model(
     gltf_path: String,
     src_model_path: String,
     out_path: Option<String>,
+    materials: Option<std::collections::BTreeMap<String, String>>,
+    remember: Option<bool>,
 ) -> Result<String, ToolkitError> {
     let start = Instant::now();
     eprintln!("[gltf_to_model] loading gltf from {}", gltf_path);
     let gltf = parse_gltf(&gltf_path)?;
     eprintln!("[gltf_to_model] parsed gltf ({} meshes, {} bones)", gltf.meshes.len(), gltf.bones.len());
+    let mut options = gltf_import_options(&gltf_path)?;
+    if let Some(materials) = materials.filter(|m| !m.is_empty()) {
+        options.materials.extend(materials);
+        if remember.unwrap_or(false) {
+            let sidecar = gltf_sidecar(&gltf_path);
+            let text = serde_json::to_string_pretty(&options).map_err(|e| ToolkitError::Parse(e.to_string()))?;
+            std::fs::write(&sidecar, text)?;
+            eprintln!("[gltf_to_model] saved material paths to {sidecar}");
+        }
+    }
 
     eprintln!("[gltf_to_model] loading source model from {}", src_model_path);
     let model_data = std::fs::read(&src_model_path)?;
     let mut model = ModelFile::parse(&model_data)?;
 
     eprintln!("[gltf_to_model] injecting gltf data into model");
-    inject_gltf(&mut model, &gltf)?;
+    let report = import_gltf(&mut model, &gltf, &options)?;
+    for s in &report.subsets {
+        eprintln!(
+            "[gltf_to_model] subset {:>4} <- '{}' slot '{}' {:?}{} ({} verts, {} tris{}{})",
+            s.subset,
+            s.primitive,
+            s.slot,
+            s.tier,
+            s.source.map(|o| format!(" of #{o}")).unwrap_or_default(),
+            s.vertices,
+            s.triangles,
+            if s.skin_rebuilt { ", skin rebuilt" } else { "" },
+            if s.morph_vertices > 0 { format!(", {} morphing", s.morph_vertices) } else { String::new() },
+        );
+    }
+    if !report.removed.is_empty() {
+        eprintln!("[gltf_to_model] removed subsets {:?}", report.removed);
+    }
+    if !report.kept.is_empty() {
+        eprintln!("[gltf_to_model] kept subsets missing from the glTF: {:?}", report.kept);
+    }
+    if !report.new_slots.is_empty() {
+        eprintln!("[gltf_to_model] new material slots: {}", report.new_slots.join(", "));
+    }
+    if let Some(n) = report.morphs {
+        eprintln!("[gltf_to_model] re-encoded {n} morph targets");
+    }
+    for w in &report.warnings {
+        eprintln!("[gltf_to_model] WARNING: {w}");
+    }
 
     let output_path = out_path
         .filter(|s| !s.is_empty())

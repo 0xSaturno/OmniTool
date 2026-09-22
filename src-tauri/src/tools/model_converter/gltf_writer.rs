@@ -6,10 +6,9 @@ use crate::tools::model_converter::sections::{
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
     looks::{TAG_MATERIAL, MaterialSection},
-    skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
-           decode_skin_data, decode_rcra_skin, VertexWeights},
+    skin::{SkinSource, VertexWeights},
     built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
-    morph::{AnimMorphInfo, TAG_ANIM_MORPH_DATA, TAG_ANIM_MORPH_INDICES, TAG_ANIM_MORPH_INFO},
+    morph::{chunk_bases, AnimMorphInfo, TAG_ANIM_MORPH_DATA, TAG_ANIM_MORPH_INDICES, TAG_ANIM_MORPH_INFO},
 };
 
 use glam::{Mat4, Quat, Vec3};
@@ -73,6 +72,17 @@ impl Buf {
         self.align4();
         let start = self.bytes.len();
         for e in v { self.bytes.extend_from_slice(e); }
+        (start, self.bytes.len() - start)
+    }
+
+    fn push_vec4_u16(&mut self, v: &[[u16; 4]]) -> (usize, usize) {
+        self.align4();
+        let start = self.bytes.len();
+        for e in v {
+            for x in e {
+                self.bytes.extend_from_slice(&x.to_le_bytes());
+            }
+        }
         (start, self.bytes.len() - start)
     }
 
@@ -181,16 +191,8 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
     let morph_data = dat1.get_section_data(TAG_ANIM_MORPH_DATA).unwrap_or(&[]);
     let morph_idx = dat1.get_section_data(TAG_ANIM_MORPH_INDICES).unwrap_or(&[]);
 
-    // Skin
-    let batched_skin: Option<Vec<VertexWeights>> = {
-        if let (Some(raw), Some(batch_data)) = (dat1.get_section_data(TAG_SKIN_DATA), dat1.get_section_data(TAG_SKIN_BATCH)) {
-            let batches = SkinBatch::parse_all(batch_data)?;
-            Some(decode_skin_data(raw, &batches))
-        } else { None }
-    };
-    let rcra_skin: Option<Vec<VertexWeights>> = dat1.get_section_data(TAG_RCRA_SKIN).map(|d| {
-        decode_rcra_skin(&RcraSkinEntry::parse_all(d))
-    });
+    // Skin, decoded per subset with each batch's joint base / remap applied.
+    let skin = SkinSource::from_dat1(dat1);
 
     let joints_data = dat1.get_section_data(TAG_JOINTS);
     let transform_data = dat1.get_section_data(TAG_JOINTS_TRANSFORM);
@@ -331,20 +333,10 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         let slot = mesh.material_index;
         let mat_path = get_material_path(slot);
         let slot_name = get_material_name(slot);
-        // Named after the material slot, not its path. Blender's MAX_NAME caps
-        // object/mesh names at 63 bytes, and the full paths run 77-103 — they
-        // were being silently truncated mid-path. Slot names are short, unique
-        // per slot and non-empty even where the path is (wpn_sheepinator's
-        // `pasted__mtl_sheepinator2` has no path, which used to yield a bare
-        // "sm12_"). The readers only need the leading `sm<digits>`.
-        let label = if !slot_name.is_empty() {
-            slot_name.clone()
-        } else if !mat_path.is_empty() {
-            mat_path.clone()
-        } else {
-            format!("mat{}", slot)
-        };
-        let mesh_name = format!("sm{:02}_{}", mi, label);
+        // Named after the material slot, not its path: Blender caps names at 63 bytes and paths
+        // run 77-103. The importer identifies subsets by material and geometry (plus the
+        // `rcra_subset` extra when custom properties survive), so no `smNN_` prefix is needed.
+        let mesh_name = if slot_name.is_empty() { format!("mat{}", slot) } else { slot_name.clone() };
         let material_index = *material_indices.entry(slot).or_insert_with(|| {
             let name = if slot_name.is_empty() {
                 format!("mat{}", slot)
@@ -370,8 +362,11 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         let vstart = mesh.vertex_start as usize;
         let vcount = mesh.vertex_count as usize;
         let mesh_has_skin = has_bones_section && (mesh.is_skinned() || mesh.is_rcra_skinned());
-        let skin_to_use = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
-        let weight_offset = if mesh.is_rcra_skinned() { mesh.first_weight_index as usize } else { vstart };
+        let mesh_weights: Vec<VertexWeights> = if mesh_has_skin {
+            skin.as_ref().map(|s| s.subset_weights(mesh)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(vcount);
         let mut normals: Vec<[f32; 3]> = Vec::with_capacity(vcount);
@@ -387,7 +382,7 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         // second set when needed; dropping them silently under-weights the
         // vertex and wrecks the deformation on reimport.
         const MAX_INFLUENCES: usize = 8;
-        let mut joints_arr: Vec<[u8; MAX_INFLUENCES]> = Vec::with_capacity(vcount);
+        let mut joints_arr: Vec<[u16; MAX_INFLUENCES]> = Vec::with_capacity(vcount);
         let mut weights_arr: Vec<[f32; MAX_INFLUENCES]> = Vec::with_capacity(vcount);
         let mut max_influences = 0usize;
         let mut dropped_influences = 0usize;
@@ -412,10 +407,9 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
             }
 
             if mesh_has_skin {
-                let wi = vi - vstart + weight_offset;
                 let empty: VertexWeights = Vec::new();
-                let vw = skin_to_use.and_then(|s| s.get(wi)).unwrap_or(&empty);
-                let mut ja = [0u8; MAX_INFLUENCES];
+                let vw = mesh_weights.get(vi - vstart).unwrap_or(&empty);
+                let mut ja = [0u16; MAX_INFLUENCES];
                 let mut wa = [0f32; MAX_INFLUENCES];
                 let used = vw.len().min(MAX_INFLUENCES);
                 for k in 0..used {
@@ -466,9 +460,11 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
                     mesh_name, dropped_influences, MAX_INFLUENCES
                 );
             }
+            // Rigs past 255 joints need 16-bit JOINTS_n; everything else keeps 8-bit.
+            let wide = joints_arr.iter().flatten().any(|&j| j > u8::MAX as u16);
             for s in 0..sets {
                 let base = s * 4;
-                let j_set: Vec<[u8; 4]> = joints_arr
+                let j_set: Vec<[u16; 4]> = joints_arr
                     .iter()
                     .map(|j| [j[base], j[base + 1], j[base + 2], j[base + 3]])
                     .collect();
@@ -477,9 +473,14 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
                     .map(|w| [w[base], w[base + 1], w[base + 2], w[base + 3]])
                     .collect();
 
-                let (j_off, j_len) = buf.push_vec4_u8(&j_set);
+                let ((j_off, j_len), j_type) = if wide {
+                    (buf.push_vec4_u16(&j_set), gj::accessor::ComponentType::U16)
+                } else {
+                    let narrow: Vec<[u8; 4]> = j_set.iter().map(|j| j.map(|x| x as u8)).collect();
+                    (buf.push_vec4_u8(&narrow), gj::accessor::ComponentType::U8)
+                };
                 let j_view = add_view(&mut root, buffer_index, j_off, j_len, Some(gj::buffer::Target::ArrayBuffer));
-                let j_accessor = add_accessor(&mut root, j_view, gj::accessor::ComponentType::U8, gj::accessor::Type::Vec4, j_set.len(), None, None);
+                let j_accessor = add_accessor(&mut root, j_view, j_type, gj::accessor::Type::Vec4, j_set.len(), None, None);
 
                 let (w_off, w_len) = buf.push_vec4_f32(&w_set);
                 let w_view = add_view(&mut root, buffer_index, w_off, w_len, Some(gj::buffer::Target::ArrayBuffer));
@@ -518,7 +519,8 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
                     if e.subset_ids[si] as usize != mi {
                         continue;
                     }
-                    let deltas = AnimMorphInfo::decode_subset(e, si, morph_data, morph_idx);
+                    let bases = skin.as_ref().map(|s| chunk_bases(mesh.first_skin_batch, mesh.skin_batch_count(), &s.batches)).unwrap_or_default();
+                    let deltas = AnimMorphInfo::decode_subset(e, si, morph_data, morph_idx, &bases);
                     let mut ids: Vec<u32> = Vec::with_capacity(deltas.len());
                     let mut pos: Vec<[f32; 3]> = Vec::with_capacity(deltas.len());
                     let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(deltas.len());
@@ -602,14 +604,11 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         };
 
         // Blender and friends read morph names from mesh.extras.targetNames.
-        let mesh_extras: gj::Extras = if target_names.is_empty() {
-            Default::default()
-        } else {
-            serde_json::value::RawValue::from_string(
-                serde_json::json!({ "targetNames": target_names }).to_string(),
-            )
-            .ok()
-        };
+        let mut extras = serde_json::json!({ "rcra_subset": mi });
+        if !target_names.is_empty() {
+            extras["targetNames"] = serde_json::json!(target_names);
+        }
+        let mesh_extras: gj::Extras = serde_json::value::RawValue::from_string(extras.to_string()).ok();
 
         let gltf_mesh_index = root.push(gj::Mesh {
             extensions: None,
@@ -633,7 +632,7 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
 
     let scene = root.push(gj::Scene {
         extensions: None,
-        extras: Default::default(),
+        extras: serde_json::value::RawValue::from_string(serde_json::json!({ "rcra_looks": looks }).to_string()).ok(),
         name: Some("Scene".to_string()),
         nodes: scene_nodes,
     });

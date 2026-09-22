@@ -119,6 +119,33 @@ fn main() {
             n, pos, w, nrm, uv
         );
 
+        // Recomputed tangents against the shipped ones, by direction and binormal sign.
+        let tangent = |v: &[u8]| {
+            let w = i16::from_le_bytes([v[6], v[7]]) as i32;
+            let nt = u32::from_le_bytes([v[8], v[9], v[10], v[11]]);
+            let s2 = std::f64::consts::SQRT_2;
+            let ex = ((nt >> 20) & 0x3FF) as f64 / 1023.0 * (4.0 / s2) - 2.0 / s2;
+            let ey = (w.abs() & 0x3FF) as f64 / 1023.0 * (4.0 / s2) - 2.0 / s2;
+            let f = ex * ex + ey * ey;
+            let k = (1.0 - f * 0.25).max(0.0).sqrt();
+            let z = (1.0 - f * 0.5).abs();
+            ([ex * k, ey * k, if nt >> 30 & 1 == 1 { z } else { -z }], w >= 0)
+        };
+        let (mut within_30, mut sign_same, mut compared) = (0u32, 0u32, 0u32);
+        for i in 0..n {
+            let (x, y) = (&a[i * 16..i * 16 + 16], &b[i * 16..i * 16 + 16]);
+            let ((ta, sa), (tb, sb)) = (tangent(x), tangent(y));
+            let dot = ta[0] * tb[0] + ta[1] * tb[1] + ta[2] * tb[2];
+            compared += 1;
+            within_30 += (dot >= 30f64.to_radians().cos()) as u32;
+            sign_same += (sa == sb) as u32;
+        }
+        println!(
+            "Tangents vs shipped: {:.1}% within 30 degrees, binormal sign equal on {:.1}%",
+            100.0 * within_30 as f64 / compared.max(1) as f64,
+            100.0 * sign_same as f64 / compared.max(1) as f64
+        );
+
         // How far the repacked normals actually moved, in degrees.
         let mut worst = 0f64;
         let mut over_1deg = 0u32;

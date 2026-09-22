@@ -17,6 +17,7 @@ pub fn run() {
             commands::list_model_lookgroups,
             commands::ascii_to_model,
             commands::gltf_to_model,
+            commands::gltf_material_slots,
             commands::read_model_materials,
             commands_model_inspector::read_model_info,
             commands::save_model_materials,

@@ -7,46 +7,11 @@ use omnitool_lib::core::dat1::Dat1;
 use omnitool_lib::tools::model_converter::model::ModelFile;
 use omnitool_lib::tools::model_converter::sections::*;
 
-fn tag_name(tag: u32) -> &'static str {
-    match tag {
-        0x283D0383 => "Model Built",
-        0xA98BE69B => "Model Std Vert",
-        0x16F3BA18 => "Model Tex Vert",
-        0x6B855EED => "Model UV1 Vert",
-        0xCCBAFF15 => "Model GPU Skin",
-        0xDCA379A2 => "Model Skin Data",
-        0xC61B1FF5 => "Model Skin Batch",
-        0x5240C82B => "Model Skin Joint Remap",
-        0x0859863D => "Model Index",
-        0x78D9CBDE => "Model Subset",
-        0x3250BB80 => "Model Material",
-        0xDCC88A19 => "Model Bind Pose",
-        0x90CDB60C => "Model Joint Hierarchy",
-        0x15DF9D3B => "Model Joint",
-        0x0AD3A708 => "Model Joint Bspheres",
-        0xEE31971C => "Model Joint Lookup",
-        0x9F614FAB => "Model Locator",
-        0x731CBC2E => "Model Locator Lookup",
-        0xC5354B60 => "Model Mirror Ids",
-        0x5CBA9DE9 => "Model Col Vert",
-        0xEFD92E68 => "Model Physics Data",
-        0x5E709570 => "Model Anim Morph Data",
-        0xA600C108 => "Model Anim Morph Indices",
-        0x380A5744 => "Model Anim Morph Info",
-        0xADD1CBD3 => "Model Anim Dynamics Def",
-        0x06EB7EFC => "Model Look",
-        0x811902D7 => "Model Look Built",
-        0x4CCEA4AD => "Model Look Group",
-        0xDF9FDF12 => "Model Look BVH Info",
-        0xB7380E8C => "Model Leaf Ids",
-        0x27CA5246 => "Model Splines",
-        0x3C9DABDF => "Model Spline Subsets",
-        0xBB7303D5 => "Model Spline Skin Binding",
-        0x707F1B58 => "(unnamed) Joint Bind Chains",
-        0x9A434B29 => "(unnamed) IK Chains",
-        0x5A39FAB7 => "(unnamed) Joint Set",
-        0xB25B3163 => "(unnamed) Spline Points",
-        _ => "?",
+fn tag_name(tag: u32) -> String {
+    match section_name(tag) {
+        Some((n, true)) => n.to_string(),
+        Some((n, false)) => format!("{n} (inferred)"),
+        None => "?".into(),
     }
 }
 
@@ -55,7 +20,7 @@ fn s(dat1: &Dat1, offset: u64) -> String {
 }
 
 fn joint_names(dat1: &Dat1) -> Vec<String> {
-    dat1.get_section_data(0x15DF9D3B)
+    dat1.get_section_data(joints::TAG_JOINTS)
         .map(|d| {
             Joint::parse_all(d)
                 .unwrap_or_default()
@@ -79,45 +44,86 @@ fn main() {
     let model = ModelFile::parse(&data).expect("parse model");
     let dat1 = &model.dat1;
     let jn = joint_names(dat1);
+    let jname = |j: usize| jn.get(j).cloned().unwrap_or_else(|| j.to_string());
 
     println!("== sections ({}) ==", dat1.sections.len());
     let mut ordered: Vec<_> = dat1.sections.iter().enumerate().collect();
     ordered.sort_by_key(|(_, s)| s.offset);
     for (i, sec) in ordered {
         println!(
-            "  0x{:08X}  {:<28}  size={}",
+            "  0x{:08X}  {:<36}  size={}",
             sec.tag,
             tag_name(sec.tag),
             dat1.section_data[i].len()
         );
     }
 
+    let built = dat1.get_section_data(built::TAG_BUILT).and_then(Built::parse);
+    let mpu = built.as_ref().map(|b| b.meters_per_unit).unwrap_or(1.0 / 4096.0);
+
     if show("built") {
-        if let Some(b) = dat1.get_section_data(built::TAG_BUILT).and_then(Built::parse) {
+        if let Some(b) = &built {
             println!("\n== Built ==");
-            println!("  bounds          {:?}", b.bounds);
-            println!("  position_offset {:?}", b.position_offset);
-            println!("  position_scale  {} (1/{})", b.position_scale, 1.0 / b.position_scale);
+            println!("  bsphere         c={:?} r={}", b.bsphere_center, b.bsphere_radius);
+            println!("  aabb_extents    {:?}", b.aabb_extents);
+            println!("  mesh_center     {:?}", b.mesh_center);
+            println!("  meters_per_unit {} (1/{})", b.meters_per_unit, 1.0 / b.meters_per_unit);
             println!(
                 "  uv scales       uv0={} uv1={} (field 0x{:X})",
                 b.uv0_scale(),
                 b.uv1_scale(),
-                b.uv_shifts
+                b.uv_log_scales
             );
             println!("  lod_distances   {:?}", b.lod_distances);
             println!("  counts          verts={} indices={}", b.vertex_count, b.index_count);
-            println!("  feature_flags   0x{:08X}", b.feature_flags);
-            for (name, bit) in [
-                ("UV1+COLOR", built::flags::UV1_AND_COLOR),
-                ("MORPH+SPLINES", built::flags::MORPH_AND_SPLINES),
-                ("IK_CHAINS", built::flags::IK_CHAINS),
-                ("ANIM_DYNAMICS", built::flags::ANIM_DYNAMICS),
-            ] {
-                if b.feature_flags & bit != 0 {
-                    println!("                  + {name}");
-                }
+            println!("  flags           0x{:08X} {:?}", b.flags, b.flag_names());
+            println!("  content_flags   0x{:X}", b.content_flags);
+            println!(
+                "  anim            ambient={} max_disp={} dyn_force=[{}, {}]",
+                b.ambient_animation, b.max_displacement, b.min_dynamic_force, b.max_dynamic_force
+            );
+            println!(
+                "  render          z_bias={} alpha_sort_bias={} fade_out={} shadow_fade={} shadow_lod={}",
+                b.z_bias(),
+                b.alpha_sort_bias(),
+                b.fade_out_dist,
+                b.shadow_fade_dist,
+                b.shadow_casting_lod
+            );
+            println!(
+                "  hashes          av=0x{:08X} audio=0x{:08X}  strand_subsets={}",
+                b.av_material_hash, b.audio_material_hash, b.strand_subset_count
+            );
+        }
+    }
+
+    if show("subset") {
+        if let Some(subs) = dat1
+            .get_section_data(meshes::TAG_MESHES)
+            .and_then(|d| MeshDefinition::parse_all(d).ok())
+        {
+            println!("\n== Subsets ({}) ==", subs.len());
+            for (i, m) in subs.iter().enumerate() {
+                println!(
+                    "  [{i:4}] v {:7}+{:<6} i {:8}+{:<7} mat {:3} flags 0x{:04X} lod {} ref {}{} skin {}+{} (anim {}) r={:.3} area={:.3} fade={} mat_lod={}",
+                    m.vertex_start,
+                    m.vertex_count,
+                    m.index_start,
+                    m.index_count,
+                    m.material_index,
+                    m.flags,
+                    m.lod_id(),
+                    m.lod_ref(),
+                    if m.is_lod_proxy() { " proxy" } else { "" },
+                    m.first_skin_batch,
+                    m.skin_batch_count(),
+                    m.anim_vert_batch_count(),
+                    m.bsphere_radius_m(mpu),
+                    m.surface_area_m2(),
+                    m.fade_out_dist,
+                    m.material_lod_dist
+                );
             }
-            println!("  unk 0x60={:#X} 0x6C={:#X} 0x70={:#X} 0x74={:#X}", b.unk_0x60, b.unk_0x6c, b.unk_0x70, b.unk_0x74);
         }
     }
 
@@ -131,9 +137,10 @@ fn main() {
                 let name = s(dat1, slot.name_offset);
                 let id = m.id_for_name(&name);
                 println!(
-                    "  [{i:3}] aid={:016X}{}  {}  <- {}",
+                    "  [{i:3}] aid={:016X}{} flags=0x{:X}  {}  <- {}",
                     id.map(|x| x.asset_id).unwrap_or(0),
                     if id.is_some() { "" } else { " (no id entry)" },
+                    id.map(|x| x.flags).unwrap_or(0),
                     name,
                     s(dat1, slot.path_offset)
                 );
@@ -149,7 +156,7 @@ fn main() {
         if !groups.is_empty() {
             println!("\n== Look Groups ==");
             for g in &groups {
-                println!("  hash={:08X} unk=0x{:X} looks={:?}", g.name_hash, g.unk, g.looks);
+                println!("  {:<24} hash={:08X} looks={:?}", s(dat1, g.name_offset as u64), g.name_hash, g.looks);
             }
         }
         let look_count = dat1
@@ -162,17 +169,18 @@ fn main() {
         {
             println!("\n== Look Built ({} looks) ==", lb.looks.len());
             for (i, l) in lb.looks.iter().enumerate() {
-                let expanded = expand_mask(&l.bsphere_mask);
-                let mask_ok = expanded == l.bspheres;
+                let mask_ok = expand_mask(&l.bsphere_mask) == l.bspheres;
                 println!(
-                    "  [{i}] name={:08X}/{:08X} unk=0x{:X} subcounts={:?} bspheres({})={:?} mask_matches={}",
-                    l.name_hash, l.name_hash_lower, l.unk, l.sub_counts, l.bsphere_count, l.bspheres, mask_ok
+                    "  [{i}] {:<28} bodies={:?} cloths={:?} cloth_joints={} collidables={} bspheres={:?} mask_matches={} lod0_subsets={}",
+                    s(dat1, l.name_offset as u64),
+                    l.rigid_bodies,
+                    l.cloths,
+                    l.cloth_joints.len(),
+                    l.cloth_collidables.len(),
+                    l.bspheres,
+                    mask_ok,
+                    l.lod_subsets(0).len()
                 );
-                for (k, a) in l.sub_arrays.iter().enumerate() {
-                    if !a.is_empty() {
-                        println!("        sub{k} = {a:?}");
-                    }
-                }
             }
         }
         if let Some(v) = dat1
@@ -181,7 +189,7 @@ fn main() {
         {
             println!("\n== Look BVH Info ==");
             for (i, e) in v.iter().enumerate() {
-                println!("  [{i}] nodes={} depth={} unk=({},{})", e.node_count, e.depth, e.unk0, e.unk2);
+                println!("  [{i}] usage=0x{:X} lod={}", e.usage, e.lod);
             }
         }
     }
@@ -193,16 +201,56 @@ fn main() {
         {
             println!("\n== Locators ({}) ==", l.len());
             for (i, loc) in l.iter().enumerate() {
-                let owner = loc
-                    .joint
-                    .and_then(|j| jn.get(j as usize).cloned())
-                    .unwrap_or_else(|| "-".into());
+                let owner = loc.joint.map(|j| jname(j as usize)).unwrap_or_else(|| "-".into());
                 println!(
-                    "  [{i:3}] {:08X} {:<34} joint={owner}",
+                    "  [{i:3}] {:08X} {:<34} joint={owner} pos=({:.3},{:.3},{:.3})",
                     loc.hash,
-                    s(dat1, loc.string_offset as u64)
+                    s(dat1, loc.string_offset as u64),
+                    loc.transform[9],
+                    loc.transform[10],
+                    loc.transform[11]
                 );
             }
+        }
+    }
+
+    if show("joint") {
+        if let Some(js) = dat1
+            .get_section_data(joints::TAG_JOINTS)
+            .and_then(|d| Joint::parse_all(d).ok())
+        {
+            println!("\n== Joints ({}) ==", js.len());
+            for (i, j) in js.iter().enumerate() {
+                let f = j.flags;
+                let tags: Vec<&str> = [
+                    (joint_flags::MIRROR_PAIRED_LEFT, "L"),
+                    (joint_flags::MIRROR_PAIRED_RIGHT, "R"),
+                    (joint_flags::END_JOINT, "end"),
+                    (joint_flags::CLOTH_JOINT, "cloth"),
+                    (joint_flags::HAS_NEXT_SIBLING, "sib"),
+                    (joint_flags::SEGMENT_SCALE_COMPENSATE, "ssc"),
+                ]
+                .into_iter()
+                .filter(|(b, _)| f & b != 0)
+                .map(|(_, n)| n)
+                .collect();
+                println!(
+                    "  [{i:3}] {:<30} parent={:<4} subtree={:<3} {}",
+                    jname(i),
+                    j.parent,
+                    j.subtree_count,
+                    tags.join(",")
+                );
+            }
+        }
+        if let Some(h) = dat1
+            .get_section_data(skeleton::TAG_JOINT_HIERARCHY)
+            .and_then(|d| JointHierarchy::parse(d).ok())
+        {
+            println!(
+                "  hierarchy: flags={} joints={} mirrors={} leaves={} spline_root=0x{:X} spline_joints={} spline_radius={}",
+                h.flags, h.joint_count, h.mirror_count, h.leaf_count, h.spline_root, h.spline_joint_count, h.spline_radius
+            );
         }
     }
 
@@ -221,7 +269,7 @@ fn main() {
                     sp.center.1,
                     sp.center.2,
                     sp.radius,
-                    jn.get(j).cloned().unwrap_or_default()
+                    jname(j)
                 );
             }
         }
@@ -234,13 +282,19 @@ fn main() {
         {
             println!("\n== Mirror Ids ({}) ==", m.len());
             for e in &m {
+                let kind = match e.kind {
+                    mirror_kind::PAIRED => "paired",
+                    mirror_kind::PAIRED_ATTACH => "paired-attach",
+                    mirror_kind::PAIRED_LINK => "paired-link",
+                    mirror_kind::UNPAIRED => "unpaired",
+                    _ => "?",
+                };
                 println!(
-                    "  {:>3} {:<28} <-> {:>3} {:<28} flags={:X}",
+                    "  {:>3} {:<28} <-> {:>3} {:<28} {kind}",
                     e.joint,
-                    jn.get(e.joint as usize).cloned().unwrap_or_default(),
+                    jname(e.joint as usize),
                     e.mirror_joint,
-                    jn.get(e.mirror_joint as usize).cloned().unwrap_or_default(),
-                    e.flags
+                    jname(e.mirror_joint as usize)
                 );
             }
         }
@@ -273,10 +327,8 @@ fn main() {
                 println!("  {l:08X} <-> {r:08X}");
             }
 
-            // Decode every morph and report the structural self-checks, which
-            // is what pins the format down: per-chunk index counts have to hit
-            // the stored vertex counts exactly, and every id must land inside
-            // its own subset's vertex range.
+            // Structural self-checks: per-chunk index counts must hit the stored
+            // vertex counts exactly, and every id must land inside its subset.
             let (data, idx, subsets) = (
                 dat1.get_section_data(morph::TAG_ANIM_MORPH_DATA),
                 dat1.get_section_data(morph::TAG_ANIM_MORPH_INDICES),
@@ -284,11 +336,19 @@ fn main() {
             );
             if let (Some(data), Some(idx), Some(sub)) = (data, idx, subsets) {
                 let subs = MeshDefinition::parse_all(sub).unwrap_or_default();
+                let batches = dat1
+                    .get_section_data(skin::TAG_SKIN_BATCH)
+                    .and_then(|d| SkinBatch::parse_all(d).ok())
+                    .unwrap_or_default();
                 let (mut count_ok, mut count_bad, mut oob) = (0usize, 0usize, 0usize);
                 let mut sample = Vec::new();
                 for e in &m.entries {
                     for si in 0..e.subset_count as usize {
-                        let deltas = AnimMorphInfo::decode_subset(e, si, data, idx);
+                        let bases = subs
+                            .get(e.subset_ids[si] as usize)
+                            .map(|md| morph::chunk_bases(md.first_skin_batch, md.skin_batch_count(), &batches))
+                            .unwrap_or_default();
+                        let deltas = AnimMorphInfo::decode_subset(e, si, data, idx, &bases);
                         if deltas.len() == e.subset_vertex_counts[si] as usize {
                             count_ok += 1;
                         } else {
@@ -323,60 +383,99 @@ fn main() {
         }
     }
 
-    if show("ik") || show("chain") {
-        if let Some(b) = dat1
-            .get_section_data(dynamics::TAG_JOINT_BIND_CHAINS)
-            .and_then(|d| JointBindChains::parse(d).ok())
+    if show("ragdoll") || show("rig") {
+        if let Some(r) = dat1
+            .get_section_data(dynamics::TAG_RAGDOLL_META_DATA)
+            .and_then(|d| RagdollMetaData::parse(d).ok())
         {
-            println!("\n== Joint Bind Chains ({}) ==", b.entries.len());
-            for e in &b.entries {
-                let chain: Vec<String> = b
-                    .chain_of(e)
-                    .iter()
-                    .map(|&j| jn.get(j as usize).cloned().unwrap_or_else(|| j.to_string()))
-                    .collect();
+            println!("\n== Ragdoll Meta Data ({} bodies, flags=0x{:X}) ==", r.bodies.len(), r.flags);
+            for b in &r.bodies {
+                let chain: Vec<String> = r.ancestors_of(b).iter().map(|&j| jname(j as usize)).collect();
                 println!(
-                    "  {:<26} parent={:<26} chain={}",
-                    jn.get(e.joint as usize).cloned().unwrap_or_default(),
-                    if e.parent == u16::MAX {
-                        "-".into()
-                    } else {
-                        jn.get(e.parent as usize).cloned().unwrap_or_default()
-                    },
+                    "  {:<26} parent={:<26} ancestors={}",
+                    if b.joint == u16::MAX { format!("(no joint {:08X})", b.joint_hash) } else { jname(b.joint as usize) },
+                    if b.parent_joint == u16::MAX { "-".into() } else { jname(b.parent_joint as usize) },
                     chain.join(" > ")
                 );
             }
         }
+    }
+
+    if show("ik") || show("rig") {
         if let Some(k) = dat1
-            .get_section_data(dynamics::TAG_IK_CHAINS)
-            .and_then(|d| IkChains::parse(d).ok())
+            .get_section_data(dynamics::TAG_IK_SETUP)
+            .and_then(|d| IkSetup::parse(d).ok())
         {
-            println!("\n== IK Chains ({} solvers, {} limits) ==", k.solvers.len(), k.limits.len());
-            for sv in &k.solvers {
-                let chain: Vec<String> = k
-                    .joints_of(sv)
-                    .iter()
-                    .map(|&j| jn.get(j as usize).cloned().unwrap_or_else(|| j.to_string()))
-                    .collect();
+            println!(
+                "\n== IK Setup ({} chains, {} joint infos, {} sticks) ==",
+                k.chains.len(),
+                k.joints.len(),
+                k.sticks.len()
+            );
+            for c in &k.chains {
+                let chain: Vec<String> = k.chain_joints(c).iter().map(|&j| jname(j as usize)).collect();
                 println!(
-                    "  effector={:08X} tol={} tag={:?} chain={}",
-                    sv.locator_hash,
-                    sv.tolerance,
-                    sv.tag,
+                    "  goal={:08X} err={} iters={} flags=0x{:X} sticks={} chain={}",
+                    c.goal_locator_hash,
+                    c.solver_error,
+                    c.max_iterations,
+                    c.flags,
+                    c.stick_count,
                     chain.join(" > ")
                 );
             }
-            for l in &k.limits {
-                println!("    limit axis={} range=[{}, {}] value={}", l.axis, l.min, l.max, l.value);
+        }
+    }
+
+    if show("cloth") || show("rig") {
+        if let Some(c) = dat1
+            .get_section_data(dynamics::TAG_CLOTH_META_DATA)
+            .and_then(|d| ClothMetaData::parse(d).ok())
+        {
+            println!(
+                "\n== Cloth Meta Data (flags={}, {} instances, {} collidables, {} vertex-cloth subsets) ==",
+                c.flags,
+                c.instance_count,
+                c.collidable_count,
+                c.vertex_cloth_subsets.len()
+            );
+            let names: Vec<String> = c.influence_joints.iter().map(|&j| jname(j as usize)).collect();
+            println!("  influence joints: {}", names.join(", "));
+            for (i, ids) in c.instance_collidables.iter().enumerate() {
+                println!("  instance {i} collidables {ids:?}");
             }
         }
-        if let Some(js) = dat1
-            .get_section_data(dynamics::TAG_JOINT_SET)
-            .and_then(|d| JointSet::parse(d).ok())
+    }
+
+    if show("dynamics") || show("rig") {
+        if let Some(d) = dat1
+            .get_section_data(dynamics::TAG_ANIM_DYNAMICS_DEF)
+            .and_then(|d| AnimDynamicsDef::parse(d).ok())
         {
-            println!("\n== Joint Set (kind={}, {} joints, map {} entries) ==", js.kind, js.joints.len(), js.map.len());
-            for j in &js.joints {
-                println!("  {j:>3} {}", jn.get(*j as usize).cloned().unwrap_or_default());
+            println!(
+                "\n== Anim Dynamics Def ({} points, {} links, {} attaches, {} bends, {} chains, {} joint elems) ==",
+                d.points.len(),
+                d.links.len(),
+                d.attaches.len(),
+                d.bends.len(),
+                d.chains.len(),
+                d.joint_elems.len()
+            );
+            for c in &d.chains {
+                println!(
+                    "  {:<24} type={} links {}+{} points {}+{} bends {}+{} tethers={:?} gravity={:?} damping={}",
+                    s(dat1, c.name_offset as u64),
+                    c.constraint_type,
+                    c.links.0,
+                    c.links.1,
+                    c.points.0,
+                    c.points.1,
+                    c.bends.0,
+                    c.bends.1,
+                    c.tether_types,
+                    c.gravity,
+                    c.damping
+                );
             }
         }
     }
@@ -388,70 +487,94 @@ fn main() {
         {
             let strands = dat1
                 .get_section_data(splines::TAG_SPLINES)
-                .map(|d| d.len() / 12)
-                .unwrap_or(0);
-            println!(
-                "\n== Spline Subsets ({} groups, {} strands in section, {} implied) ==",
-                ss.subsets.len(),
-                strands,
-                ss.strand_total()
-            );
-            let splines = dat1
-                .get_section_data(splines::TAG_SPLINES)
                 .and_then(|d| parse_splines(d).ok())
                 .unwrap_or_default();
-            let points = dat1
-                .get_section_data(splines::TAG_SPLINE_POINTS)
-                .and_then(|d| parse_spline_points(d).ok())
+            let cvs = dat1
+                .get_section_data(splines::TAG_SPLINE_CVS)
+                .and_then(|d| parse_spline_cvs(d).ok())
                 .unwrap_or_default();
-            let offsets = spline_point_offsets(&splines);
-            let pos_scale = dat1
-                .get_section_data(built::TAG_BUILT)
-                .map(built::get_position_scale)
-                .unwrap_or(1.0 / 4096.0);
+            let referenced: usize = strands.iter().map(|s| s.cv_count as usize).sum();
             println!(
-                "  point records {}, sum of per-strand counts {} -> {}",
-                points.len(),
-                offsets.last().copied().unwrap_or(0),
-                if points.len() as u32 == offsets.last().copied().unwrap_or(0) {
-                    "match"
-                } else {
-                    "MISMATCH"
-                }
+                "\n== Spline Subsets ({} groups, {} strands, {} implied) ==",
+                ss.subsets.len(),
+                strands.len(),
+                ss.strand_total()
+            );
+            println!(
+                "  cv records {}, referenced by strands {} -> {}",
+                cvs.len(),
+                referenced,
+                if cvs.len() == referenced { "match" } else { "MISMATCH" }
             );
             for g in &ss.subsets {
-                let (a, b) = (g.first_strand as usize, (g.first_strand + g.strand_count) as usize);
-                let (p0, p1) = (
-                    offsets.get(a).copied().unwrap_or(0) as usize,
-                    offsets.get(b).copied().unwrap_or(0) as usize,
-                );
                 let mut lo = [f32::MAX; 3];
                 let mut hi = [f32::MIN; 3];
-                for p in points.get(p0..p1).unwrap_or(&[]) {
-                    let d = p.decode(pos_scale);
-                    for (k, v) in [d.0, d.1, d.2].into_iter().enumerate() {
-                        lo[k] = lo[k].min(v);
-                        hi[k] = hi[k].max(v);
+                let (a, b) = (g.first_strand as usize, (g.first_strand + g.strand_count) as usize);
+                for st in strands.get(a..b).unwrap_or(&[]) {
+                    for p in cvs.get(st.cv_range()).unwrap_or(&[]) {
+                        let d = p.decode(mpu);
+                        for (k, v) in [d.0, d.1, d.2].into_iter().enumerate() {
+                            lo[k] = lo[k].min(v);
+                            hi[k] = hi[k].max(v);
+                        }
                     }
                 }
-                let bbox = if p1 > p0 {
-                    format!(
-                        "x[{:6.3},{:6.3}] y[{:6.3},{:6.3}] z[{:6.3},{:6.3}]",
-                        lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]
-                    )
+                let bbox = if lo[0] <= hi[0] {
+                    format!("x[{:6.3},{:6.3}] y[{:6.3},{:6.3}] z[{:6.3},{:6.3}]", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2])
                 } else {
                     "(empty)".into()
                 };
                 println!(
-                    "  {:08X} {:<28} strands {:5}..{:<5} pts {:6}..{:<6} {}",
+                    "  {:08X} {:<28} strands {:5}..{:<5} lod {}/{} tess {}..{} {}",
                     g.name_hash,
                     s(dat1, g.name_offset as u64),
                     g.first_strand,
                     g.first_strand + g.strand_count,
-                    p0,
-                    p1,
+                    g.lod_distance,
+                    g.lod_reduction,
+                    g.tess_min,
+                    g.tess_max,
                     bbox
                 );
+                println!("      config {}", s(dat1, g.config_path_offset as u64));
+                for (k, slot) in SPLINE_TEXTURE_SLOTS.iter().enumerate() {
+                    if g.texture_ids[k] != 0 {
+                        println!("      {slot:<14} {:016X} {}", g.texture_ids[k], s(dat1, g.texture_path_offsets[k] as u64));
+                    }
+                }
+            }
+        }
+    }
+
+    if show("render") || show("override") || show("shadow") || show("perf") {
+        if let Some(v) = dat1.get_section_data(render::TAG_RENDER_OVERRIDES).and_then(|d| parse_render_overrides(d).ok()) {
+            println!("\n== Render Overrides ({}) ==", v.len());
+            for o in &v {
+                println!(
+                    "  param={:08X} slot={:08X} value={:?} texture={:016X}",
+                    o.name_hash, o.mapping_name_hash, o.value, o.texture_id
+                );
+            }
+        }
+        if let Some(v) = dat1.get_section_data(render::TAG_TEXTURE_OVERRIDES).and_then(|d| parse_texture_overrides(d).ok()) {
+            println!("\n== Texture Overrides ({}) ==", v.len());
+            for o in &v {
+                println!("  {}", s(dat1, *o as u64));
+            }
+        }
+        if let Some(v) = dat1.get_section_data(render::TAG_AMBIENT_SHADOW_PRIMS).and_then(|d| parse_ambient_shadow_prims(d).ok()) {
+            println!("\n== Ambient Shadow Prims ({}) ==", v.len());
+            for p in &v {
+                println!(
+                    "  c={:?} r={} a={:?} b={:?} joint/fade=0x{:X} last={}",
+                    p.center, p.radius, p.offset_a, p.offset_b, p.joint_or_fade, p.is_terminator != 0
+                );
+            }
+        }
+        if let Some(v) = dat1.get_section_data(render::TAG_PERF_PROFILE_MAX_LOD).and_then(|d| parse_perf_profile_max_lod(d).ok()) {
+            println!("\n== Perf Profile Max LoD ==");
+            for p in &v {
+                println!("  {:<14} max_lod={}", p.spec_name().unwrap_or("?"), p.max_lod);
             }
         }
     }

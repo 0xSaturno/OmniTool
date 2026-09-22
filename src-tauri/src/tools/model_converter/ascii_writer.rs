@@ -7,8 +7,7 @@ use crate::tools::model_converter::sections::{
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
     looks::{TAG_MATERIAL, MaterialSection},
-    skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
-           decode_skin_data, decode_rcra_skin, VertexWeights},
+    skin::{SkinSource, VertexWeights},
     built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
 };
 
@@ -55,17 +54,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
 
     let uv1_sec: Option<Uv1Section> = dat1.get_section_data(TAG_UV1).map(|d| Uv1Section::parse(d).ok()).flatten();
 
-    // Skin
-    let batched_skin: Option<Vec<VertexWeights>> = {
-        if let (Some(raw), Some(batch_data)) = (dat1.get_section_data(TAG_SKIN_DATA), dat1.get_section_data(TAG_SKIN_BATCH)) {
-            let batches = SkinBatch::parse_all(batch_data)?;
-            Some(decode_skin_data(raw, &batches))
-        } else { None }
-    };
-
-    let rcra_skin: Option<Vec<VertexWeights>> = dat1.get_section_data(TAG_RCRA_SKIN).map(|d| {
-        decode_rcra_skin(&RcraSkinEntry::parse_all(d))
-    });
+    // Skin, decoded per subset with each batch's joint base / remap applied.
+    let skin = SkinSource::from_dat1(dat1);
 
     let has_bones_section = dat1.get_section_data(TAG_JOINTS).is_some();
 
@@ -106,15 +96,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
     };
 
     // Max bone groups across mesh
-    let groups_count_for_mesh = |mesh: &MeshDefinition| -> usize {
-        let skin = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
-        let mut gc = 4;
-        if let Some(sw) = skin {
-            for vi in (mesh.vertex_start as usize)..(mesh.vertex_start as usize + mesh.vertex_count as usize) {
-                if vi < sw.len() { gc = gc.max(sw[vi].len()); }
-            }
-        }
-        gc
+    let groups_count_for_mesh = |weights: &[VertexWeights]| -> usize {
+        weights.iter().map(|w| w.len()).fold(4, usize::max)
     };
 
     // Build output
@@ -133,9 +116,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
         out.push_str(if uv1_sec.is_some() { "2\n" } else { "1\n" });   // uv_layers
         out.push_str("0\n");   // textures
 
-        let gc = groups_count_for_mesh(mesh);
-        let skin_to_use = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
-        let weight_offset = if mesh.is_rcra_skinned() { mesh.first_weight_index as usize } else { mesh.vertex_start as usize };
+        let mesh_weights: Vec<VertexWeights> = skin.as_ref().map(|s| s.subset_weights(mesh)).unwrap_or_default();
+        let gc = groups_count_for_mesh(&mesh_weights);
 
         out.push_str(&format!("{}\n", mesh.vertex_count));
         for vi in (mesh.vertex_start as usize)..(mesh.vertex_start as usize + mesh.vertex_count as usize) {
@@ -159,8 +141,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
             }
 
             if has_bones_section {
-                let wi = vi - mesh.vertex_start as usize + weight_offset;
-                let (groups_str, weights_str) = get_weights(wi, skin_to_use, gc);
+                let wi = vi - mesh.vertex_start as usize;
+                let (groups_str, weights_str) = get_weights(wi, Some(&mesh_weights), gc);
                 out.push_str(&format!("{}\n{}\n", groups_str, weights_str));
             }
         }

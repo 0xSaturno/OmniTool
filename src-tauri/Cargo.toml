@@ -101,6 +101,16 @@ path = "src/bin/zone_probe.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
+name = "model_extract"
+path = "src/bin/model_extract.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "mesh_edit_check"
+path = "src/bin/mesh_edit_check.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "dag_dump"
 path = "src/bin/dag_dump.rs"
 required-features = ["dev-tools"]

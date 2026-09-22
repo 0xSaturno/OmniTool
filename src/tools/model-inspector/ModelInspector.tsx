@@ -12,20 +12,29 @@ interface SectionView {
   name: string;
   size: number;
   known: boolean;
+  name_recovered: boolean;
 }
 interface BuiltView {
-  bounds: number[];
-  position_offset: [number, number, number];
-  position_scale: number;
+  bsphere_center: [number, number, number];
+  bsphere_radius: number;
+  aabb_extents: [number, number, number];
+  mesh_center: [number, number, number];
+  meters_per_unit: number;
   uv0_scale: number;
   uv1_scale: number;
-  uv_shift_field: number;
+  uv_log_scales: number;
   lod_distances: number[];
   vertex_count: number;
   index_count: number;
-  feature_flags: number;
-  feature_names: string[];
+  flags: number;
+  flag_names: string[];
+  content_flags: number;
+  ambient_animation: number;
+  fade_out_dist: number;
+  shadow_fade_dist: number;
+  shadow_casting_lod: number;
   av_material_hash: number;
+  audio_material_hash: number;
 }
 interface MaterialSlotView {
   index: number;
@@ -33,6 +42,7 @@ interface MaterialSlotView {
   path: string;
   asset_id: string;
   name_hash: number;
+  flags: number;
   hash_ok: boolean;
 }
 interface LodRangeView {
@@ -46,8 +56,10 @@ interface LookView {
   lods: LodRangeView[];
   bspheres: number[];
   mask_ok: boolean;
-  bvh_nodes: number | null;
-  bvh_depth: number | null;
+  rigid_bodies: number;
+  cloths: number;
+  bvh_usage: number | null;
+  bvh_lod: number | null;
 }
 interface SubsetView {
   index: number;
@@ -59,6 +71,14 @@ interface SubsetView {
   index_count: number;
   flags: number;
   skinned: boolean;
+  lod: number;
+  lod_proxy: boolean;
+  skin_batches: number;
+  anim_vert_batches: number;
+  bsphere_radius: number;
+  surface_area: number;
+  fade_out_dist: number;
+  material_lod_dist: number;
   uv_density: [number, number];
 }
 interface JointView {
@@ -66,6 +86,8 @@ interface JointView {
   name: string;
   parent: number;
   hash: number;
+  subtree_count: number;
+  flags: string[];
 }
 interface LocatorView {
   index: number;
@@ -93,13 +115,26 @@ interface MorphView {
 interface IkChainView {
   effector_hash: number;
   effector_name: string | null;
-  tolerance: number;
+  solver_error: number;
+  max_iterations: number;
   joints: string[];
 }
-interface BindChainView {
-  joint: string;
+interface RagdollBodyView {
+  joint: string | null;
   parent: string | null;
-  chain: string[];
+  ancestors: string[];
+}
+interface ClothView {
+  instances: number;
+  collidables: number;
+  influence_joints: string[];
+}
+interface DynamicsChainView {
+  name: string;
+  constraint: string;
+  points: number;
+  links: number;
+  bends: number;
 }
 interface HairGroupView {
   name: string;
@@ -107,8 +142,14 @@ interface HairGroupView {
   strand_count: number;
   first_strand: number;
   point_count: number;
+  config: string;
+  textures: string[];
   bounds_min: [number, number, number];
   bounds_max: [number, number, number];
+}
+interface PerfLodView {
+  spec: string;
+  max_lod: number;
 }
 interface PhysicsView {
   havok_tagfile: boolean;
@@ -128,8 +169,13 @@ interface ModelInfo {
   morphs: MorphView[];
   morph_pair_count: number;
   ik_chains: IkChainView[];
-  bind_chains: BindChainView[];
+  ragdoll_bodies: RagdollBodyView[];
+  cloth: ClothView | null;
+  dynamics_chains: DynamicsChainView[];
   hair_groups: HairGroupView[];
+  perf_max_lod: PerfLodView[];
+  render_override_count: number;
+  ambient_shadow_prim_count: number;
   physics: PhysicsView | null;
   warnings: string[];
 }
@@ -251,7 +297,7 @@ export default function ModelInspector() {
       <div className={styles.header}>
         <h2 className={styles.title}>Model Inspector</h2>
         <span className={styles.subtitle}>
-          Read-only view of every reversed <code>.model</code> section (looks, materials, skeleton, morph targets, IK chains and hair).
+          Read-only view of every reversed <code>.model</code> section (looks, materials, skeleton, ragdoll, cloth, IK, jiggle chains, morph targets and hair).
         </span>
       </div>
 
@@ -307,18 +353,40 @@ export default function ModelInspector() {
                     <dd>{num(info.built.index_count)}</dd>
                     <dt>Subsets</dt>
                     <dd>{num(info.subsets.length)}</dd>
-                    <dt>Position scale</dt>
-                    <dd>1 / {(1 / info.built.position_scale).toFixed(1)}</dd>
+                    <dt>Meters per unit</dt>
+                    <dd>1 / {(1 / info.built.meters_per_unit).toFixed(1)}</dd>
                     <dt>UV0 / UV1 scale</dt>
                     <dd>
                       1/{Math.round(1 / info.built.uv0_scale)} · 1/
                       {Math.round(1 / info.built.uv1_scale)}{" "}
                       <span className={styles.dim}>
-                        (field {hex(info.built.uv_shift_field)})
+                        (field {hex(info.built.uv_log_scales)})
                       </span>
                     </dd>
+                    <dt>Bounding sphere</dt>
+                    <dd>
+                      r {info.built.bsphere_radius.toFixed(3)}{" "}
+                      <span className={styles.dim}>@ {vec3(info.built.bsphere_center)}</span>
+                    </dd>
+                    <dt>Box half-extents</dt>
+                    <dd>{vec3(info.built.aabb_extents)}</dd>
                     <dt>LOD distances</dt>
                     <dd>{info.built.lod_distances.join(", ")}</dd>
+                    <dt>Shadow LOD</dt>
+                    <dd>
+                      {info.built.shadow_casting_lod < 0 ? "—" : info.built.shadow_casting_lod}
+                      {info.built.shadow_fade_dist > 0 && (
+                        <span className={styles.dim}> · fades at {info.built.shadow_fade_dist}</span>
+                      )}
+                    </dd>
+                    {info.perf_max_lod.length > 0 && (
+                      <>
+                        <dt>Perf LOD clamp</dt>
+                        <dd>
+                          {info.perf_max_lod.map((p) => `${p.spec}: ${p.max_lod}`).join(" · ")}
+                        </dd>
+                      </>
+                    )}
                   </dl>
                 ) : (
                   <p className={styles.dim}>No Model Built section.</p>
@@ -329,15 +397,15 @@ export default function ModelInspector() {
                 <h3>Features</h3>
                 {info.built && (
                   <>
-                    <p className={styles.mono}>{hex(info.built.feature_flags)}</p>
-                    {info.built.feature_names.length ? (
+                    <p className={styles.mono}>{hex(info.built.flags)}</p>
+                    {info.built.flag_names.length ? (
                       <ul className={styles.list}>
-                        {info.built.feature_names.map((f) => (
+                        {info.built.flag_names.map((f) => (
                           <li key={f}>{f}</li>
                         ))}
                       </ul>
                     ) : (
-                      <p className={styles.dim}>Base geometry only.</p>
+                      <p className={styles.dim}>No flags set.</p>
                     )}
                   </>
                 )}
@@ -359,6 +427,14 @@ export default function ModelInspector() {
                   </dd>
                   <dt>Hair groups</dt>
                   <dd>{info.hair_groups.length}</dd>
+                  <dt>Ragdoll bodies</dt>
+                  <dd>{info.ragdoll_bodies.length}</dd>
+                  <dt>Jiggle chains</dt>
+                  <dd>{info.dynamics_chains.length}</dd>
+                  <dt>Render overrides</dt>
+                  <dd>{info.render_override_count}</dd>
+                  <dt>Shadow capsules</dt>
+                  <dd>{info.ambient_shadow_prim_count}</dd>
                 </dl>
               </div>
 
@@ -387,12 +463,23 @@ export default function ModelInspector() {
                           {c.effector_name ?? hex(c.effector_hash)}
                         </span>
                         <br />
-                        <span className={styles.dim}>{c.joints.join(" › ")}</span>
+                        <span className={styles.dim}>
+                          {c.joints.join(" › ")} · {c.max_iterations} iterations
+                        </span>
                       </li>
                     ))}
                   </ul>
                 ) : (
                   <p className={styles.dim}>None.</p>
+                )}
+                {info.cloth && (
+                  <>
+                    <h3 style={{ marginTop: "1rem" }}>Cloth</h3>
+                    <p className={styles.dim}>
+                      {info.cloth.instances} instance(s), {info.cloth.collidables} collidables,{" "}
+                      {info.cloth.influence_joints.length} influence joints
+                    </p>
+                  </>
                 )}
               </div>
             </div>
@@ -409,6 +496,7 @@ export default function ModelInspector() {
                       <th>Name</th>
                       <th>LOD 0 subsets</th>
                       <th>Bspheres</th>
+                      <th>Bodies / cloth</th>
                       <th>BVH</th>
                     </tr>
                   </thead>
@@ -427,8 +515,11 @@ export default function ModelInspector() {
                             : "—"}
                         </td>
                         <td>{l.bspheres.length}</td>
+                        <td>
+                          {l.rigid_bodies} / {l.cloths}
+                        </td>
                         <td className={styles.dim}>
-                          {l.bvh_nodes ?? "—"} / d{l.bvh_depth ?? "—"}
+                          {l.bvh_lod === null ? "—" : `LOD ${l.bvh_lod} · ${hex(l.bvh_usage ?? 0)}`}
                         </td>
                       </tr>
                     ))}
@@ -477,7 +568,9 @@ export default function ModelInspector() {
                   <th>Verts</th>
                   <th>Indices</th>
                   <th>Flags</th>
-                  <th>Skin</th>
+                  <th>LOD</th>
+                  <th>Skin batches</th>
+                  <th>Radius / area</th>
                   <th>UV density (u, v)</th>
                 </tr>
               </thead>
@@ -496,7 +589,19 @@ export default function ModelInspector() {
                     <td className={styles.mono}>
                       0x{sv.flags.toString(16).toUpperCase().padStart(4, "0")}
                     </td>
-                    <td>{sv.skinned ? "yes" : "—"}</td>
+                    <td>
+                      {sv.lod}
+                      {sv.lod_proxy && <span className={styles.dim}> shared</span>}
+                    </td>
+                    <td>
+                      {sv.skinned ? sv.skin_batches : "—"}
+                      {sv.anim_vert_batches > 0 && (
+                        <span className={styles.dim}> ({sv.anim_vert_batches} morph)</span>
+                      )}
+                    </td>
+                    <td className={styles.mono}>
+                      {sv.bsphere_radius.toFixed(2)} m / {sv.surface_area.toFixed(2)} m²
+                    </td>
                     <td className={styles.mono}>
                       {sv.uv_density[0].toFixed(2)}, {sv.uv_density[1].toFixed(2)}
                     </td>
@@ -516,6 +621,7 @@ export default function ModelInspector() {
                       <th>#</th>
                       <th>Name</th>
                       <th>Parent</th>
+                      <th>Flags</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -528,6 +634,7 @@ export default function ModelInspector() {
                             ? "root"
                             : info.joints[j.parent]?.name ?? j.parent}
                         </td>
+                        <td className={styles.dim}>{j.flags.join(", ")}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -552,22 +659,49 @@ export default function ModelInspector() {
                   </tbody>
                 </table>
 
-                {info.bind_chains.length > 0 && (
+                {info.ragdoll_bodies.length > 0 && (
                   <>
                     <h3 className={styles.sectionTitle} style={{ marginTop: "1rem" }}>
-                      Bind chains ({info.bind_chains.length})
+                      Ragdoll bodies ({info.ragdoll_bodies.length})
                     </h3>
                     <ul className={styles.list}>
-                      {info.bind_chains.map((c) => (
-                        <li key={c.joint}>
-                          <strong>{c.joint}</strong>
+                      {info.ragdoll_bodies.map((b, i) => (
+                        <li key={`${b.joint}-${i}`}>
+                          <strong>{b.joint ?? "(no joint)"}</strong>
                           <br />
                           <span className={styles.dim}>
-                            {c.chain.length ? c.chain.join(" › ") : "root"}
+                            {b.ancestors.length ? b.ancestors.join(" › ") : "root"}
                           </span>
                         </li>
                       ))}
                     </ul>
+                  </>
+                )}
+
+                {info.dynamics_chains.length > 0 && (
+                  <>
+                    <h3 className={styles.sectionTitle} style={{ marginTop: "1rem" }}>
+                      Jiggle chains ({info.dynamics_chains.length})
+                    </h3>
+                    <ul className={styles.list}>
+                      {info.dynamics_chains.map((c, i) => (
+                        <li key={`${c.name}-${i}`}>
+                          <strong>{c.name || `chain ${i}`}</strong>{" "}
+                          <span className={styles.dim}>
+                            {c.constraint} · {c.points} points · {c.links} links · {c.bends} bends
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                {info.cloth && info.cloth.influence_joints.length > 0 && (
+                  <>
+                    <h3 className={styles.sectionTitle} style={{ marginTop: "1rem" }}>
+                      Cloth influence joints ({info.cloth.influence_joints.length})
+                    </h3>
+                    <p className={styles.dim}>{info.cloth.influence_joints.join(", ")}</p>
                   </>
                 )}
               </div>
@@ -608,6 +742,7 @@ export default function ModelInspector() {
                   <th>Group</th>
                   <th>Strands</th>
                   <th>Control points</th>
+                  <th>Config</th>
                   <th>Bounds min</th>
                   <th>Bounds max</th>
                 </tr>
@@ -618,6 +753,9 @@ export default function ModelInspector() {
                     <td>{g.name}</td>
                     <td>{num(g.strand_count)}</td>
                     <td>{num(g.point_count)}</td>
+                    <td className={styles.pathCell} title={[g.config, ...g.textures].join("\n")}>
+                      {g.config || <span className={styles.dim}>none</span>}
+                    </td>
                     <td className={styles.mono}>{vec3(g.bounds_min)}</td>
                     <td className={styles.mono}>{vec3(g.bounds_max)}</td>
                   </tr>
@@ -639,7 +777,12 @@ export default function ModelInspector() {
                 {info.sections.map((sec) => (
                   <tr key={sec.tag}>
                     <td className={styles.mono}>{hex(sec.tag)}</td>
-                    <td className={sec.known ? undefined : styles.dim}>{sec.name}</td>
+                    <td className={sec.known ? undefined : styles.dim}>
+                      {sec.name}
+                      {sec.known && !sec.name_recovered && (
+                        <span className={styles.dim}> (inferred)</span>
+                      )}
+                    </td>
                     <td>{bytes(sec.size)}</td>
                   </tr>
                 ))}

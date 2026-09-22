@@ -103,6 +103,30 @@ impl Dat1 {
         String::from_utf8(self.strings_pool[offset..end].to_vec()).ok()
     }
 
+    /// Appends a NUL-terminated string to the pool and returns its DAT1-absolute offset.
+    /// Existing offsets stay valid: the pool only grows at its end, and the header does not change size.
+    pub fn append_string(&mut self, s: &str) -> u32 {
+        let offset = (self.header_end() + self.strings_pool.len()) as u32;
+        self.strings_pool.extend_from_slice(s.as_bytes());
+        self.strings_pool.push(0);
+        offset
+    }
+
+    /// Offset of an existing pooled string equal to `s`, else a newly appended one.
+    pub fn intern_string(&mut self, s: &str) -> u32 {
+        let needle: Vec<u8> = s.bytes().chain(std::iter::once(0)).collect();
+        let mut start = 0usize;
+        for (i, &b) in self.strings_pool.iter().enumerate() {
+            if b == 0 {
+                if self.strings_pool[start..=i] == needle[..] {
+                    return (self.header_end() + start) as u32;
+                }
+                start = i + 1;
+            }
+        }
+        self.append_string(s)
+    }
+
     pub fn get_section_data(&self, tag: u32) -> Option<&[u8]> {
         self.sections_map.get(&tag).map(|&i| self.section_data[i].as_slice())
     }

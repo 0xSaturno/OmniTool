@@ -13,15 +13,16 @@ pub const TAG_MIRROR_IDS: u32 = 0xC5354B60;
 pub const TAG_LEAF_IDS: u32 = 0xB7380E8C;
 pub const TAG_JOINT_HIERARCHY: u32 = 0x90CDB60C;
 
-/// A named attach point. 64 bytes: hash, name offset, owning joint, pad, and a
-/// 12-float transform laid out like the 3x4 half of Model Bind Pose.
+/// A named attach point. 64 bytes: hash, name offset, parent joint, pad, then a
+/// parent-relative 3x3 rotation/scale followed by the local position.
 #[derive(Debug, Clone)]
 pub struct Locator {
     pub hash: u32,
     pub string_offset: u32,
-    /// Joint this locator hangs off, or `None` when stored as 0xFFFFFFFF.
+    /// Joint this locator hangs off, or `None` when stored as -1.
     pub joint: Option<u32>,
-    pub unk: u32,
+    pub pad: u32,
+    /// `[0..9]` rotation/scale rows, `[9..12]` position.
     pub transform: [f32; 12],
 }
 
@@ -35,7 +36,7 @@ impl Locator {
             let hash = cur.read_u32::<LE>()?;
             let string_offset = cur.read_u32::<LE>()?;
             let joint = cur.read_u32::<LE>()?;
-            let unk = cur.read_u32::<LE>()?;
+            let pad = cur.read_u32::<LE>()?;
             let mut transform = [0f32; 12];
             for f in &mut transform {
                 *f = cur.read_f32::<LE>()?;
@@ -44,7 +45,7 @@ impl Locator {
                 hash,
                 string_offset,
                 joint: (joint != u32::MAX).then_some(joint),
-                unk,
+                pad,
                 transform,
             });
         }
@@ -57,7 +58,7 @@ impl Locator {
             out.extend_from_slice(&l.hash.to_le_bytes());
             out.extend_from_slice(&l.string_offset.to_le_bytes());
             out.extend_from_slice(&l.joint.unwrap_or(u32::MAX).to_le_bytes());
-            out.extend_from_slice(&l.unk.to_le_bytes());
+            out.extend_from_slice(&l.pad.to_le_bytes());
             for f in &l.transform {
                 out.extend_from_slice(&f.to_le_bytes());
             }
@@ -164,16 +165,28 @@ impl JointBspheres {
     }
 }
 
+/// How a mirror pair is mirrored (`MirrorId::kind`).
+pub mod mirror_kind {
+    /// Copy rotation, flip translation.
+    pub const PAIRED: u8 = 0;
+    /// Rotate 180° about X, flip translation.
+    pub const PAIRED_ATTACH: u8 = 1;
+    /// A pair whose parent is an unpaired centre joint (clavicles, hips).
+    pub const PAIRED_LINK: u8 = 2;
+    /// Centre joint mirrored onto itself.
+    pub const UNPAIRED: u8 = 3;
+}
+
 /// One left/right pairing. Only the canonical side of each pair is stored, so
 /// the list is shorter than the joint table.
 #[derive(Debug, Clone, Copy)]
 pub struct MirrorId {
     pub joint: u16,
-    pub flags: u8,
+    pub kind: u8,
     pub mirror_joint: u16,
 }
 
-/// `u16 joint | flags << 12; u16 mirror_joint` per entry.
+/// `u16 joint | kind << 12; u16 mirror_joint` per entry.
 pub fn parse_mirror_ids(data: &[u8]) -> Result<Vec<MirrorId>> {
     let mut cur = Cursor::new(data);
     let mut out = Vec::with_capacity(data.len() / 4);
@@ -181,7 +194,7 @@ pub fn parse_mirror_ids(data: &[u8]) -> Result<Vec<MirrorId>> {
         let packed = cur.read_u16::<LE>()?;
         out.push(MirrorId {
             joint: packed & 0x0FFF,
-            flags: (packed >> 12) as u8,
+            kind: (packed >> 12) as u8,
             mirror_joint: cur.read_u16::<LE>()?,
         });
     }
@@ -198,31 +211,37 @@ pub fn parse_leaf_ids(data: &[u8]) -> Result<Vec<u16>> {
     Ok(out)
 }
 
-/// The 80-byte Model Joint Hierarchy block, which in every sample is a short
-/// count header followed by zero padding.
+/// The 80-byte Model Joint Hierarchy block: counts, the spline-model rig
+/// description, then zero padding.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JointHierarchy {
-    pub unk0: u16,
+    /// Set only for spline-model rigs; 0 on every shipped model.
+    pub flags: u16,
     pub joint_count: u16,
     /// Entries in Model Mirror Ids — *not* the locator count. Those two happen
     /// to be equal on hero_ratchet, which is how this was first misread.
     pub mirror_count: u16,
     pub leaf_count: u16,
-    pub sentinel: u16,
+    /// 0xFFFF when the rig is not a spline model.
+    pub spline_root: u16,
+    pub spline_joint_count: u16,
+    pub spline_radius: f32,
 }
 
 impl JointHierarchy {
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < 10 {
+        if data.len() < 16 {
             return Ok(Self::default());
         }
         let mut cur = Cursor::new(data);
         Ok(Self {
-            unk0: cur.read_u16::<LE>()?,
+            flags: cur.read_u16::<LE>()?,
             joint_count: cur.read_u16::<LE>()?,
             mirror_count: cur.read_u16::<LE>()?,
             leaf_count: cur.read_u16::<LE>()?,
-            sentinel: cur.read_u16::<LE>()?,
+            spline_root: cur.read_u16::<LE>()?,
+            spline_joint_count: cur.read_u16::<LE>()?,
+            spline_radius: cur.read_f32::<LE>()?,
         })
     }
 }
