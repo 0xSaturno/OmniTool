@@ -31,6 +31,15 @@
 //!   0x927C4EC3  Zone Visual Effect Insts u32[] scene-object byte offsets
 //!   0xDC311FC3  Zone Impostors         u32[] scene-object byte offsets (kind 6)
 //!   0x657512BB  Zone Decal Geometry    88-byte rows, one per Zone Decals row
+//!   0x0CF58A6E  Zone Actor Groups      24-byte rows
+//!   0x041071EF  Zone Actor Group Data  u16[] actor-row indices
+//!   0xC4968A44  Zone Actor Group Names u32[] string offsets
+//!   0x5E54ACCF  Zone Script Actions    40-byte rows
+//!   0xBEAB52E7  Zone Script Plugs      12-byte rows sliced by the action rows
+//!   0x5736A46F  Zone Vertex Paint Info 16-byte rows
+//!   0x9CCAA06F  Zone Vertex Paint Color one u32 per painted vertex
+//!   0x758BAFBD  Zone Actor Vertex Paint Info   the same pair for actors
+//!   0xF435AE9C  Zone Actor Vertex Paint Color
 //! ```
 //!
 //! `Zone Scene Objects` is *not* an array of fixed-size records: entries have
@@ -70,6 +79,24 @@ pub const T_ACTORS: u32 = 0x7068_2CB8;
 pub const T_ACTOR_NAMES: u32 = 0xDC62_5B3D;
 pub const T_ACTOR_REFS: u32 = 0x7868_4035;
 pub const T_ACTOR_PRIUSES: u32 = 0x50ED_C53D;
+/// 24-byte `ActorGroupBuilt` rows.
+pub const T_ACTOR_GROUPS: u32 = 0x0CF5_8A6E;
+/// `u16[]` of actor-row indices; groups take a `(first, count)` slice of it.
+pub const T_ACTOR_GROUP_DATA: u32 = 0x0410_71EF;
+/// `u32[]` string offsets, one per named group.
+pub const T_ACTOR_GROUP_NAMES: u32 = 0xC496_8A44;
+/// 40-byte `ScriptActionBuilt` rows.
+pub const T_SCRIPT_ACTIONS: u32 = 0x5E54_ACCF;
+/// 12-byte plug rows that the action rows slice by index/count.
+pub const T_SCRIPT_PLUGS: u32 = 0xBEAB_52E7;
+/// DDL blob store addressed by `ScriptAction::prius_offset/prius_size`.
+pub const T_SCRIPT_PRIUSES: u32 = 0x2300_D240;
+/// 16-byte vertex-paint index rows for model instances, and their colour store.
+pub const T_VERTEX_PAINT_INFO: u32 = 0x5736_A46F;
+pub const T_VERTEX_PAINT_COLOR: u32 = 0x9CCA_A06F;
+/// The same pair for actor-owned instances.
+pub const T_ACTOR_VERTEX_PAINT_INFO: u32 = 0x758B_AFBD;
+pub const T_ACTOR_VERTEX_PAINT_COLOR: u32 = 0xF435_AE9C;
 pub const T_LIGHTS: u32 = 0x97FF_6EB5;
 pub const T_VOLUMES: u32 = 0xBDAB_2B0D;
 pub const T_DECALS: u32 = 0xBCF4_3558;
@@ -119,6 +146,66 @@ pub fn kind_name(kind: u8) -> &'static str {
     }
 }
 
+/// Bit 63 of an instance id / actor uid marks the object as **placed**, i.e.
+/// authored into a zone rather than spawned at runtime.
+///
+/// Measured over 4 063 shipped PC zones: **113 046 of 113 046** actor uids carry
+/// it, and so does every scene-object instance id of kinds 0 (model), 1 (light)
+/// and 2 (actor volume) — 466 527 of the 472 339 ids read. The 5 812 that do not
+/// are all kinds whose `+0x80` quadword is *not* a uid: every one of the 1 759
+/// vfx entries, 3 944 of 7 853 splines and 109 of 221 impostors. Treat
+/// `is_placed` as meaningful for actors and kinds 0..2 only.
+///
+/// Clearing the bit on a cloned id makes the engine treat the object as
+/// runtime-spawned, which is why editing ids is a trap.
+pub const PLACED_BIT: u64 = 1 << 63;
+
+pub fn is_placed(uid: u64) -> bool {
+    uid & PLACED_BIT != 0
+}
+
+/// Bit names of the actor flag word, bit 0 first.
+///
+/// Most of these are runtime state the engine sets after load. Over 113 046
+/// actor rows of 4 063 shipped zones **only bits 2 and 3 ever appear on disk**:
+///
+/// ```text
+///   0x0008  105 106  StartedActive
+///   0x0000    3 833  (dormant until a script activates it)
+///   0x000C    3 108  Template | StartedActive
+///   0x0004      999  Template
+/// ```
+///
+/// i.e. 108 214 rows start active and 4 107 are templates for spawners to clone.
+/// No other value occurs, and the half-word behind the flags is 0 on all 113 046
+/// rows.
+pub const ACTOR_FLAG_NAMES: [&str; 16] = [
+    "Activated",
+    "Hatched",
+    "Template",
+    "StartedActive",
+    "PriusPermanent",
+    "EnableActivationEvents",
+    "ActivateEventsBroadcast",
+    "DestroyOnUnloadZone",
+    "DestroyOnUnloadLevel",
+    "Allocated",
+    "Destroying",
+    "IgnoreZoneVisibilityChanges",
+    "IsActivatingOrDeactivating",
+    "UpdateEnabled",
+    "TimeScaleUpdated",
+    "ZoneUnloading",
+];
+
+/// The set bits of an actor flag word, as names.
+pub fn actor_flag_names(flags: u16) -> Vec<&'static str> {
+    (0..16)
+        .filter(|b| flags & (1 << b) != 0)
+        .map(|b| ACTOR_FLAG_NAMES[b])
+        .collect()
+}
+
 /// One entry of the Zone Scene Objects heap.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +221,9 @@ pub struct SceneObject {
     pub scale: [f32; 3],
     #[serde(serialize_with = "ser_u64_str", deserialize_with = "de_u64_str")]
     pub instance_id: u64,
+    /// Bit 63 of the instance id: authored into this zone, not runtime-spawned.
+    #[serde(default)]
+    pub is_placed: bool,
     /// Index into Zone Model Names, or -1.
     pub model_index: i32,
     /// Resolved model asset id, or 0.
@@ -195,25 +285,247 @@ impl SceneObject {
 }
 
 /// A 32-byte row of Zone Actors.
+///
+/// ```text
+///   +0x00 i32 name_index      -> Zone Actor Names
+///   +0x04 i32 asset_index     -> Zone Actor Asset Paths
+///   +0x08 u32 scene_offset    -> Zone Scene Objects heap
+///   +0x0C i32 prius_index     first row in Zone Actor Priuses, -1 when none
+///   +0x10 i32 prius_count
+///   +0x14 u16 flags           see [`ACTOR_FLAG_NAMES`]
+///   +0x16 u16 pad             0 on every shipped row measured
+///   +0x18 u64 uid             bit 63 = placed
+/// ```
+///
+/// The word at +0x14 used to be read here as a `u32` that was "observed always
+/// 8"; it is the flag word, and 8 is the single bit `StartedActive`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorRow {
     /// Row ordinal inside Zone Actors.
     pub index: u32,
     /// Index into Zone Actor Names.
-    pub name_index: u32,
+    pub name_index: i32,
     /// Index into Zone Actor Asset Paths.
-    pub asset_index: u32,
+    pub asset_index: i32,
     pub scene_offset: u32,
     /// First row in Zone Actor Priuses, or -1.
     pub prius_index: i32,
-    pub prius_count: u32,
+    pub prius_count: i32,
+    /// Raw actor flag word.
+    pub flags: u16,
+    /// The padding half-word that follows the flags. Kept so the harness can
+    /// assert it stays zero; never shown in the UI.
+    #[serde(skip)]
+    pub pad: u16,
+    /// The set flag bits, by name, for the inspector badge.
+    pub flag_names: Vec<&'static str>,
     #[serde(serialize_with = "ser_u64_str")]
     pub instance_id: u64,
+    /// Bit 63 of the uid: authored into this zone rather than spawned.
+    pub is_placed: bool,
     pub name: String,
     #[serde(serialize_with = "ser_u64_str")]
     pub asset_id: u64,
     pub asset_path: String,
+}
+
+impl ActorRow {
+    /// True when the actor only exists to be cloned by a spawner.
+    pub fn is_template(&self) -> bool {
+        self.flags & (1 << 2) != 0
+    }
+
+    /// True when the actor is active as soon as its zone loads.
+    pub fn starts_active(&self) -> bool {
+        self.flags & (1 << 3) != 0
+    }
+}
+
+/// A 24-byte row of Zone Actor Groups (`ActorGroupBuilt`).
+///
+/// ```text
+///   +0x00 i32 name_index        -> Zone Actor Group Names, -1 when unnamed
+///   +0x04 i32 first_actor_index -> first slot in Zone Actor Group Data
+///   +0x08 u16 actor_count
+///   +0x0A u16 is_global
+///   +0x0C u32 debug_color
+///   +0x10 u64 uid
+/// ```
+///
+/// Zone Actor Group Data is a `u16[]` of Zone Actors row indices; a group owns
+/// the `actor_count` slots starting at `first_actor_index`.
+///
+/// Measured over 5 792 groups in 378 of 4 063 shipped zones: every group is
+/// named, every one of the 30 943 member indices addresses a real actor row, the
+/// slices chain head to tail with no gap and leave no Group Data slot unclaimed,
+/// 25 groups are global, and `debug_color` is `0xFFFFFFFF` on every row. Only
+/// 2 555 of the 5 792 have `name_index == index`, which is what rules out the
+/// older reading of `+0x00` as a repeat of the row ordinal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActorGroup {
+    /// Row ordinal inside Zone Actor Groups.
+    pub index: u32,
+    pub name_index: i32,
+    pub name: String,
+    pub first_actor_index: i32,
+    pub actor_count: u16,
+    pub is_global: bool,
+    /// ARGB debug colour the authoring tool drew the group with.
+    pub debug_color: u32,
+    #[serde(serialize_with = "ser_u64_str")]
+    pub uid: u64,
+    pub is_placed: bool,
+    /// The group's members, as Zone Actors row indices.
+    pub members: Vec<u16>,
+}
+
+/// A 40-byte row of Zone Script Actions (`ScriptActionBuilt`).
+///
+/// ```text
+///   +0x00 u64 uid
+///   +0x08 u64 graph_uid          the script graph this action belongs to
+///   +0x10 u16 in_plug_count
+///   +0x12 u16 out_plug_index     -> Zone Script Plugs (12-byte rows)
+///   +0x14 u16 out_plug_count
+///   +0x16 u16 var_plug_index
+///   +0x18 u16 var_plug_count
+///   +0x1A u16 action_name_index
+///   +0x1C u32 action_name_hash
+///   +0x20 u32 prius_offset       -> Zone Script Priuses
+///   +0x24 u32 prius_size
+/// ```
+///
+/// The out/var plug slices were previously called "link plugs" and "param
+/// plugs" here.
+///
+/// Measured over 215 041 action rows in 620 of 4 063 shipped zones:
+///
+/// * `crc32(name)` of the string `action_name_index` selects out of Zone Script
+///   Strings equals `action_name_hash` on **215 041 of 215 041** rows, which
+///   pins both fields to these offsets;
+/// * out-plug and var-plug slices are slices of the *same* Zone Script Plugs
+///   array — together they tile all 465 730 plug rows with **0 overlaps and 0
+///   unclaimed rows**;
+/// * 146 199 slices are empty and every one of them stores the index
+///   [`NO_PLUG`] with a zero count;
+/// * every `prius_offset + prius_size` stays inside Zone Script Priuses.
+///
+/// `in_plug_count` has no index of its own: in-plugs are named by the *other*
+/// actions' out-plug rows. It is 0 on 43 521 rows and 1 on 132 124.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptAction {
+    pub index: u32,
+    #[serde(serialize_with = "ser_u64_str")]
+    pub uid: u64,
+    #[serde(serialize_with = "ser_u64_str")]
+    pub graph_uid: u64,
+    pub in_plug_count: u16,
+    pub out_plug_index: u16,
+    pub out_plug_count: u16,
+    pub var_plug_index: u16,
+    pub var_plug_count: u16,
+    pub action_name_index: u16,
+    pub action_name_hash: u32,
+    pub prius_offset: u32,
+    pub prius_size: u32,
+}
+
+/// A plug index of `0xFFFF` means the action owns no slice of that kind; the
+/// matching count is 0 on every shipped row.
+pub const NO_PLUG: u16 = u16::MAX;
+
+impl ScriptAction {
+    /// The action's out-plug rows inside Zone Script Plugs, if it has any.
+    ///
+    /// The range comes straight from the file, so it is only as trustworthy as
+    /// the asset. Slice with [`Self::out_plugs_within`] instead whenever the row
+    /// count is to hand — a hand-edited or truncated zone would otherwise panic
+    /// the caller rather than fail the parse.
+    pub fn out_plugs(&self) -> Option<std::ops::Range<usize>> {
+        plug_range(self.out_plug_index, self.out_plug_count)
+    }
+
+    /// The action's var-plug rows inside Zone Script Plugs, if it has any.
+    ///
+    /// Unchecked, like [`Self::out_plugs`]; prefer [`Self::var_plugs_within`].
+    pub fn var_plugs(&self) -> Option<std::ops::Range<usize>> {
+        plug_range(self.var_plug_index, self.var_plug_count)
+    }
+
+    /// [`Self::out_plugs`] bounded by the number of plug rows the zone actually
+    /// has. `None` when the action owns no slice or the slice leaves the section.
+    pub fn out_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
+        bounded(self.out_plugs(), rows)
+    }
+
+    /// [`Self::var_plugs`] bounded by the number of plug rows the zone has.
+    pub fn var_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
+        bounded(self.var_plugs(), rows)
+    }
+}
+
+/// Drop a file-supplied range that would read past the end of its section.
+///
+/// Every shipped zone measured stays in bounds — the out- and var-plug slices
+/// tile Zone Script Plugs exactly — so this only ever fires on a damaged or
+/// hand-edited asset.
+fn bounded(range: Option<std::ops::Range<usize>>, rows: usize) -> Option<std::ops::Range<usize>> {
+    match range {
+        Some(r) if r.end <= rows => Some(r),
+        _ => None,
+    }
+}
+
+fn plug_range(index: u16, count: u16) -> Option<std::ops::Range<usize>> {
+    if index == NO_PLUG || count == 0 {
+        return None;
+    }
+    Some(index as usize..index as usize + count as usize)
+}
+
+/// A 16-byte row of Zone Vertex Paint Info (`ZoneVertexPaintInfo`).
+///
+/// ```text
+///   +0x00 u64 uid           the instance id of the scene object it paints
+///   +0x08 i32 count         vertices, i.e. `count * 4` bytes of colour
+///   +0x0C u32 data_offset   byte offset into the matching Color section
+/// ```
+///
+/// Two independent pairs exist: model instances use
+/// [`T_VERTEX_PAINT_INFO`] / [`T_VERTEX_PAINT_COLOR`], actor-owned instances
+/// use [`T_ACTOR_VERTEX_PAINT_INFO`] / [`T_ACTOR_VERTEX_PAINT_COLOR`].
+///
+/// Measured over 4 300 rows (128 of them in the actor table) in 68 of 4 063
+/// shipped zones:
+///
+/// * every uid is the instance id of a kind-0 scene object in the same zone
+///   (4 300 / 4 300) — no row points at an actor, light or decal;
+/// * `count` equals that model's own `Model Built` vertex count on all 4 300
+///   rows, so the run is one colour per vertex of the whole model;
+/// * `data_offset .. data_offset + count * 4` stays inside the Color section on
+///   every row, and the runs tile it exactly: 132 217 952 of 132 217 952 bytes
+///   claimed, no gap and no overlap.
+///
+/// 33 054 488 vertices carry paint in that sample. Nothing here is wired into
+/// rendering. A renderer would need to: take the painted instance's model,
+/// upload the `count` `u32`s as a per-vertex attribute in the model's *own*
+/// vertex order, and map them onto whatever vertices it actually draws —
+/// `decode_model_mesh` emits LOD 0 subsets only, so it would have to carry each
+/// subset's vertex offset through to index the colour run instead of assuming
+/// the mesh it built is vertex 0..n of the model. The channel order inside each
+/// `u32` is not measured here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VertexPaint {
+    #[serde(serialize_with = "ser_u64_str")]
+    pub uid: u64,
+    pub count: i32,
+    pub data_offset: u32,
+    /// True for the actor-owned table.
+    pub actor: bool,
 }
 
 /// One applied in-place patch, for undo.
@@ -240,6 +552,10 @@ pub struct Zone {
     pub block_spans: Vec<(usize, usize)>,
     pub scene_objects: Vec<SceneObject>,
     pub actors: Vec<ActorRow>,
+    pub actor_groups: Vec<ActorGroup>,
+    pub script_actions: Vec<ScriptAction>,
+    /// Both vertex-paint index tables, model-instance rows first.
+    pub vertex_paint: Vec<VertexPaint>,
     pub model_ids: Vec<u64>,
     /// Model paths parallel to `model_ids`, read from the zone's own string pool.
     pub model_paths: Vec<String>,
@@ -311,6 +627,9 @@ impl Zone {
             block_spans,
             scene_objects: Vec::new(),
             actors: Vec::new(),
+            actor_groups: Vec::new(),
+            script_actions: Vec::new(),
+            vertex_paint: Vec::new(),
             model_ids: Vec::new(),
             model_paths: Vec::new(),
             decal_geometry: HashMap::new(),
@@ -399,9 +718,7 @@ impl Zone {
         }
         self.decal_geometry = decal_geo;
 
-        // Zone Actors: 32-byte rows
-        //   { u32 name_index, u32 asset_index, u32 heap_offset, i32 prius_index,
-        //     u32 prius_count, u32 (always 8), u64 instance_id }
+        // Zone Actors: 32-byte `ActorBuilt` rows, see [`ActorRow`].
         let raw_rows: Vec<[u8; 32]> = self
             .dat1
             .get_section_data(T_ACTORS)
@@ -426,20 +743,24 @@ impl Zone {
         let (actor_ids, actor_paths) = read_soa_table(&self.dat1, T_ACTOR_REFS);
 
         for (i, r) in raw_rows.iter().enumerate() {
-            let name_index = LE::read_u32(&r[0..4]);
-            let asset_index = LE::read_u32(&r[4..8]);
+            let name_index = LE::read_i32(&r[0..4]);
+            let asset_index = LE::read_i32(&r[4..8]);
             let scene_offset = LE::read_u32(&r[8..12]);
             let prius_index = LE::read_i32(&r[12..16]);
-            let prius_count = LE::read_u32(&r[16..20]);
+            let prius_count = LE::read_i32(&r[16..20]);
+            let flags = LE::read_u16(&r[20..22]);
+            let pad = LE::read_u16(&r[22..24]);
             let instance_id = LE::read_u64(&r[24..32]);
 
-            let name = name_offsets
-                .get(name_index as usize)
+            let name = usize::try_from(name_index)
+                .ok()
+                .and_then(|n| name_offsets.get(n))
                 .and_then(|&o| self.dat1.get_string(o))
                 .unwrap_or_default();
-            let asset_id = actor_ids.get(asset_index as usize).copied().unwrap_or(0);
-            let asset_path = actor_paths
-                .get(asset_index as usize)
+            let ai = usize::try_from(asset_index).ok();
+            let asset_id = ai.and_then(|n| actor_ids.get(n)).copied().unwrap_or(0);
+            let asset_path = ai
+                .and_then(|n| actor_paths.get(n))
                 .cloned()
                 .unwrap_or_default();
 
@@ -450,13 +771,21 @@ impl Zone {
                 scene_offset,
                 prius_index,
                 prius_count,
+                flags,
+                pad,
+                flag_names: actor_flag_names(flags),
                 instance_id,
+                is_placed: is_placed(instance_id),
                 name,
                 asset_id,
                 asset_path,
             });
             offsets.push(scene_offset);
         }
+
+        self.read_actor_groups();
+        self.read_script_actions();
+        self.read_vertex_paint();
 
         offsets.sort_unstable();
         offsets.dedup();
@@ -472,6 +801,99 @@ impl Zone {
                 obj.name = self.actors[ai].name.clone();
             }
             self.scene_objects.push(obj);
+        }
+    }
+
+    /// Zone Actor Groups + Group Data + Group Names.
+    fn read_actor_groups(&mut self) {
+        let Some(rows) = self.dat1.get_section_data(T_ACTOR_GROUPS).map(<[u8]>::to_vec) else {
+            return;
+        };
+        let members: Vec<u16> = self
+            .dat1
+            .get_section_data(T_ACTOR_GROUP_DATA)
+            .map(|d| d.chunks_exact(2).map(LE::read_u16).collect())
+            .unwrap_or_default();
+        let name_offsets: Vec<u32> = self
+            .dat1
+            .get_section_data(T_ACTOR_GROUP_NAMES)
+            .map(|n| n.chunks_exact(4).map(LE::read_u32).collect())
+            .unwrap_or_default();
+
+        for (i, r) in rows.chunks_exact(24).enumerate() {
+            let name_index = LE::read_i32(&r[0..4]);
+            let first_actor_index = LE::read_i32(&r[4..8]);
+            let actor_count = LE::read_u16(&r[8..10]);
+            let is_global = LE::read_u16(&r[10..12]) != 0;
+            let debug_color = LE::read_u32(&r[12..16]);
+            let uid = LE::read_u64(&r[16..24]);
+
+            let name = usize::try_from(name_index)
+                .ok()
+                .and_then(|n| name_offsets.get(n))
+                .and_then(|&o| self.dat1.get_string(o))
+                .unwrap_or_default();
+            let start = usize::try_from(first_actor_index).unwrap_or(usize::MAX);
+            let slice = start
+                .checked_add(actor_count as usize)
+                .and_then(|end| members.get(start..end))
+                .unwrap_or(&[]);
+
+            self.actor_groups.push(ActorGroup {
+                index: i as u32,
+                name_index,
+                name,
+                first_actor_index,
+                actor_count,
+                is_global,
+                debug_color,
+                uid,
+                is_placed: is_placed(uid),
+                members: slice.to_vec(),
+            });
+        }
+    }
+
+    /// Zone Script Actions, 40-byte rows.
+    fn read_script_actions(&mut self) {
+        let Some(rows) = self.dat1.get_section_data(T_SCRIPT_ACTIONS).map(<[u8]>::to_vec) else {
+            return;
+        };
+        for (i, r) in rows.chunks_exact(40).enumerate() {
+            self.script_actions.push(ScriptAction {
+                index: i as u32,
+                uid: LE::read_u64(&r[0..8]),
+                graph_uid: LE::read_u64(&r[8..16]),
+                in_plug_count: LE::read_u16(&r[16..18]),
+                out_plug_index: LE::read_u16(&r[18..20]),
+                out_plug_count: LE::read_u16(&r[20..22]),
+                var_plug_index: LE::read_u16(&r[22..24]),
+                var_plug_count: LE::read_u16(&r[24..26]),
+                action_name_index: LE::read_u16(&r[26..28]),
+                action_name_hash: LE::read_u32(&r[28..32]),
+                prius_offset: LE::read_u32(&r[32..36]),
+                prius_size: LE::read_u32(&r[36..40]),
+            });
+        }
+    }
+
+    /// Both Vertex Paint Info tables, 16-byte rows.
+    fn read_vertex_paint(&mut self) {
+        for (tag, actor) in [
+            (T_VERTEX_PAINT_INFO, false),
+            (T_ACTOR_VERTEX_PAINT_INFO, true),
+        ] {
+            let Some(rows) = self.dat1.get_section_data(tag).map(<[u8]>::to_vec) else {
+                continue;
+            };
+            for r in rows.chunks_exact(16) {
+                self.vertex_paint.push(VertexPaint {
+                    uid: LE::read_u64(&r[0..8]),
+                    count: LE::read_i32(&r[8..12]),
+                    data_offset: LE::read_u32(&r[12..16]),
+                    actor,
+                });
+            }
         }
     }
 
@@ -553,6 +975,7 @@ impl Zone {
             matrix,
             scale,
             instance_id,
+            is_placed: is_placed(instance_id),
             model_index,
             model_id,
             model_path,
@@ -601,6 +1024,16 @@ impl Zone {
 
     pub fn find(&self, offset: u32) -> Option<&SceneObject> {
         self.scene_objects.iter().find(|o| o.offset == offset)
+    }
+
+    /// The colour store a [`VertexPaint`] row addresses: `count` little-endian
+    /// `u32`s starting at `data_offset`, one per vertex of the painted model.
+    pub fn vertex_paint_colors(&self, actor: bool) -> Option<&[u8]> {
+        self.dat1.get_section_data(if actor {
+            T_ACTOR_VERTEX_PAINT_COLOR
+        } else {
+            T_VERTEX_PAINT_COLOR
+        })
     }
 
     // -- editing ---------------------------------------------------------------------------

@@ -32,8 +32,20 @@ name = "level_check"
 path = "src/bin/level_check.rs"
 
 [[bin]]
+name = "level_asset_check"
+path = "src/bin/level_asset_check.rs"
+
+[[bin]]
 name = "coverage_audit"
 path = "src/bin/coverage_audit.rs"
+
+[[bin]]
+name = "name_source_check"
+path = "src/bin/name_source_check.rs"
+
+[[bin]]
+name = "dag_check"
+path = "src/bin/dag_check.rs"
 
 [[bin]]
 name = "diag"

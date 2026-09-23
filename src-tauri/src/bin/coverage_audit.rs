@@ -11,16 +11,24 @@
 //!    what `decode_model_mesh` emits against the model's own subset table
 //!    (all subsets, and the subsets whose `+0x2E` low nibble says LOD 0) and
 //!    against the selection `gltf_writer` makes for the same model.
+//!  * `--models` — a census of the `Model Built` header over every `.model` in
+//!    the archives: how often each of the 32 flag bits is set, what the newly
+//!    named `0x60` word and `0x74` content flags hold, whether any model asks
+//!    for the `CenteredVerts` vertex offset, and how much of a zone's triangle
+//!    budget belongs to collision-only models.
 //!
 //! Read-only: it never writes into the game folder and never opens a project.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use omnitool_lib::core::level::{self, decode_model_mesh, parse_model_asset, LevelIndex};
+use omnitool_lib::core::level::{
+    self, decode_model_mesh, parse_model_asset, LevelIndex, ModelBuilt, MODEL_FLAG_NAMES,
+};
 use omnitool_lib::core::zone::{Zone, T_SCENE_OBJECTS};
 use omnitool_lib::tools::model_converter::sections::built::{Built, TAG_BUILT};
 use omnitool_lib::tools::model_converter::sections::look::{LookSection, TAG_LOOK};
 use omnitool_lib::tools::model_converter::sections::meshes::{MeshDefinition, TAG_MESHES};
+use rayon::prelude::*;
 
 const DEFAULT_GAME: &str = r"F:\SteamLibrary\steamapps\common\Ratchet & Clank - Rift Apart";
 const HASHES: &str = r"E:\RCRALevelEditorViewer\refs\RCRA-Forge\hashes.txt";
@@ -166,10 +174,369 @@ fn model_stats(index: &LevelIndex, id: u64) -> ModelStats {
     s
 }
 
+/// One model's `Model Built` header, reduced to what the census aggregates.
+struct BuiltRow {
+    id: u64,
+    flags: u32,
+    content_flags: u32,
+    strand_subset_count: u8,
+    shadow_casting_lod: i16,
+    mesh_centre: [f32; 3],
+    /// `max |p - bsphere.centre| / bsphere.radius` over the decoded LOD-0
+    /// vertices, without and with the `CenteredVerts` offset applied. `None`
+    /// when the model did not decode or has no radius to divide by.
+    fit_plain: Option<f32>,
+    fit_offset: Option<f32>,
+    triangles: usize,
+}
+
+/// Every `.model` asset that is both named and present in the archives.
+fn all_model_ids(index: &LevelIndex) -> Vec<u64> {
+    let mut ids: Vec<u64> = index
+        .names
+        .iter()
+        .filter(|(id, path)| path.ends_with(".model") && index.asset(**id).is_some())
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// How far the decoded vertices stray from the model's own bounding sphere,
+/// with and without the `CenteredVerts` offset added.
+fn measure_fit(index: &LevelIndex, id: u64, b: &ModelBuilt) -> (Option<f32>, Option<f32>, usize) {
+    let Ok(raw) = index.extract(id) else {
+        return (None, None, 0);
+    };
+    let Ok(model) = parse_model_asset(&raw) else {
+        return (None, None, 0);
+    };
+    let Ok(mesh) = decode_model_mesh(&model, 0) else {
+        return (None, None, 0);
+    };
+    let tris = mesh.indices.len() / 3;
+    if mesh.positions.is_empty() || !(b.bsphere[3] > 1e-6) {
+        return (None, None, tris);
+    }
+    let c = [b.bsphere[0], b.bsphere[1], b.bsphere[2]];
+    // `decode_model_mesh` has already applied the offset when the flag is set,
+    // so undo it to get the "plain" reading and leave it in for the other.
+    let applied = b.vertex_offset();
+    let (mut plain, mut offset) = (0f32, 0f32);
+    for p in mesh.positions.chunks_exact(3) {
+        let d = |extra: [f32; 3]| {
+            let v: [f32; 3] =
+                std::array::from_fn(|k| p[k] - applied[k] + extra[k] - c[k]);
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+        };
+        plain = plain.max(d([0.0; 3]));
+        offset = offset.max(d(b.mesh_centre));
+    }
+    let r = b.bsphere[3];
+    (Some(plain / r), Some(offset / r), tris)
+}
+
+/// Census of the `Model Built` header over every shipped model.
+fn model_census(index: &LevelIndex, decode_stride: usize) {
+    let ids = all_model_ids(index);
+    println!("\n== (f) Model Built census over {} shipped .model assets ==", ids.len());
+    let t = std::time::Instant::now();
+
+    let rows: Vec<BuiltRow> = ids
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, &id)| {
+            let raw = index.extract(id).ok()?;
+            let model = parse_model_asset(&raw).ok()?;
+            let b = ModelBuilt::of(&model)?;
+            // Decoding every model would re-extract and re-decode the whole
+            // library; decode a stride sample plus every model that actually
+            // asks for the CenteredVerts offset, which is the case that can
+            // move geometry.
+            let want = b.centered_verts() || i % decode_stride == 0;
+            let (fit_plain, fit_offset, triangles) = if want {
+                measure_fit(index, id, &b)
+            } else {
+                (None, None, 0)
+            };
+            Some(BuiltRow {
+                id,
+                flags: b.flags,
+                content_flags: b.content_flags,
+                strand_subset_count: b.strand_subset_count,
+                shadow_casting_lod: b.shadow_casting_lod,
+                mesh_centre: b.mesh_centre,
+                fit_plain,
+                fit_offset,
+                triangles,
+            })
+        })
+        .collect();
+
+    println!(
+        "  {} of {} parsed a 120-byte Built header in {:?}",
+        rows.len(),
+        ids.len(),
+        t.elapsed()
+    );
+    if rows.is_empty() {
+        return;
+    }
+
+    println!("\n  -- flag-bit frequency --");
+    println!("  {:>3}  {:<24} {:>8}  {:>6}", "bit", "name", "models", "%");
+    for bit in 0..32u32 {
+        let n = rows.iter().filter(|r| r.flags >> bit & 1 == 1).count();
+        let name = if MODEL_FLAG_NAMES[bit as usize].is_empty() {
+            "(unused)"
+        } else {
+            MODEL_FLAG_NAMES[bit as usize]
+        };
+        println!(
+            "  {bit:>3}  {name:<24} {n:>8}  {:>5.1}%",
+            n as f32 * 100.0 / rows.len() as f32
+        );
+    }
+
+    println!("\n  -- 0x60 word --");
+    let mut lods: BTreeMap<i16, usize> = BTreeMap::new();
+    let mut strands: BTreeMap<u8, usize> = BTreeMap::new();
+    for r in &rows {
+        *lods.entry(r.shadow_casting_lod).or_insert(0) += 1;
+        *strands.entry(r.strand_subset_count).or_insert(0) += 1;
+    }
+    println!("  shadow-casting LOD (-1 = all): {lods:?}");
+    println!("  strand subset count:           {strands:?}");
+    // The bytes used to be read together as "high half = morph presence".
+    let strandy = rows.iter().filter(|r| r.strand_subset_count != 0).count();
+    let haircards = rows
+        .iter()
+        .filter(|r| r.flags >> 21 & 1 == 1)
+        .count();
+    let both = rows
+        .iter()
+        .filter(|r| r.strand_subset_count != 0 && r.flags >> 21 & 1 == 1)
+        .count();
+    let morphy = rows.iter().filter(|r| r.content_flags & 1 == 1).count();
+    let strand_and_morph = rows
+        .iter()
+        .filter(|r| r.strand_subset_count != 0 && r.content_flags & 1 == 1)
+        .count();
+    println!(
+        "  strand count != 0: {strandy}; HasHairCardsLook (bit 21): {haircards}; both: {both}"
+    );
+    println!(
+        "  AnimMorph in content flags: {morphy}; models with BOTH a strand count and AnimMorph: {strand_and_morph}"
+    );
+    // Name the models that carry a non-zero 0x62, so the byte can be checked
+    // against what the asset obviously is rather than taken on faith.
+    let named: Vec<String> = rows
+        .iter()
+        .filter(|r| r.strand_subset_count != 0)
+        .take(10)
+        .map(|r| {
+            format!(
+                "{}={}",
+                index
+                    .name_of(r.id)
+                    .unwrap_or("?")
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("?"),
+                r.strand_subset_count
+            )
+        })
+        .collect();
+    println!("  models with a non-zero 0x62: {named:?}");
+
+    println!("\n  -- 0x74 content flags --");
+    for (bit, name) in [(0, "AnimMorph"), (1, "AnimGeom"), (2, "AnimZiva"), (3, "AnimVert")] {
+        let n = rows.iter().filter(|r| r.content_flags >> bit & 1 == 1).count();
+        println!("  {name:<12} {n:>8}");
+    }
+    let stray: usize = rows.iter().filter(|r| r.content_flags & !0xF != 0).count();
+    println!("  content flags with bits above 3 set: {stray}");
+
+    println!("\n  -- CenteredVerts (flag bit 23) and the 0x1C mesh centre --");
+    let centered = rows.iter().filter(|r| r.flags >> 23 & 1 == 1).count();
+    let centre_nz = rows
+        .iter()
+        .filter(|r| r.mesh_centre.iter().any(|c| *c != 0.0))
+        .count();
+    let both_c = rows
+        .iter()
+        .filter(|r| r.flags >> 23 & 1 == 1 && r.mesh_centre.iter().any(|c| *c != 0.0))
+        .count();
+    println!("  models with bit 23 set:                 {centered}");
+    println!("  models with a non-zero mesh centre:     {centre_nz}");
+    println!("  models with both:                       {both_c}");
+    if centre_nz > 0 {
+        let worst = rows
+            .iter()
+            .filter(|r| r.mesh_centre.iter().any(|c| *c != 0.0))
+            .map(|r| r.mesh_centre.iter().fold(0f32, |a, c| a.max(c.abs())))
+            .fold(0f32, f32::max);
+        println!("  largest non-zero mesh-centre component: {worst}");
+    }
+
+    // Does the decoded geometry land inside the model's own bounding sphere,
+    // with and without the offset? Both columns are reported so the correct
+    // choice is visible rather than assumed.
+    let fits: Vec<&BuiltRow> = rows.iter().filter(|r| r.fit_plain.is_some()).collect();
+    let inside = |v: Option<f32>| v.is_some_and(|x| x <= 1.01);
+    let (in_plain, in_off) = (
+        fits.iter().filter(|r| inside(r.fit_plain)).count(),
+        fits.iter().filter(|r| inside(r.fit_offset)).count(),
+    );
+    let worst_plain = fits.iter().filter_map(|r| r.fit_plain).fold(0f32, f32::max);
+    let worst_off = fits.iter().filter_map(|r| r.fit_offset).fold(0f32, f32::max);
+    println!(
+        "  decoded {} models: inside the Built bounding sphere without the offset {in_plain}, \
+with it {in_off}"
+    , fits.len());
+    println!("  worst radius ratio: without {worst_plain:.4}, with {worst_off:.4}");
+
+    println!("\n  -- bits 13 / 14 --");
+    // Reported apart, because the two turn out to mean very different things:
+    // see the cross-tab below and the per-zone table in (g).
+    let decoded: Vec<&BuiltRow> = rows.iter().filter(|r| r.fit_plain.is_some()).collect();
+    let sample_tris: usize = decoded.iter().map(|r| r.triangles).sum();
+    for (bit, name) in [(13u32, "StaticCollOnly"), (14, "CollisionOnly")] {
+        let set: Vec<&&BuiltRow> = decoded.iter().filter(|r| r.flags >> bit & 1 == 1).collect();
+        let n_all = rows.iter().filter(|r| r.flags >> bit & 1 == 1).count();
+        let tris: usize = set.iter().map(|r| r.triangles).sum();
+        let uv1 = set.iter().filter(|r| r.flags >> 17 & 1 == 1).count();
+        let col = set.iter().filter(|r| r.flags >> 18 & 1 == 1).count();
+        println!(
+            "  bit {bit:>2} {name:<15} {n_all:>6} models; in the decoded sample {:>5} models, \
+{tris:>9} tris ({:>5.1}% of sample), VertHasUv1 {uv1}, VertHasColor {col}",
+            set.len(),
+            tris as f32 * 100.0 / sample_tris.max(1) as f32
+        );
+    }
+    let both13_14 = rows
+        .iter()
+        .filter(|r| r.flags >> 13 & 1 == 1 && r.flags >> 14 & 1 == 1)
+        .count();
+    let only14 = rows
+        .iter()
+        .filter(|r| r.flags >> 13 & 1 == 0 && r.flags >> 14 & 1 == 1)
+        .count();
+    println!("  both 13 and 14: {both13_14}; 14 without 13: {only14}");
+    for (bit, name) in [(6u32, "SkipImpostor"), (12, "DelayStreaming")] {
+        let n = rows.iter().filter(|r| r.flags >> bit & 1 == 1).count();
+        println!("  bit {bit:>2} {name:<15} {n:>6} models");
+    }
+    // Any bit the adopted table calls unused but the shipped data sets.
+    for bit in 0..32u32 {
+        if MODEL_FLAG_NAMES[bit as usize].is_empty() {
+            let n = rows.iter().filter(|r| r.flags >> bit & 1 == 1).count();
+            println!("  bit {bit:>2} (unnamed)      {n:>6} models");
+        }
+    }
+}
+
+/// How many of a zone's drawn instances and triangles belong to models the
+/// engine flags as collision or navigation geometry.
+fn collision_in_zones(index: &LevelIndex) {
+    println!("\n== (g) bits 13 / 14 among the models zones actually place ==");
+    println!(
+        "  {:<44} {:>7} {:>11} | {:>7} {:>11} {:>6} | {:>7} {:>11} {:>6}",
+        "zone", "insts", "tris", "b13inst", "b13tris", "%", "b14inst", "b14tris", "%"
+    );
+    let mut flags_of: HashMap<u64, u32> = HashMap::new();
+    let mut tris_of: HashMap<u64, usize> = HashMap::new();
+    for zp in ZONES {
+        let id = omnitool_lib::core::crc64::hash(zp);
+        let Ok(raw) = index.extract(id) else { continue };
+        let Ok(zone) = Zone::parse(&raw) else { continue };
+        let (mut insts, mut tris) = (0usize, 0usize);
+        let (mut i13, mut t13, mut i14, mut t14) = (0usize, 0usize, 0usize, 0usize);
+        for o in zone.model_instances() {
+            let mid = o.model_id;
+            if mid == 0 {
+                continue;
+            }
+            let flags = *flags_of.entry(mid).or_insert_with(|| {
+                index
+                    .extract(mid)
+                    .ok()
+                    .and_then(|r| parse_model_asset(&r).ok())
+                    .and_then(|m| ModelBuilt::of(&m))
+                    .map(|b| b.flags)
+                    .unwrap_or(0)
+            });
+            // Decoded directly, not through `model_mesh_bytes`: that path now
+            // skips CollisionOnly models, and this table has to be able to
+            // measure exactly what the skip removes.
+            let t = *tris_of.entry(mid).or_insert_with(|| {
+                index
+                    .extract(mid)
+                    .ok()
+                    .and_then(|r| parse_model_asset(&r).ok())
+                    .and_then(|m| decode_model_mesh(&m, 0).ok())
+                    .map(|o| o.indices.len() / 3)
+                    .unwrap_or(0)
+            });
+            insts += 1;
+            tris += t;
+            if flags >> 13 & 1 == 1 {
+                i13 += 1;
+                t13 += t;
+            }
+            if flags >> 14 & 1 == 1 {
+                i14 += 1;
+                t14 += t;
+            }
+        }
+        println!(
+            "  {:<44} {insts:>7} {tris:>11} | {i13:>7} {t13:>11} {:>5.1}% | {i14:>7} {t14:>11} {:>5.1}%",
+            zp.rsplit('/').next().unwrap(),
+            t13 as f32 * 100.0 / tris.max(1) as f32,
+            t14 as f32 * 100.0 / tris.max(1) as f32
+        );
+    }
+    // Where do the CollisionOnly models actually live? A viewer that stops
+    // drawing them should be able to say what disappears.
+    let mut names: Vec<&str> = flags_of
+        .iter()
+        .filter(|(_, f)| *f >> 14 & 1 == 1)
+        .filter_map(|(id, _)| index.name_of(*id))
+        .collect();
+    names.sort_unstable();
+    println!(
+        "  distinct CollisionOnly models placed by these zones: {} e.g. {:?}",
+        names.len(),
+        &names[..names.len().min(6)]
+    );
+}
+
 fn main() {
-    let game = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_GAME.into());
-    let hashes = std::env::args().nth(2).unwrap_or_else(|| HASHES.into());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let game = positional
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| DEFAULT_GAME.into());
+    let hashes = positional
+        .get(1)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| HASHES.into());
     let index = level::get_index(&game, Some(&hashes)).expect("index");
+
+    // `--models` is the Model Built census; it extracts every shipped model, so
+    // it is opt-in rather than part of the default zone-funnel run.
+    if flag("--models") {
+        let stride = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--stride="))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8usize);
+        model_census(&index, stride);
+        collision_in_zones(&index);
+        return;
+    }
 
     let mut used_models: HashMap<u64, usize> = HashMap::new();
 
@@ -284,13 +651,34 @@ fn main() {
                 &missed[..missed.len().min(5)]
             );
         }
-        let bad: Vec<&str> = kind0
+        // "Not drawn" splits two ways now: a model the decoder could not read,
+        // and a CollisionOnly model `model_mesh_bytes` deliberately skips.
+        let (mut bad, mut skipped): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+        for path in kind0
             .iter()
             .filter(|o| o.model_id != 0 && !good.contains(&o.model_id))
-            .map(|o| o.model_path.as_str())
+            .map(|o| (o.model_id, o.model_path.as_str()))
             .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        {
+            let coll = index
+                .extract(path.0)
+                .ok()
+                .and_then(|r| parse_model_asset(&r).ok())
+                .and_then(|m| ModelBuilt::of(&m))
+                .is_some_and(|b| b.collision_only());
+            if coll {
+                skipped.push(path.1);
+            } else {
+                bad.push(path.1);
+            }
+        }
+        if !skipped.is_empty() {
+            println!(
+                "      CollisionOnly models skipped on purpose ({}): {:?}",
+                skipped.len(),
+                &skipped[..skipped.len().min(6)]
+            );
+        }
         if !bad.is_empty() {
             println!(
                 "      models that decode to nothing ({}): {:?}",

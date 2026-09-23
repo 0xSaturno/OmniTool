@@ -24,9 +24,7 @@ use crate::core::dat1::DAT1_MAGIC;
 use crate::core::error::{Result, ToolkitError};
 use crate::core::toc::{ArchiveCache, Toc, TocAsset};
 use crate::tools::model_converter::model::ModelFile;
-use crate::tools::model_converter::sections::built::{
-    get_position_scale, get_uv_scale, TAG_BUILT,
-};
+use crate::tools::model_converter::sections::built::TAG_BUILT;
 use crate::tools::model_converter::sections::geo::{
     IndexesSection, VertexesSection, DEFAULT_UV_SCALE, TAG_INDEXES, TAG_VERTEXES,
 };
@@ -410,14 +408,41 @@ pub fn get_index(game_dir: &str, hashes_path: Option<&str>) -> Result<Arc<LevelI
         }
     }
 
-    let names_missing = hashes.is_none();
-    let names = match &hashes {
+    let mut names = match &hashes {
         Some(p) => load_names(p).unwrap_or_else(|e| {
             warn!("level index: could not read {}: {e}", p.display());
             HashMap::new()
         }),
         None => HashMap::new(),
     };
+
+    // The game ships its own name list: the `dag` beside `toc` carries a name
+    // for every asset it knows, and its id block decodes exactly (169,245 of
+    // 169,245 ids reproduce the CRC-64 of their own name on the shipped build).
+    // So an external hash list is a convenience, not a requirement — without one
+    // the tool would otherwise show nothing but hex. Entries already known from
+    // the hash file win, since that list also covers a few assets the dag omits.
+    let mut named_from_dag = 0usize;
+    match crate::core::dag::Dag::load(Path::new(game_dir)) {
+        Ok(dag) => {
+            for i in 0..dag.len() {
+                let (Some(&id), Some(name)) = (dag.ids.get(i), dag.name(i)) else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                names
+                    .entry(id)
+                    .or_insert_with(|| crate::core::crc64::normalize_path(name));
+                named_from_dag += 1;
+            }
+            info!("level index: dag contributed {named_from_dag} names");
+        }
+        Err(e) => warn!("level index: could not read the dag: {e}"),
+    }
+
+    let names_missing = names.is_empty();
 
     // Zones = every TOC asset whose known name is a `.zone` under `levels/`.
     let mut zones: Vec<ZoneRec> = Vec::new();
@@ -505,7 +530,20 @@ pub fn clear_probe_cache() {
 
 /// Names for the DAT1 section tags that show up in `.zone` assets, so the
 /// inspector panel reads as something other than a column of hex.
+///
+/// The hash-verified table in [`crate::core::section_names`] answers first: every
+/// one of its entries reproduces its own tag under the engine CRC-32, so where it
+/// and the hand-written list below disagree, it is the table that is right. It
+/// also covers far more ground — over a 400-zone / 400-model sample it names 70 of
+/// the 85 distinct tags seen, against 32 for the list below.
+///
+/// The fallback keeps the handful of descriptive labels we measured ourselves for
+/// tags the table has no name for, so nothing that used to read as text regresses
+/// to hex.
 pub fn zone_section_name(tag: u32) -> Option<&'static str> {
+    if let Some(name) = crate::core::section_names::section_name(tag) {
+        return Some(name);
+    }
     Some(match tag {
         0x06AB_CAB2 => "Zone Scene Objects",
         0x6987_F172 => "Zone Model Insts",
@@ -555,6 +593,299 @@ pub fn zone_section_name(tag: u32) -> Option<&'static str> {
         0x396F_9418 => "Level Regions Built",
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Model Built header (0x283D0383, 120 bytes)
+// ---------------------------------------------------------------------------
+
+/// Names for the 32 bits of the Model Built flags word at `+0x28`.
+///
+/// Index = bit number. Bit 29 has no name; it is left empty here so
+/// [`model_flag_names`] reports it as `bit29`, which matters because the
+/// shipped data does set it — on 2 of the 11,387 models `coverage_audit
+/// --models` scans. Every other bit in the table is accounted for.
+///
+/// Bits 17 (`VertHasUv1`) and 18 (`VertHasColor`) were previously derived here
+/// by correlating the word against which vertex-stream sections a model
+/// carries, and bit 31 by correlating against `Model Anim Dynamics Def`; the
+/// rest of the table is adopted wholesale and re-measured for frequency rather
+/// than for meaning.
+pub const MODEL_FLAG_NAMES: [&str; 32] = [
+    /* 0 */ "AmbientAnimation",
+    /* 1 */ "SkipShadowCast",
+    /* 2 */ "SkipFarLodCache",
+    /* 3 */ "ShadowHasFadeDist",
+    /* 4 */ "PhysicsLookLocked",
+    /* 5 */ "SkipDecals",
+    /* 6 */ "SkipImpostor",
+    /* 7 */ "SkipLightCapture",
+    /* 8 */ "OnlyLightCapture",
+    /* 9 */ "NoEmbeddedSamples",
+    /* 10 */ "NeverOcclude",
+    /* 11 */ "SkipRainSplashes",
+    /* 12 */ "DelayStreaming",
+    /* 13 */ "StaticCollOnly",
+    /* 14 */ "CollisionOnly",
+    /* 15 */ "SkipNavGeneration",
+    /* 16 */ "WalkableArea",
+    /* 17 */ "VertHasUv1",
+    /* 18 */ "VertHasColor",
+    /* 19 */ "SkipSkinThreshold",
+    /* 20 */ "AnimVert",
+    /* 21 */ "HasHairCardsLook",
+    /* 22 */ "HibernateNever",
+    /* 23 */ "CenteredVerts",
+    /* 24 */ "SkipStaticDecals",
+    /* 25 */ "HasCustomJointBspheres",
+    /* 26 */ "SplineModel",
+    /* 27 */ "Hibernate",
+    /* 28 */ "HibernateLongDist",
+    /* 29 */ "",
+    /* 30 */ "HasCinematicShadow",
+    /* 31 */ "AnimDynamics",
+];
+
+/// Bit numbers of the Model Built flags this module reasons about.
+pub mod model_flag {
+    /// Model is never drawn by the impostor system.
+    pub const SKIP_IMPOSTOR: u32 = 6;
+    /// Model's geometry is streamed in late.
+    pub const DELAY_STREAMING: u32 = 12;
+    /// Geometry exists only to be collided against by static queries.
+    pub const STATIC_COLL_ONLY: u32 = 13;
+    /// Geometry exists only to be collided against — not art.
+    pub const COLLISION_ONLY: u32 = 14;
+    /// `Model UV1 Vert` stream is present.
+    pub const VERT_HAS_UV1: u32 = 17;
+    /// `Model Col Vert` stream is present.
+    pub const VERT_HAS_COLOR: u32 = 18;
+    /// Vertices were pre-offset by [`ModelBuilt::mesh_centre`] at build time.
+    pub const CENTERED_VERTS: u32 = 23;
+}
+
+/// The set bits of a Model Built flags word, as names.
+///
+/// Unnamed bits come back as `bit<n>` so a future build that starts using one
+/// is visible instead of silently dropped.
+pub fn model_flag_names(flags: u32) -> Vec<String> {
+    (0..32)
+        .filter(|b| flags >> b & 1 == 1)
+        .map(|b| {
+            let n = MODEL_FLAG_NAMES[b as usize];
+            if n.is_empty() {
+                format!("bit{b}")
+            } else {
+                n.to_string()
+            }
+        })
+        .collect()
+}
+
+/// The 120-byte `Model Built` header, fully named.
+///
+/// Every offset below is a fact about the bytes the shipped PC game ships;
+/// `coverage_audit --model-flags` re-measures the ones that can be measured
+/// (flag-bit frequency, the `0x62` strand count, the `0x60` LOD index, and
+/// whether `mesh_centre` is ever non-zero) against the real archives.
+///
+/// This is a *named* view kept next to the decoder that consumes it.
+/// `tools::model_converter::sections::built::Built` is the older, partly
+/// guessed view behind the shipped Model Inspector and glTF exporter; it is
+/// left alone here so those paths keep their current behaviour.
+#[derive(Debug, Clone, Default)]
+pub struct ModelBuilt {
+    /// `0x00` bounding sphere: centre xyz then radius.
+    pub bsphere: [f32; 4],
+    /// `0x10` AABB half-extents about the bounding-sphere centre.
+    pub aabb_extents: [f32; 3],
+    /// `0x1C` mesh centre. When [`model_flag::CENTERED_VERTS`] is set the
+    /// builder subtracted this from every vertex before quantising, so a
+    /// decoder has to add it back to land in the model's own space.
+    pub mesh_centre: [f32; 3],
+    /// `0x28` feature flags — see [`MODEL_FLAG_NAMES`].
+    pub flags: u32,
+    /// `0x2C` metres per quantised unit. The decoder's position scale.
+    pub metres_per_unit: f32,
+    /// `0x30` UV log scales: low nibble UV0, next nibble UV1.
+    pub uv_log_scales: u32,
+    /// `0x34` distance at which each of the five geometry LODs takes over.
+    pub geom_lod_dist: [f32; 5],
+    /// `0x48` wind-sway amplitude.
+    pub ambient_animation: f32,
+    /// `0x4C` wind-sway clamp.
+    pub max_displacement: f32,
+    /// `0x50` / `0x54` wind-sway force range.
+    pub max_dynamic_force: f32,
+    pub min_dynamic_force: f32,
+    /// `0x58` depth bias, stored in 1/16384 units.
+    pub z_bias: i16,
+    /// `0x5A` transparent-sorting bias.
+    pub alpha_sort_bias: i16,
+    /// `0x5C` / `0x5E` fade distances in metres.
+    pub fade_out_dist: u16,
+    pub shadow_fade_dist: u16,
+    /// `0x60` which geometry LOD casts the shadow; -1 = all of them.
+    pub shadow_casting_lod: i16,
+    /// `0x62` number of hair-strand subsets.
+    ///
+    /// This byte used to be read as the high half of a 32-bit unknown and
+    /// treated as "morph targets present"; the values 6 and 8 that reading
+    /// keyed on are strand counts on hair models.
+    pub strand_subset_count: u8,
+    /// `0x64` / `0x68` totals the engine validates the geometry sections against.
+    pub index_count: u32,
+    pub vertex_count: u32,
+    /// `0x6C` physics A/V surface hash, `0x70` audio surface hash.
+    pub av_material_hash: u32,
+    pub audio_material_hash: u32,
+    /// `0x74` which animated-geometry streams exist:
+    /// 1 AnimMorph, 2 AnimGeom, 4 AnimZiva, 8 AnimVert.
+    pub content_flags: u32,
+}
+
+impl ModelBuilt {
+    pub const SIZE: usize = 0x78;
+
+    /// The shortest prefix that still carries the fields a decoder needs:
+    /// bounds, flags and the position scale at `0x2C`.
+    pub const MIN_SIZE: usize = 0x30;
+
+    /// Every shipped model has the full 120 bytes, but a short section is read
+    /// for what it does carry rather than rejected outright: returning `None`
+    /// would send [`decode_model_mesh`] to a guessed position scale, which is
+    /// worse than reading the real one out of a truncated header.
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::MIN_SIZE {
+            return None;
+        }
+        let has = |o: usize, n: usize| o + n <= data.len();
+        let f = |o: usize| {
+            if has(o, 4) {
+                f32::from_le_bytes(data[o..o + 4].try_into().unwrap())
+            } else {
+                0.0
+            }
+        };
+        let u = |o: usize| {
+            if has(o, 4) {
+                u32::from_le_bytes(data[o..o + 4].try_into().unwrap())
+            } else {
+                0
+            }
+        };
+        let i16at = |o: usize| {
+            if has(o, 2) {
+                i16::from_le_bytes(data[o..o + 2].try_into().unwrap())
+            } else {
+                0
+            }
+        };
+        let u16at = |o: usize| {
+            if has(o, 2) {
+                u16::from_le_bytes(data[o..o + 2].try_into().unwrap())
+            } else {
+                0
+            }
+        };
+        let byte = |o: usize| if o < data.len() { data[o] } else { 0 };
+        Some(Self {
+            bsphere: std::array::from_fn(|i| f(i * 4)),
+            aabb_extents: std::array::from_fn(|i| f(0x10 + i * 4)),
+            mesh_centre: std::array::from_fn(|i| f(0x1C + i * 4)),
+            flags: u(0x28),
+            metres_per_unit: f(0x2C),
+            uv_log_scales: u(0x30),
+            geom_lod_dist: std::array::from_fn(|i| f(0x34 + i * 4)),
+            ambient_animation: f(0x48),
+            max_displacement: f(0x4C),
+            max_dynamic_force: f(0x50),
+            min_dynamic_force: f(0x54),
+            z_bias: i16at(0x58),
+            alpha_sort_bias: i16at(0x5A),
+            fade_out_dist: u16at(0x5C),
+            shadow_fade_dist: u16at(0x5E),
+            shadow_casting_lod: i16at(0x60),
+            strand_subset_count: byte(0x62),
+            index_count: u(0x64),
+            vertex_count: u(0x68),
+            av_material_hash: u(0x6C),
+            audio_material_hash: u(0x70),
+            content_flags: u(0x74),
+        })
+    }
+
+    pub fn of(model: &ModelFile) -> Option<Self> {
+        Self::parse(model.dat1.get_section_data(TAG_BUILT)?)
+    }
+
+    pub fn has_flag(&self, bit: u32) -> bool {
+        self.flags >> bit & 1 == 1
+    }
+
+    /// Vertices were stored relative to [`Self::mesh_centre`].
+    pub fn centered_verts(&self) -> bool {
+        self.has_flag(model_flag::CENTERED_VERTS)
+    }
+
+    /// The offset a decoder must add to every decoded vertex position.
+    /// Zero unless `CenteredVerts` is set.
+    pub fn vertex_offset(&self) -> [f32; 3] {
+        if self.centered_verts() {
+            self.mesh_centre
+        } else {
+            [0.0; 3]
+        }
+    }
+
+    /// This model exists only to be collided with — it is not art.
+    ///
+    /// Bit 13 (`StaticCollOnly`) is deliberately **not** part of this test.
+    /// Measured over the whole shipped model library (11,387 assets) bit 13 is
+    /// set on 6,480 of them, and in the art zones sampled by `coverage_audit`
+    /// it accounts for 74-94% of every zone's triangles — it is a property of
+    /// how the model's collision is queried, not a statement that the model is
+    /// invisible. Bit 14 is set on 357 models, of which the nine sampled zones
+    /// place 3 distinct ones (15 instances, 12 triangles each): a design cube,
+    /// an invisible collision cube and a hero-collision blocker.
+    pub fn collision_only(&self) -> bool {
+        self.has_flag(model_flag::COLLISION_ONLY)
+    }
+
+    /// Bit 13. Present on most shipped environment art, so it is exposed for
+    /// the inspector and never used as a visibility test.
+    pub fn static_coll_only(&self) -> bool {
+        self.has_flag(model_flag::STATIC_COLL_ONLY)
+    }
+
+    /// Should the viewport draw this model at all? See [`model_mesh_bytes`].
+    pub fn drawable(&self) -> bool {
+        !self.collision_only()
+    }
+
+    /// `z_bias` in the units it is applied in.
+    pub fn z_bias_units(&self) -> f32 {
+        self.z_bias as f32 / 16384.0
+    }
+
+    /// UV0 / UV1 texel scale, from the two nibbles at `0x30`.
+    pub fn uv_scales(&self) -> (f32, f32) {
+        let s = |n: u32| (1u32 << n) as f32 / 16384.0;
+        (
+            s(self.uv_log_scales & 0xF),
+            s((self.uv_log_scales >> 4) & 0xF),
+        )
+    }
+
+    /// `(min, max)` of the AABB, in the same space decoded vertices end up in.
+    pub fn aabb(&self) -> ([f32; 3], [f32; 3]) {
+        let c = [self.bsphere[0], self.bsphere[1], self.bsphere[2]];
+        let e = self.aabb_extents.map(f32::abs);
+        (
+            std::array::from_fn(|k| c[k] - e[k]),
+            std::array::from_fn(|k| c[k] + e[k]),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -633,21 +964,10 @@ pub fn empty_mesh_bytes() -> Vec<u8> {
     MeshOut::default().pack()
 }
 
-/// The `Built` section's bounding sphere / half-extents, for sanity checks.
-/// `bounds[0..3]` is the centre and `bounds[4..7]` the half-extents.
+/// The `Built` section's AABB — the bounding-sphere centre at `+0x00` plus and
+/// minus the half-extents at `+0x10` — for sanity checks.
 pub fn built_box(model: &ModelFile) -> Option<([f32; 3], [f32; 3])> {
-    let b = model.dat1.get_section_data(TAG_BUILT)?;
-    let built = crate::tools::model_converter::sections::built::Built::parse(b)?;
-    let c = [built.bounds[0], built.bounds[1], built.bounds[2]];
-    let e = [
-        built.bounds[4].abs(),
-        built.bounds[5].abs(),
-        built.bounds[6].abs(),
-    ];
-    Some((
-        [c[0] - e[0], c[1] - e[1], c[2] - e[2]],
-        [c[0] + e[0], c[1] + e[1], c[2] + e[2]],
-    ))
+    Some(ModelBuilt::of(model)?.aabb())
 }
 
 /// Parse a `.model` asset as extracted from the TOC.
@@ -676,9 +996,20 @@ pub fn parse_model_asset(bytes: &[u8]) -> Result<ModelFile> {
 /// Decode one LOD of look 0 into flat viewport buffers.
 ///
 /// Positions come out of `Model Std Vert` quantised — `VertexesSection` applies
-/// the `Built` section's position scale — and subsets flagged `0x10` index the
+/// the `Built` section's metres-per-unit — and subsets flagged `0x10` index the
 /// vertex stream relative to their own `vertex_start`, so both are undone here
 /// exactly the way `gltf_writer` does it.
+///
+/// On top of that, a model whose flags carry `CenteredVerts` (bit 23) had its
+/// mesh centre (`Built +0x1C`) subtracted from every vertex at build time, so
+/// the centre is added back here. On the shipped PC build no model actually
+/// does this: `coverage_audit --models` parsed the `Model Built` header of all
+/// 11,387 `.model` assets in the archives and found bit 23 set on 0 of them
+/// and `+0x1C` exactly `0,0,0` on all of them. The term is therefore
+/// identically zero today; the code is written to be correct anyway, so a
+/// patch or a mod that does set the flag is decoded rather than mis-placed.
+/// (Independently: 1,420 decoded models all landed inside their own `Built`
+/// bounding sphere, worst radius ratio 1.0014, with and without the term.)
 ///
 /// Triangle winding is emitted in the asset's own index order. It used to be
 /// reversed here "to match the CCW glTF convention", but the assets are already
@@ -696,14 +1027,17 @@ pub fn parse_model_asset(bytes: &[u8]) -> Result<ModelFile> {
 pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
     let dat1 = &model.dat1;
 
-    let pos_scale = dat1
-        .get_section_data(TAG_BUILT)
-        .map(get_position_scale)
+    let built = ModelBuilt::of(model);
+    let pos_scale = built
+        .as_ref()
+        .map(|b| b.metres_per_unit)
         .unwrap_or(1.0 / 4096.0);
-    let uv_scale = dat1
-        .get_section_data(TAG_BUILT)
-        .map(get_uv_scale)
+    let uv_scale = built
+        .as_ref()
+        .map(|b| b.uv_scales().0)
         .unwrap_or(DEFAULT_UV_SCALE);
+    // Zero unless the model sets `CenteredVerts`; see [`ModelBuilt::mesh_centre`].
+    let offset = built.as_ref().map(ModelBuilt::vertex_offset).unwrap_or_default();
 
     let vert_data = dat1
         .get_section_data(TAG_VERTEXES)
@@ -758,10 +1092,11 @@ pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
 
         let vertex_base = out.vertex_count() as u32;
         for v in &vertexes[vstart..vstart + vcount] {
-            out.positions.extend_from_slice(&[v.x, v.y, v.z]);
+            let p = [v.x + offset[0], v.y + offset[1], v.z + offset[2]];
+            out.positions.extend_from_slice(&p);
             out.normals.extend_from_slice(&[v.nx, v.ny, v.nz]);
             out.uvs.extend_from_slice(&[v.u, v.v]);
-            for (k, c) in [v.x, v.y, v.z].iter().enumerate() {
+            for (k, c) in p.iter().enumerate() {
                 if *c < out.min[k] {
                     out.min[k] = *c;
                 }
@@ -1049,6 +1384,20 @@ pub fn mesh_cache_stats() -> (usize, usize) {
 ///
 /// Never fails: a model that cannot be extracted or decoded yields the empty
 /// buffer, which the viewport treats as "nothing to draw here".
+///
+/// **Models flagged `CollisionOnly` (bit 14) are deliberately skipped here.**
+/// They were being drawn as if they were art: `coverage_audit --models` finds
+/// 357 of them in the shipped library, and the nine audited zones place 3
+/// distinct ones — `design_cube_invisible_coll`, `design_so_cube_1x1_hero_coll`
+/// and `gbl_gp_hero_coll_no_ground_01` — as 15 instances of a 12-triangle box
+/// each. Tiny in triangles (180 of 144.0 M across those zones, 0.0001%) but
+/// unmissable on screen, because an invisible blocker volume rendered as a
+/// solid cube hides whatever is behind it. The skip is at this level, not in
+/// [`decode_model_mesh`], so the raw decoder stays faithful to the asset and
+/// the audit harnesses can still measure what was skipped.
+///
+/// Bit 13 `StaticCollOnly` is *not* skipped — see [`ModelBuilt::collision_only`]
+/// for why: it covers 74-94% of the triangles of every art zone measured.
 pub fn model_mesh_bytes(index: &LevelIndex, model_id: u64, lod: u32) -> Arc<Vec<u8>> {
     let key = (model_id, lod);
     if let Some(hit) = cache_get(key) {
@@ -1058,6 +1407,10 @@ pub fn model_mesh_bytes(index: &LevelIndex, model_id: u64, lod: u32) -> Arc<Vec<
     let packed = (|| -> Result<Vec<u8>> {
         let raw = index.extract(model_id)?;
         let model = parse_model_asset(&raw)?;
+        if ModelBuilt::of(&model).is_some_and(|b| !b.drawable()) {
+            debug!("model {model_id:016X}: CollisionOnly, not drawn");
+            return Ok(empty_mesh_bytes());
+        }
         Ok(decode_model_mesh(&model, lod as usize)?.pack())
     })()
     .unwrap_or_else(|e| {

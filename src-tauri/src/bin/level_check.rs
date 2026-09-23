@@ -983,6 +983,209 @@ fn main() {
         );
     }
 
+    // ---- Model Built header ------------------------------------------------
+    // The 120-byte header is now fully named. These assertions pin the parts a
+    // viewer's correctness depends on; `coverage_audit --models` is the wider
+    // census they were derived from (all 11,387 shipped `.model` assets).
+    println!("\n== Model Built header ==");
+    {
+        use omnitool_lib::core::level::{model_flag, model_flag_names, ModelBuilt};
+
+        // A broad, diverse sample: every distinct model the four art tiles of
+        // four different planets place, plus a stride sample over the whole
+        // library so characters, weapons and UI props are represented too.
+        let mut sample: Vec<u64> = wind_models.clone();
+        let mut library: Vec<u64> = index
+            .names
+            .iter()
+            .filter(|(id, p)| p.ends_with(".model") && index.asset(**id).is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        library.sort_unstable();
+        sample.extend(library.iter().step_by(4).copied());
+        sample.sort_unstable();
+        sample.dedup();
+
+        let mut parsed = 0usize;
+        let mut bit_counts = [0usize; 32];
+        let (mut centered, mut centre_nz) = (0usize, 0usize);
+        let (mut coll_only, mut static_coll) = (0usize, 0usize);
+        let mut strandy = 0usize;
+        let mut bad_scale = 0usize;
+        let mut count_mismatch = 0usize;
+        for id in &sample {
+            let Ok(raw) = index.extract(*id) else { continue };
+            let Ok(model) = level::parse_model_asset(&raw) else {
+                continue;
+            };
+            let Some(b) = ModelBuilt::of(&model) else {
+                continue;
+            };
+            parsed += 1;
+            for (bit, c) in bit_counts.iter_mut().enumerate() {
+                if b.flags >> bit & 1 == 1 {
+                    *c += 1;
+                }
+            }
+            if b.centered_verts() {
+                centered += 1;
+            }
+            if b.mesh_centre.iter().any(|c| *c != 0.0) {
+                centre_nz += 1;
+            }
+            if b.collision_only() {
+                coll_only += 1;
+            }
+            if b.static_coll_only() {
+                static_coll += 1;
+            }
+            if b.strand_subset_count != 0 {
+                strandy += 1;
+            }
+            // metres-per-unit must be a usable, positive scale.
+            if !(b.metres_per_unit > 0.0 && b.metres_per_unit < 1.0) {
+                bad_scale += 1;
+            }
+            // 0x64/0x68 are the counts the engine validates the geometry
+            // sections against, so they must match the sections themselves.
+            if let Some(v) = model
+                .dat1
+                .get_section_data(omnitool_lib::tools::model_converter::sections::geo::TAG_VERTEXES)
+            {
+                if v.len() / 16 != b.vertex_count as usize {
+                    count_mismatch += 1;
+                }
+            }
+        }
+        println!("  {parsed} models parsed a 120-byte Built header");
+        println!(
+            "  CenteredVerts (bit 23) {centered}, non-zero mesh centre {centre_nz}, \
+CollisionOnly (14) {coll_only}, StaticCollOnly (13) {static_coll}, strand count != 0 {strandy}"
+        );
+        // The union of every bit any sampled model sets, run back through the
+        // name table — bit 29 has no name and must surface as `bit29`.
+        println!(
+            "  bits observed across the sample: {:?}",
+            model_flag_names(bit_counts.iter().enumerate().fold(0u32, |a, (b, n)| {
+                if *n > 0 {
+                    a | 1 << b
+                } else {
+                    a
+                }
+            }))
+        );
+        if parsed < 2000 {
+            fail(
+                &format!("only {parsed} Built headers parsed, need at least 2000"),
+                &mut failures,
+            );
+        }
+        if bad_scale > 0 {
+            fail(
+                &format!("{bad_scale} models have an unusable metres-per-unit at 0x2C"),
+                &mut failures,
+            );
+        }
+        if count_mismatch > 0 {
+            fail(
+                &format!("{count_mismatch} models: Built 0x68 != Model Std Vert length / 16"),
+                &mut failures,
+            );
+        }
+        // Bits 17/18 were established here by correlating against which vertex
+        // streams a model carries; the adopted table agrees, so they must stay
+        // common but not universal.
+        for (bit, name) in [
+            (model_flag::VERT_HAS_UV1, "VertHasUv1"),
+            (model_flag::VERT_HAS_COLOR, "VertHasColor"),
+        ] {
+            let n = bit_counts[bit as usize];
+            if n == 0 || n == parsed {
+                fail(
+                    &format!("{name} (bit {bit}) is set on {n}/{parsed} — the flag table moved"),
+                    &mut failures,
+                );
+            }
+        }
+        // CenteredVerts is the one flag that can move geometry. On this build
+        // nothing sets it and 0x1C is always zero; if that ever changes the
+        // decoder's offset term becomes live and this note should be revisited.
+        if centered != centre_nz {
+            fail(
+                &format!(
+                    "{centered} models set CenteredVerts but {centre_nz} have a non-zero 0x1C"
+                ),
+                &mut failures,
+            );
+        }
+        // CollisionOnly must stay rare — it is the bit `model_mesh_bytes` uses
+        // to stop drawing a model, so a table shift that made it common would
+        // empty the viewport.
+        if coll_only * 10 > parsed {
+            fail(
+                &format!("CollisionOnly on {coll_only}/{parsed} models — too many to skip drawing"),
+                &mut failures,
+            );
+        }
+        // ...and StaticCollOnly must stay common, which is why it is NOT used
+        // as a visibility test.
+        if static_coll * 10 < parsed {
+            fail(
+                &format!(
+                    "StaticCollOnly on only {static_coll}/{parsed} models — re-check the bit-13 reading"
+                ),
+                &mut failures,
+            );
+        }
+
+        // The decoder must apply the CenteredVerts offset, whether or not any
+        // shipped model asks for it. Proven on a synthetic header rather than
+        // on the shipped data, since the shipped data cannot exercise it.
+        let mut hdr = vec![0u8; ModelBuilt::SIZE];
+        hdr[0x1C..0x20].copy_from_slice(&3.5f32.to_le_bytes());
+        hdr[0x20..0x24].copy_from_slice(&(-2.0f32).to_le_bytes());
+        hdr[0x28..0x2C].copy_from_slice(&(1u32 << model_flag::CENTERED_VERTS).to_le_bytes());
+        let with = ModelBuilt::parse(&hdr).expect("synthetic header");
+        hdr[0x28..0x2C].copy_from_slice(&0u32.to_le_bytes());
+        let without = ModelBuilt::parse(&hdr).expect("synthetic header");
+        println!(
+            "  offset term: CenteredVerts set -> {:?}, clear -> {:?}",
+            with.vertex_offset(),
+            without.vertex_offset()
+        );
+        if with.vertex_offset() != [3.5, -2.0, 0.0] || without.vertex_offset() != [0.0; 3] {
+            fail("ModelBuilt::vertex_offset does not follow flag bit 23", &mut failures);
+        }
+
+        // model_mesh_bytes must actually skip a CollisionOnly model.
+        let coll_id = sample.iter().copied().find(|id| {
+            index
+                .extract(*id)
+                .ok()
+                .and_then(|r| level::parse_model_asset(&r).ok())
+                .and_then(|m| ModelBuilt::of(&m))
+                .is_some_and(|b| b.collision_only() && b.vertex_count > 0)
+        });
+        match coll_id {
+            Some(id) => {
+                let raw = index.extract(id).unwrap();
+                let model = level::parse_model_asset(&raw).unwrap();
+                let decoded = level::decode_model_mesh(&model, 0).map(|m| m.indices.len() / 3);
+                let bytes = level::model_mesh_bytes(&index, id, 0);
+                let drawn = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) / 3;
+                println!(
+                    "  CollisionOnly {} decodes to {:?} triangles, viewport draws {drawn}",
+                    index.name_of(id).unwrap_or("?"),
+                    decoded
+                );
+                if drawn != 0 {
+                    fail("model_mesh_bytes still draws a CollisionOnly model", &mut failures);
+                }
+            }
+            None => fail("no CollisionOnly model in the sample to check the skip", &mut failures),
+        }
+    }
+
     println!(
         "\n{}",
         if failures == 0 {
