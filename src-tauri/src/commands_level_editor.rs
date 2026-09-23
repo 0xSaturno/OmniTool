@@ -9,7 +9,7 @@
 //! | `level_load_zone`     | one zone's scene objects, actors, models and bounds |
 //! | `level_model_mesh`    | packed LOD geometry for one model, as an ArrayBuffer |
 //! | `level_zone_geometry` | packed geometry an impostor or decal keeps in the zone's own block 2 |
-//! | `level_model_materials` | one model's material slots and the textures they bind |
+//! | `level_model_materials` | one model's material slots, the textures they bind, and the blend recipe when they have one |
 //! | `level_texture`       | one texture decoded to a PNG, as an ArrayBuffer    |
 //! | `level_save_zone`     | apply transform edits into a Stager project        |
 //!
@@ -378,6 +378,16 @@ pub async fn level_model_mesh(
 /// **partial** archive reads (256 bytes each), so cataloguing a busy zone's
 /// several hundred models costs a fraction of a second and never decompresses a
 /// pixel.
+///
+/// # `slot.blend`
+///
+/// A slot whose material instances the `gbl_rgb_blend` family — about two thirds
+/// of an art tile's slots — also carries a
+/// [`BlendRecipe`](crate::core::model_materials::BlendRecipe): an RGB splat map
+/// plus four colour layers with per-layer tiling and HSL, which is what the
+/// surface actually shows. For those slots a single albedo out of `textures` is
+/// one substance out of four. The field is additive and omitted entirely for
+/// every other material, so a caller that ignores it behaves exactly as before.
 #[tauri::command]
 pub async fn level_model_materials(
     game_dir: String,

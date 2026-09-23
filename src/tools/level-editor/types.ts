@@ -300,6 +300,45 @@ export interface ModelMaterialSlotDto {
    */
   placeholder: boolean;
   textures: TextureRefDto[];
+  /**
+   * Present only when the material instances the `gbl_rgb_blend` family, in
+   * which case ONE albedo out of `textures` is not what the surface shows.
+   * Additive: a caller that ignores this behaves exactly as it did before.
+   */
+  blend?: BlendRecipeDto | null;
+}
+
+/** One layer of an RGB-splat blend. Mirrors the Rust `BlendLayer`. */
+export interface BlendLayerDto {
+  /** `base` | `r` | `g` | `b` — which splat channel fades this layer in. */
+  channel: string;
+  textureId: string;
+  texturePath: string;
+  /** False when the layer has no sampler of its own and reads the base's map. */
+  ownTexture: boolean;
+  /** Multiplies UV0 for this layer. */
+  uvScale: [number, number];
+  /** `[hue, saturation, luminance]`, each `0..1` with **0.5 neutral**. */
+  hsl: [number, number, number];
+  /** `"measured"` | `"assumed"` — how the triple was tied to this layer. */
+  hslSource: string;
+  scale: number;
+}
+
+/** Mirrors the Rust `BlendRecipe`. See `model_materials.rs` for the derivation. */
+export interface BlendRecipeDto {
+  /** `"rgb_blend"` today. */
+  kind: string;
+  template: string;
+  maskTextureId: string;
+  maskTexturePath: string;
+  /** base, r, g, b — but a variant may declare fewer, so read `channel`. */
+  layers: BlendLayerDto[];
+  normalTextureId: string;
+  normalTexturePath: string;
+  miscTextureId: string;
+  miscTexturePath: string;
+  params: Record<string, number[]>;
 }
 
 export interface ModelMaterialsDto {
@@ -390,6 +429,113 @@ export function albedoOf(slot: ModelMaterialSlotDto): TextureRefDto | null {
     if (COLOUR_SUFFIXES.has(textureSuffix(t.texturePath ?? ""))) return t;
   }
   return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// The `gbl_rgb_blend` family, reduced to what the viewport can evaluate
+// ---------------------------------------------------------------------------
+
+/** One layer of a {@link BlendPlan}. `textureId` is never empty. */
+export interface BlendPlanLayer {
+  textureId: string;
+  uvScale: [number, number];
+  hsl: [number, number, number];
+}
+
+/**
+ * A blend the viewport can actually draw: one splat map and exactly four
+ * layers, in the order base, r, g, b.
+ *
+ * The backend's recipe is looser than this — a three-layer variant of the
+ * template ships one fewer layer, and a layer with no sampler of its own is
+ * already resolved to the base map. `enabled` carries the first of those: it
+ * is false for a channel the template never declared, and that channel's weight
+ * is forced to zero rather than being drawn as a duplicate of the base.
+ */
+export interface BlendPlan {
+  maskTextureId: string;
+  /** Exactly four: base, r, g, b. */
+  layers: BlendPlanLayer[];
+  /** r, g, b — false where the template declares no such layer. */
+  enabled: [boolean, boolean, boolean];
+  /** Distinct texture ids this plan needs, mask included. For accounting. */
+  textureIds: string[];
+}
+
+/** 0.5 is the shipped default of all twelve HSL constants, i.e. "no shift". */
+function neutralHsl(h: readonly number[] | undefined): boolean {
+  return (
+    !h ||
+    h.length < 3 ||
+    (Math.abs(h[0] - 0.5) < 2e-3 && Math.abs(h[1] - 0.5) < 2e-3 && Math.abs(h[2] - 0.5) < 2e-3)
+  );
+}
+
+function usableId(id: string | undefined | null): string | null {
+  return id && id !== "0x0" && id !== "0x" ? id : null;
+}
+
+const BLEND_CHANNELS = ["base", "r", "g", "b"] as const;
+
+/**
+ * The blend this slot should be drawn with, or null to fall back to the single
+ * albedo {@link albedoOf} picks.
+ *
+ * Null is returned — deliberately — in every case where the blend would draw
+ * the same pixels as the cheap path or worse:
+ *
+ *   - no recipe, or a `kind` this build does not know;
+ *   - a placeholder slot (the flat hue is the honest answer there);
+ *   - no usable splat map, or no usable base layer. The splat map is the whole
+ *     mechanism: without it there is nothing to blend *by*, and the base layer
+ *     is what the surface falls back to everywhere the mask is dark;
+ *   - a recipe that reduces to one texture drawn flat — every declared layer
+ *     reading the base's map with the same (or a neutral) HSL shift. Roughly a
+ *     fifth of the family's shipped materials are this, and drawing them
+ *     through the blend shader would cost four extra samplers per fragment to
+ *     reproduce `map` exactly.
+ */
+export function blendPlanOf(slot: ModelMaterialSlotDto): BlendPlan | null {
+  const recipe = slot.blend;
+  if (!recipe || recipe.kind !== "rgb_blend" || slot.placeholder) return null;
+
+  const mask = usableId(recipe.maskTextureId);
+  if (!mask) return null;
+
+  const byChannel = new Map((recipe.layers ?? []).map((l) => [l.channel, l]));
+  const base = byChannel.get("base");
+  const baseId = usableId(base?.textureId);
+  if (!base || !baseId) return null;
+
+  const layers: BlendPlanLayer[] = [];
+  const enabled: [boolean, boolean, boolean] = [false, false, false];
+  for (let i = 0; i < 4; i++) {
+    const l = byChannel.get(BLEND_CHANNELS[i]);
+    const id = usableId(l?.textureId) ?? baseId;
+    layers.push({
+      textureId: id,
+      uvScale: l && l.uvScale && l.uvScale.length >= 2 ? [l.uvScale[0], l.uvScale[1]] : [1, 1],
+      hsl: l && l.hsl && l.hsl.length >= 3 ? [l.hsl[0], l.hsl[1], l.hsl[2]] : [0.5, 0.5, 0.5],
+    });
+    if (i > 0) enabled[i - 1] = Boolean(l);
+  }
+
+  // Would the blend show anything the base map alone does not?
+  let meaningful = !neutralHsl(layers[0].hsl);
+  for (let i = 1; i < 4 && !meaningful; i++) {
+    if (!enabled[i - 1]) continue;
+    const l = layers[i];
+    meaningful =
+      l.textureId !== baseId ||
+      !neutralHsl(l.hsl) ||
+      Math.abs(l.uvScale[0] - layers[0].uvScale[0]) > 1e-3 ||
+      Math.abs(l.uvScale[1] - layers[0].uvScale[1]) > 1e-3;
+  }
+  if (!meaningful) return null;
+
+  const ids = new Set<string>([mask]);
+  for (let i = 0; i < 4; i++) if (i === 0 || enabled[i - 1]) ids.add(layers[i].textureId);
+  return { maskTextureId: mask, layers, enabled, textureIds: [...ids] };
 }
 
 /** Resolves a model's material table. Rejects are treated as "no materials". */

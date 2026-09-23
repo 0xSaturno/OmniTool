@@ -60,6 +60,10 @@ name = "texture_probe"
 path = "src/bin/texture_probe.rs"
 
 [[bin]]
+name = "blend_probe"
+path = "src/bin/blend_probe.rs"
+
+[[bin]]
 name = "instance_placement"
 path = "src/bin/instance_placement.rs"
 

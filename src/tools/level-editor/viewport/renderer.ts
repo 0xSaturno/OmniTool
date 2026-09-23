@@ -34,7 +34,10 @@ import {
   createLightRig,
   depthBiasFor,
   createModelMaterial,
+  isBlendMaterial,
+  updateBlendMaterial,
   usesTextures,
+  type BlendInput,
   type BlockGeoKind,
   type ShadingMode,
 } from "./materials";
@@ -49,7 +52,9 @@ import {
   KIND_IMPOSTOR,
   KIND_MODEL,
   albedoOf,
+  blendPlanOf,
   zoneGeometryKey,
+  type BlendPlan,
   type GizmoMode,
   type MeshLoader,
   type ModelMaterialsDto,
@@ -92,6 +97,8 @@ export interface HudState {
   textureSkipped: number;
   /** Model batches drawing at least one textured submesh. */
   texturedModels: number;
+  /** Submesh materials evaluating the `gbl_rgb_blend` RGB-splat blend. */
+  blendedSubmeshes: number;
 }
 
 export interface LevelRendererOptions {
@@ -125,11 +132,36 @@ interface Batch {
   /** `model` only: the material table, once `level_model_materials` answered. */
   materials?: ModelMaterialsDto | null;
   /**
-   * `model` only: the albedo texture id each entry of the material ARRAY wants,
-   * parallel to `mesh.material` when that is an array. Lets a texture arriving
-   * later patch exactly the slots that asked for it instead of rebuilding.
+   * `model` only: what each entry of the material ARRAY samples, parallel to
+   * `mesh.material` when that is an array (and a one-element array when it is
+   * a single material). Lets a texture arriving later patch exactly the slots
+   * that asked for it instead of rebuilding.
    */
-  slotTextureIds?: (string | null)[];
+  slotTextures?: SlotTextures[];
+  /** `model` only: how many of its materials evaluate an RGB-splat blend. */
+  blended?: number;
+}
+
+/**
+ * What one material of a batch samples.
+ *
+ * `baseId` is the ONE map the material draws flat right now: the single albedo
+ * for a plain slot, the base layer once a blended slot has been promoted, and
+ * `albedoOf`'s pick in between — a blend whose base layer has not arrived (or
+ * will not decode) keeps drawing exactly what this viewport drew before the
+ * blend existed.
+ */
+interface SlotTextures {
+  baseId: string | null;
+  /** Present when this slot is a `gbl_rgb_blend` surface. */
+  plan?: BlendPlan;
+}
+
+/** Does this slot sample the given texture id in any role? */
+function usesTexture(use: SlotTextures, id: string): boolean {
+  if (use.baseId === id) return true;
+  if (!use.plan) return false;
+  return use.plan.textureIds.includes(id);
 }
 
 /**
@@ -374,7 +406,12 @@ export class LevelRenderer {
     // Untextured clay under a bright key blows out fast; ACES keeps the
     // highlights inside the range where shading is still readable.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    // Must agree with `setShadingMode`, which raises the exposure for the
+    // textured mode. The viewport BOOTS textured, so hard-coding the clay
+    // exposure here left the level 36% darker (measured: mean frame value
+    // 35.1 against 47.9 on one nefarious tile) until the first time anyone
+    // pressed N — a bug the eye reads as "the albedo is muddy".
+    this.renderer.toneMappingExposure = usesTextures(this.shading) ? 1.55 : 1.05;
     this.renderer.domElement.style.display = "block";
     this.renderer.domElement.style.width = "100%";
     this.renderer.domElement.style.height = "100%";
@@ -927,26 +964,80 @@ export class LevelRenderer {
     return null;
   }
 
+  /**
+   * Resolve one blend plan against the textures that have actually landed,
+   * requesting the ones that have not.
+   *
+   * A layer whose texture is not here yet comes back null, which
+   * {@link updateBlendMaterial} turns into a zero weight for that channel — so
+   * the surface shows the base layer, i.e. exactly the picture the
+   * single-albedo path drew, and each layer sharpens it as it arrives. Layers
+   * are only asked for once the base is resident (see `rebuildBatchMaterials`),
+   * which keeps the whole zone's base coverage ahead of any one model's detail.
+   */
+  private blendInputFor(plan: BlendPlan, batch: Batch): BlendInput {
+    const base = this.textureFor(plan.layers[0].textureId, batch);
+    return {
+      mask: this.textureFor(plan.maskTextureId, batch),
+      layers: plan.layers.map((l, i) => ({
+        texture: i === 0 ? base : plan.enabled[i - 1] ? this.textureFor(l.textureId, batch) : null,
+        uvScale: l.uvScale,
+        hsl: l.hsl,
+      })),
+    };
+  }
+
+  /**
+   * Fold a newly arrived texture into one already-built material.
+   *
+   * Returns false when the material is the wrong KIND for what the slot now
+   * wants — a blend slot whose base layer has only just landed is still on the
+   * plain material it was given while the base was missing — in which case the
+   * caller rebuilds the batch. Everything else is a uniform write and needs no
+   * recompile.
+   */
+  private patchSlotMaterial(m: THREE.Material, use: SlotTextures, batch: Batch): boolean {
+    if (use.plan) {
+      if (isBlendMaterial(m)) {
+        updateBlendMaterial(m, this.blendInputFor(use.plan, batch));
+        return true;
+      }
+      // Still on the fallback material. Only the blend's own base layer
+      // arriving can promote it; anything else falls through to the plain
+      // patch below, so a slot whose base never decodes keeps its albedo.
+      if (this.textures.get(use.plan.layers[0].textureId)) return false;
+    }
+    const tex = use.baseId ? this.textures.get(use.baseId) ?? null : null;
+    if (!tex) return true;
+    const phong = m as THREE.MeshPhongMaterial;
+    phong.map = tex;
+    phong.color.setRGB(1, 1, 1);
+    phong.needsUpdate = true;
+    return true;
+  }
+
   private onTexture(id: string, texture: THREE.Texture | null): void {
     this.textures.set(id, texture);
     const users = this.textureUsers.get(id);
     if (!users) return;
     for (const batch of users) {
       if (this.batchByKey.get(batch.key) !== batch) continue;
-      const mats = batch.mesh.material;
-      if (!texture || !Array.isArray(mats) || !batch.slotTextureIds) {
+      const uses = batch.slotTextures;
+      if (!uses) {
         // First texture of this model: it is still on a single flat material,
         // so the array has to be built now.
         if (texture) this.rebuildBatchMaterials(batch);
         continue;
       }
-      for (let i = 0; i < mats.length; i++) {
-        if (batch.slotTextureIds[i] !== id) continue;
-        const m = mats[i] as THREE.MeshPhongMaterial;
-        m.map = texture;
-        m.color.setRGB(1, 1, 1);
-        m.needsUpdate = true;
+      const mats = batch.mesh.material;
+      const list = Array.isArray(mats) ? mats : [mats];
+      let rebuild = false;
+      for (let i = 0; i < list.length; i++) {
+        const use = uses[i];
+        if (!use || !usesTexture(use, id)) continue;
+        if (!this.patchSlotMaterial(list[i], use, batch)) rebuild = true;
       }
+      if (rebuild) this.rebuildBatchMaterials(batch);
     }
     this.needsRender = true;
   }
@@ -962,12 +1053,20 @@ export class LevelRenderer {
    *   - one submesh: one material, carrying that submesh's albedo.
    *   - several submeshes: an array indexed by the geometry groups' material
    *     index, so three draws one call per submesh with its own albedo.
+   *
+   * A slot that carries a `gbl_rgb_blend` recipe (71% of a Nefarious City art
+   * tile's slots) takes the blend material instead of the single albedo, but
+   * only once its BASE layer is resident: until then it falls through to the
+   * plain path, which is the same map drawn flat, so the picture only ever
+   * improves as textures land. `onTexture` promotes it when the base arrives
+   * and feeds the remaining layers in by uniform after that.
    */
   private rebuildBatchMaterials(batch: Batch): void {
     if (batch.kind !== "model") return;
     const tint = colorForKey(batch.key);
     const flat = () => {
-      batch.slotTextureIds = undefined;
+      batch.slotTextures = undefined;
+      batch.blended = 0;
       this.setBatchMaterial(batch, createModelMaterial(this.shading, this.wireframe, { tint }));
     };
 
@@ -976,25 +1075,41 @@ export class LevelRenderer {
 
     const subs = submeshTables.get(batch.key);
     const byIndex = new Map(slots.map((s) => [s.index, s]));
-    const makeFor = (materialIndex: number): { material: THREE.Material; textureId: string | null } => {
+    let blended = 0;
+    const makeFor = (materialIndex: number): { material: THREE.Material; use: SlotTextures } => {
       const slot = byIndex.get(materialIndex);
+      const plan = slot ? blendPlanOf(slot) : null;
+      if (plan && this.textureFor(plan.layers[0].textureId, batch)) {
+        // The base layer is the gate: only once it is here do we reach for the
+        // mask and the other three, so a zone reaches full base coverage before
+        // any one model starts refining itself.
+        blended++;
+        return {
+          material: createModelMaterial(this.shading, this.wireframe, {
+            tint,
+            blend: this.blendInputFor(plan, batch),
+          }),
+          use: { baseId: plan.layers[0].textureId, plan },
+        };
+      }
       const albedo = slot ? albedoOf(slot) : null;
       const id = albedo?.textureId ?? null;
       const map = id ? this.textureFor(id, batch) : null;
       return {
         material: createModelMaterial(this.shading, this.wireframe, { tint, map }),
-        textureId: id,
+        use: plan ? { baseId: id, plan } : { baseId: id },
       };
     };
 
     // One submesh (or an unknown table): a single material, no groups needed.
     if (!subs || subs.length < 2) {
       const only = makeFor(subs?.[0]?.materialIndex ?? slots[0].index);
-      if (!only.textureId || !this.textures.get(only.textureId)) {
+      if (!only.use.baseId || !this.textures.get(only.use.baseId)) {
         only.material.dispose();
         return flat();
       }
-      batch.slotTextureIds = [only.textureId];
+      batch.slotTextures = [only.use];
+      batch.blended = blended;
       this.setBatchMaterial(batch, only.material);
       return;
     }
@@ -1006,20 +1121,21 @@ export class LevelRenderer {
     let highest = 0;
     for (const g of groups) highest = Math.max(highest, g.materialIndex ?? 0);
     const built: THREE.Material[] = [];
-    const ids: (string | null)[] = [];
+    const uses: SlotTextures[] = [];
     let textured = 0;
     for (let i = 0; i <= highest; i++) {
       const made = makeFor(i);
       built.push(made.material);
-      ids.push(made.textureId);
-      if (made.textureId && this.textures.get(made.textureId)) textured++;
+      uses.push(made.use);
+      if (made.use.baseId && this.textures.get(made.use.baseId)) textured++;
     }
     if (textured === 0) {
       // Nothing to show yet — stay on one draw call until a texture lands.
       for (const m of built) m.dispose();
       return flat();
     }
-    batch.slotTextureIds = ids;
+    batch.slotTextures = uses;
+    batch.blended = blended;
     this.setBatchMaterial(batch, built);
   }
 
@@ -1567,7 +1683,12 @@ export class LevelRenderer {
     const info = this.renderer.info.render;
     const tex = textureCacheStats(this.textureQueue?.outstanding ?? 0);
     let texturedModels = 0;
-    for (const b of this.batches) if (b.kind === "model" && b.slotTextureIds) texturedModels++;
+    let blendedSubmeshes = 0;
+    for (const b of this.batches) {
+      if (b.kind !== "model" || !b.slotTextures) continue;
+      texturedModels++;
+      blendedSubmeshes += b.blended ?? 0;
+    }
     const hoveredObj = this.hovered !== null ? this.slots.get(this.hovered) : undefined;
     const selectedObj = this.selection.length ? this.slots.get(this.selection[0]) : undefined;
 
@@ -1593,6 +1714,7 @@ export class LevelRenderer {
       textureLoading: tex.loading + this.materialsPending.length + this.materialsInFlight,
       textureSkipped: tex.skipped,
       texturedModels,
+      blendedSubmeshes,
     });
   }
 }

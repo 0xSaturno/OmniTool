@@ -102,6 +102,219 @@ function patchMirroredNormal(material: THREE.Material, cacheKey: string): void {
   material.customProgramCacheKey = () => cacheKey;
 }
 
+// ---------------------------------------------------------------------------
+// The `gbl_rgb_blend` family
+// ---------------------------------------------------------------------------
+
+/** One layer's inputs, in the order base, r, g, b. */
+export interface BlendLayerInput {
+  /** Null while the fetch is in flight, or for good if it will not decode. */
+  texture: THREE.Texture | null;
+  uvScale: readonly [number, number];
+  /** `[hue, saturation, luminance]`, 0.5 neutral. */
+  hsl: readonly [number, number, number];
+}
+
+/** Everything the blend shader reads. See {@link createModelMaterial}. */
+export interface BlendInput {
+  /** The RGB splat / id mask. Null until it lands: the base layer shows alone. */
+  mask: THREE.Texture | null;
+  /** Exactly four, base first. */
+  layers: BlendLayerInput[];
+}
+
+/** Where the per-material uniform objects live between rebuilds. */
+interface BlendUniforms {
+  rcraMask: { value: THREE.Texture | null };
+  rcraLayerR: { value: THREE.Texture | null };
+  rcraLayerG: { value: THREE.Texture | null };
+  rcraLayerB: { value: THREE.Texture | null };
+  rcraUv: { value: THREE.Vector2[] };
+  rcraHsl: { value: THREE.Vector3[] };
+  /** Per-channel weight multiplier; 0 hides a layer that has not arrived. */
+  rcraWeight: { value: THREE.Vector3 };
+  /** 1 when the mask upload is sRGB-decoded by the sampler and must be undone. */
+  rcraMaskSrgb: { value: number };
+}
+
+/**
+ * GLSL for the blend, spliced into MeshPhongMaterial's `map_fragment`.
+ *
+ * WHAT IT COMPUTES, and why it is shaped this way:
+ *
+ *   uv_i = uv0 * uvScale_i ; c_i = hsl( sample( layer_i, uv_i ), hsl_i )
+ *   out  = c_base ; out = mix( out, c_r, m.r ) ; …g ; …b
+ *
+ * Three independent weights lerped over a base, NOT a partition of the three
+ * channels. Measured over the 21 distinct splat maps a Nefarious City art tile
+ * binds: R+G+B averages 0.80 but only 78% of texels keep it at or below 1 and
+ * single texels reach 2.9, so the channels cannot be normalised weights; and
+ * 17.5% of texels have all three channels dark, which is precisely where the
+ * base layer is meant to show through. The lerp ORDER (r, then g, then b) only
+ * matters where two channels overlap and is a convention, not a measurement.
+ *
+ * THE MASK IS NOT A COLOUR. `level_texture` serves PNG and the cache tags every
+ * PNG sRGB, so the GPU sampler decodes the splat map's bytes through the sRGB
+ * EOTF before this shader ever sees them — which would turn an authored 0.5
+ * region weight into 0.21. `rcraMaskSrgb` re-applies the OETF, recovering the
+ * authored 0..1 value to within 8-bit precision, and is driven from the
+ * texture's own `colorSpace` so an RCTX payload that is already linear is left
+ * alone. (Doing it here rather than by uploading the mask twice keeps one
+ * upload per texture id, which is the whole point of the shared cache.)
+ *
+ * THE HSL SHIFT is the part the data does not pin down: all twelve constants
+ * ship at 0.5 and shipped materials keep them inside 0..1, so they are
+ * 0.5-neutral sliders, but the arithmetic the graph performs on them is not
+ * recoverable from the archives. `hue += h - 0.5`, `saturation *= 2s`,
+ * `luminance *= 2l` reproduces both the neutral point and the range, and is the
+ * usual convention. It is applied in LINEAR space, because the sampler has
+ * would have operated on. A neutral triple short-circuits, so the common case
+ * costs one uniform compare rather than two colour-space conversions.
+ */
+const BLEND_DECLS = /* glsl */ `
+uniform sampler2D rcraMask;
+uniform sampler2D rcraLayerR;
+uniform sampler2D rcraLayerG;
+uniform sampler2D rcraLayerB;
+uniform vec2 rcraUv[ 4 ];
+uniform vec3 rcraHsl[ 4 ];
+uniform vec3 rcraWeight;
+uniform float rcraMaskSrgb;
+
+vec3 rcraLinearToSrgb( vec3 c ) {
+  c = max( c, vec3( 0.0 ) );
+  return mix( c * 12.92, 1.055 * pow( c, vec3( 0.41666667 ) ) - 0.055, step( vec3( 0.0031308 ), c ) );
+}
+
+vec3 rcraRgbToHsl( vec3 c ) {
+  float mx = max( c.r, max( c.g, c.b ) );
+  float mn = min( c.r, min( c.g, c.b ) );
+  float l = ( mx + mn ) * 0.5;
+  float d = mx - mn;
+  float s = d <= 0.0 ? 0.0 : d / max( 1.0 - abs( 2.0 * l - 1.0 ), 1e-5 );
+  float h = 0.0;
+  if ( d > 0.0 ) {
+    if ( mx == c.r ) h = mod( ( c.g - c.b ) / d, 6.0 );
+    else if ( mx == c.g ) h = ( c.b - c.r ) / d + 2.0;
+    else h = ( c.r - c.g ) / d + 4.0;
+    h /= 6.0;
+  }
+  return vec3( h, s, l );
+}
+
+vec3 rcraHslToRgb( vec3 hsl ) {
+  float h = fract( hsl.x ) * 6.0;
+  float c = ( 1.0 - abs( 2.0 * hsl.z - 1.0 ) ) * hsl.y;
+  float x = c * ( 1.0 - abs( mod( h, 2.0 ) - 1.0 ) );
+  vec3 rgb;
+  if ( h < 1.0 ) rgb = vec3( c, x, 0.0 );
+  else if ( h < 2.0 ) rgb = vec3( x, c, 0.0 );
+  else if ( h < 3.0 ) rgb = vec3( 0.0, c, x );
+  else if ( h < 4.0 ) rgb = vec3( 0.0, x, c );
+  else if ( h < 5.0 ) rgb = vec3( x, 0.0, c );
+  else rgb = vec3( c, 0.0, x );
+  return rgb + ( hsl.z - 0.5 * c );
+}
+
+vec3 rcraShift( vec3 rgb, vec3 hsl ) {
+  if ( all( lessThan( abs( hsl - 0.5 ), vec3( 0.002 ) ) ) ) return rgb;
+  vec3 v = rcraRgbToHsl( clamp( rgb, 0.0, 1.0 ) );
+  v.x = fract( v.x + hsl.x - 0.5 );
+  v.y = clamp( v.y * hsl.y * 2.0, 0.0, 1.0 );
+  v.z = clamp( v.z * hsl.z * 2.0, 0.0, 1.0 );
+  return rcraHslToRgb( v );
+}
+
+vec3 rcraLayer( sampler2D tex, vec2 uv, int i ) {
+  return rcraShift( texture2D( tex, uv * rcraUv[ i ] ).rgb, rcraHsl[ i ] );
+}
+`;
+
+const BLEND_MAP_FRAGMENT = /* glsl */ `
+#ifdef USE_MAP
+  vec3 rcraM = clamp( texture2D( rcraMask, vMapUv ).rgb, 0.0, 1.0 );
+  rcraM = mix( rcraM, rcraLinearToSrgb( rcraM ), rcraMaskSrgb ) * rcraWeight;
+  vec3 rcraOut = rcraLayer( map, vMapUv, 0 );
+  rcraOut = mix( rcraOut, rcraLayer( rcraLayerR, vMapUv, 1 ), rcraM.r );
+  rcraOut = mix( rcraOut, rcraLayer( rcraLayerG, vMapUv, 2 ), rcraM.g );
+  rcraOut = mix( rcraOut, rcraLayer( rcraLayerB, vMapUv, 3 ), rcraM.b );
+  diffuseColor.rgb *= rcraOut;
+#endif
+`;
+
+/** Is this one of the materials {@link createModelMaterial} built for a blend? */
+export function isBlendMaterial(m: THREE.Material): boolean {
+  return Boolean((m.userData as { rcraBlend?: BlendUniforms }).rcraBlend);
+}
+
+/**
+ * Push new textures / constants into an existing blend material.
+ *
+ * The uniform objects are shared by reference with the compiled program's
+ * `shader.uniforms`, so this takes effect on the next frame WITHOUT a recompile
+ * — which is what makes progressive layer loading free. A sampler uniform left
+ * null binds three's empty texture, and its channel weight is 0, so an
+ * unfinished layer is invisible rather than wrong.
+ */
+/**
+ * Whether the per-layer hue/saturation/luminance shift is applied.
+ *
+ * Off by default, deliberately. The blend *structure* — the splat mask, the four
+ * layers, their tilings — is recovered from the shipped template and verified.
+ * The HSL ARITHMETIC is not: `hue += h - 0.5`, `sat *= 2s`, `lum *= 2l` matches
+ * the neutral point and the 0..1 range and nothing else, because the expression
+ * lives in a compiled shader nobody has disassembled. It is also the dominant
+ * term in the picture — 23% of layers carry a hue constant more than 60 degrees
+ * off neutral, and at close range it rotates Nefarious City's red architectural
+ * trim to teal, which the mask blend alone does not do.
+ *
+ * So the evidenced half ships on and the guessed half ships off, until the
+ * arithmetic is settled by disassembling the pixel shader.
+ */
+let hslEnabled = false;
+
+/** Toggle the per-layer HSL shift. Returns the new state. */
+export function setBlendHsl(on: boolean): boolean {
+  hslEnabled = on;
+  return hslEnabled;
+}
+
+export function blendHslEnabled(): boolean {
+  return hslEnabled;
+}
+
+export function updateBlendMaterial(m: THREE.Material, blend: BlendInput): void {
+  const u = (m.userData as { rcraBlend?: BlendUniforms }).rcraBlend;
+  if (!u) return;
+  const layers = blend.layers;
+  const base = layers[0]?.texture ?? null;
+  (m as THREE.MeshPhongMaterial).map = base;
+  u.rcraMask.value = blend.mask;
+  u.rcraLayerR.value = layers[1]?.texture ?? null;
+  u.rcraLayerG.value = layers[2]?.texture ?? null;
+  u.rcraLayerB.value = layers[3]?.texture ?? null;
+  for (let i = 0; i < 4; i++) {
+    const l = layers[i];
+    u.rcraUv.value[i].set(l?.uvScale[0] ?? 1, l?.uvScale[1] ?? 1);
+    // Neutral triples make `rcraShift` a no-op on its own early-out, so turning
+    // the shift off costs nothing and needs no recompile.
+    if (hslEnabled) {
+      u.rcraHsl.value[i].set(l?.hsl[0] ?? 0.5, l?.hsl[1] ?? 0.5, l?.hsl[2] ?? 0.5);
+    } else {
+      u.rcraHsl.value[i].set(0.5, 0.5, 0.5);
+    }
+  }
+  // A layer with no texture yet contributes nothing, so the base shows through
+  // exactly as it did before this change — the "nothing regresses while
+  // loading" guarantee, per channel rather than per material.
+  u.rcraWeight.value.set(
+    blend.mask && layers[1]?.texture ? 1 : 0,
+    blend.mask && layers[2]?.texture ? 1 : 0,
+    blend.mask && layers[3]?.texture ? 1 : 0,
+  );
+  u.rcraMaskSrgb.value = blend.mask && blend.mask.colorSpace === THREE.SRGBColorSpace ? 1 : 0;
+}
+
 /**
  * Extras for one model-batch material. All optional; all only meaningful in
  * `textured` mode.
@@ -109,6 +322,12 @@ function patchMirroredNormal(material: THREE.Material, cacheKey: string): void {
 export interface ModelMaterialOptions {
   /** Albedo map. Absent/null falls back to the flat hue below. */
   map?: THREE.Texture | null;
+  /**
+   * Draw this submesh as a `gbl_rgb_blend` surface instead of a single albedo.
+   * Requires `layers[0].texture` to be resident — that is the map `map` would
+   * otherwise have carried, and the one every fragment samples.
+   */
+  blend?: BlendInput | null;
   /**
    * The flat per-model hue, baked into `material.color`.
    *
@@ -144,6 +363,8 @@ export function createModelMaterial(
 ): THREE.Material {
   switch (mode) {
     case "textured": {
+      const blend = opts?.blend ?? null;
+      if (blend && blend.layers[0]?.texture) return createBlendMaterial(wireframe, blend);
       const map = opts?.map ?? null;
       const m = new THREE.MeshPhongMaterial({
         // White under a map so the texture shows its own colour; the flat hue
@@ -200,6 +421,59 @@ export function createModelMaterial(
       return m;
     }
   }
+}
+
+/**
+ * A `textured` material that evaluates the RGB-splat blend.
+ *
+ * It is a MeshPhongMaterial with `onBeforeCompile` doing the work, NOT a
+ * hand-rolled ShaderMaterial: the lighting rig, fog, tone mapping, the sRGB
+ * output encoding and the per-instance mirror-sign patch are all three's stock
+ * chunks, and re-implementing them to change what feeds `diffuseColor` would
+ * mean re-implementing every one of them. The splice lands in `map_fragment`,
+ * which runs after `diffuse` and the per-instance `color_fragment` and before
+ * every lighting chunk — so selection and hover still tint a blended surface,
+ * and the blend result is lit exactly like a single albedo.
+ *
+ * One program serves every blended submesh in the level: all four layers, the
+ * mask, the tiling and the HSL triples are uniforms, so the cache key is
+ * constant and the shader compiles once.
+ */
+function createBlendMaterial(wireframe: boolean, blend: BlendInput): THREE.Material {
+  const u: BlendUniforms = {
+    rcraMask: { value: null },
+    rcraLayerR: { value: null },
+    rcraLayerG: { value: null },
+    rcraLayerB: { value: null },
+    rcraUv: { value: [0, 0, 0, 0].map(() => new THREE.Vector2(1, 1)) },
+    rcraHsl: { value: [0, 0, 0, 0].map(() => new THREE.Vector3(0.5, 0.5, 0.5)) },
+    rcraWeight: { value: new THREE.Vector3(0, 0, 0) },
+    rcraMaskSrgb: { value: 0 },
+  };
+  const m = new THREE.MeshPhongMaterial({
+    color: 0xffffff,
+    // Same lobe as the single-albedo path: a blended surface is still albedo.
+    specular: 0x0b0e13,
+    shininess: 6,
+    side: THREE.DoubleSide,
+    wireframe,
+  });
+  m.userData.rcraBlend = u;
+  updateBlendMaterial(m, blend);
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    patchInstanceSign(shader);
+    shader.fragmentShader = shader.fragmentShader
+      .replace("void main() {", `${BLEND_DECLS}\nvoid main() {`)
+      .replace("#include <map_fragment>", BLEND_MAP_FRAGMENT)
+      .replace(
+        "#include <normal_fragment_begin>",
+        `#include <normal_fragment_begin>
+      normal *= vInstanceSign;`,
+      );
+  };
+  m.customProgramCacheKey = () => "rcra-textured-blend";
+  return m;
 }
 
 // ---------------------------------------------------------------------------

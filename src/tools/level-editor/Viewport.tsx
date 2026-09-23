@@ -72,6 +72,7 @@ const EMPTY_HUD: HudState = {
   textureLoading: 0,
   textureSkipped: 0,
   texturedModels: 0,
+  blendedSubmeshes: 0,
 };
 
 /** Mirrors `hasBlockGeometry` in the renderer — see the note there. */
@@ -396,6 +397,12 @@ export default function Viewport(props: ViewportProps) {
                 {fmt(hud.texturedModels)}/{fmt(hud.models)}
               </span>
             </span>
+            {hud.blendedSubmeshes > 0 && (
+              <span title="Submeshes drawn through the gbl_rgb_blend RGB-splat blend — an ID mask fading up to three extra colour layers, each with its own tiling and HSL shift, over a base layer">
+                <span className={styles.hudKey}>blended </span>
+                <span className={styles.hudVal}>{fmt(hud.blendedSubmeshes)}</span>
+              </span>
+            )}
             {hud.textureLoading > 0 && <span className={styles.hudWarn}>+{fmt(hud.textureLoading)}</span>}
             {hud.textureSkipped > 0 && (
               <span className={styles.hudWarn} title="Textures refused because the VRAM budget was spent">
