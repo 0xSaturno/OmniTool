@@ -239,3 +239,170 @@ export function parseZoneGeometryKey(key: string): { zonePath: string; offset: n
 }
 
 export type GizmoMode = "translate" | "rotate" | "scale";
+
+// ---------------------------------------------------------------------------
+// level_model_materials / level_texture
+// ---------------------------------------------------------------------------
+
+/**
+ * One texture a material slot binds. Mirrors the Rust `TextureRef`.
+ *
+ * `textureId` is the cache key for the whole viewport: a planet reuses a few
+ * hundred textures across tens of thousands of submeshes, so everything
+ * downstream is keyed on this string and never on the path.
+ */
+export interface TextureRefDto {
+  /**
+   * The sampler's semantic: `albedo` | `normal` | `roughness` | `mask` |
+   * `height` | `ao` | `id` | `emissive` | `detail` | `other`.
+   */
+  slot: string;
+  /** `"0x…"` texture asset id; `"0x0"` when the path is empty. */
+  textureId: string;
+  /** Lowercase forward-slash asset path; `""` when unknown. */
+  texturePath: string;
+  /** Native size (first streamed mip when there is one); 0 when unresolved. */
+  width: number;
+  height: number;
+  /** `DXGI_FORMAT` name, `""` when unresolved. */
+  format: string;
+  /** The slot name came from the material's template, not from the filename. */
+  named: boolean;
+  /** Binds one of the shipped placeholder textures. */
+  placeholder: boolean;
+  srgb: boolean;
+  /** The asset was found in the TOC and its header parsed. */
+  resolved: boolean;
+}
+
+/**
+ * One entry of a model's material table. Mirrors the Rust `MaterialSlot`.
+ *
+ * `index` is exactly the `materialIndex` an RCMS submesh carries, so the
+ * viewport turns submeshes into geometry groups and indexes this array with
+ * the group's material index and nothing else.
+ */
+export interface ModelMaterialSlotDto {
+  index: number;
+  /** `"0x…"` `.material` asset id; `"0x0"` when the model names none. */
+  materialId: string;
+  /** Lowercase forward-slash path; `""` when unknown. */
+  materialPath: string;
+  mappingName: string;
+  /** The `.materialgraph` this material instances; `""` when it names none. */
+  template: string;
+  resolved: boolean;
+  /**
+   * The viewport's fallback signal: a shipped placeholder material, a material
+   * missing from the archives, or one whose every texture is a placeholder.
+   * These keep the flat per-model hue instead of papering a pink debug grid
+   * over the level.
+   */
+  placeholder: boolean;
+  textures: TextureRefDto[];
+}
+
+export interface ModelMaterialsDto {
+  /** `"0x…"`, echoing the request. */
+  modelId: string;
+  slots: ModelMaterialSlotDto[];
+}
+
+/** Filename suffix -> "this is a base-colour map". */
+const COLOUR_SUFFIXES = new Set(["c", "col", "color", "colour", "albedo", "basecolor", "d", "diff"]);
+
+/**
+ * Filename suffix -> "this is definitely NOT a base-colour map", whatever the
+ * material's sampler table called it. See {@link albedoOf}.
+ */
+const NON_COLOUR_SUFFIXES = new Set([
+  "id", "ids", "n", "nrm", "norm", "normal", "m", "mp", "mask", "masks",
+  "h", "height", "ao", "occl", "g", "gloss", "glossiness", "r", "rough",
+  "roughness", "e", "emiss", "emissive", "glow", "det", "detail",
+]);
+
+function textureSuffix(path: string): string {
+  const file = path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  const stem = file.endsWith(".texture") ? file.slice(0, -".texture".length) : file;
+  const cut = stem.lastIndexOf("_");
+  return cut < 0 ? "" : stem.slice(cut + 1);
+}
+
+/**
+ * The albedo this slot should be drawn with, or null to fall back to the flat
+ * per-model hue.
+ *
+ * Three things make this more than "take the first one".
+ *
+ * A slot can bind several textures the backend calls `albedo` — terrain and
+ * cliff shaders blend two to five colour layers through a mask, and 1036 of
+ * savali's 2197 material slots bind five. Only one layer can be drawn without
+ * running the real shader graph, so the first usable one is the base layer.
+ *
+ * Worse, the backend's `albedo` label comes from the *material's own sampler
+ * table* when the material declares one, and shipped materials declare
+ * ID/mask maps under colour-sounding sampler names. Measured over savali's
+ * 2,066 textured slots: 492 (24%) name a non-colour map first, all but two of
+ * them a `*_id` ID map, which draws as flat radioactive green over whole
+ * cliffs. The filename suffix is the more reliable witness, so a candidate
+ * whose name ends in a known non-colour suffix is refused outright, and a
+ * candidate whose name ends in a colour suffix is preferred. That recovers a
+ * real colour map for 292 of the 492 and drops the other 200 back to the
+ * honest flat hue.
+ *
+ * Finally, a placeholder (27% of shipped materials bind nothing but 2x2 pink)
+ * or an unresolved asset is deliberately not drawn — papering a pink debug grid
+ * over the level is worse than untextured clay.
+ */
+/**
+ * Sampler labels a colour map may be rescued from when the slot's own
+ * `albedo` samplers are all non-colour. `normal` / `height` / `roughness` /
+ * `ao` / `id` are excluded: a `*_c` file bound there is being consumed as
+ * something other than colour, and drawing it as albedo would be a guess.
+ */
+const RESCUE_LABELS = new Set(["albedo", "mask", "other", "detail", "emissive"]);
+
+export function albedoOf(slot: ModelMaterialSlotDto): TextureRefDto | null {
+  if (slot.placeholder) return null;
+  const textures = slot.textures ?? [];
+  let fallback: TextureRefDto | null = null;
+  for (const t of textures) {
+    if (t.slot !== "albedo" || t.placeholder || !t.resolved) continue;
+    if (!t.textureId || t.textureId === "0x0") continue;
+    const suffix = textureSuffix(t.texturePath ?? "");
+    if (NON_COLOUR_SUFFIXES.has(suffix)) continue;
+    if (COLOUR_SUFFIXES.has(suffix)) return t;
+    // Unknown suffix: usable, but keep looking for a named colour map.
+    fallback ??= t;
+  }
+
+  // The `gbl_rgb_blend` family — 64% of a Nefarious City art tile's slots —
+  // declares its ID mask under the `albedo` sampler and its actual layer colour
+  // maps (`textures/sbs/metal/steel_001_c` and friends) under `mask`. Taking
+  // the sampler name at face value there leaves two thirds of the level flat.
+  // A `*_c` filename under a colour-consuming sampler is the base layer, which
+  // is the one layer drawable without running the blend graph. Measured on
+  // nefarious_city tile_d17_art: 337/1198 slots textured before, 1089/1198
+  // after, for 91 distinct textures instead of 42.
+  for (const t of textures) {
+    if (!RESCUE_LABELS.has(t.slot) || t.placeholder || !t.resolved) continue;
+    if (!t.textureId || t.textureId === "0x0") continue;
+    if (COLOUR_SUFFIXES.has(textureSuffix(t.texturePath ?? ""))) return t;
+  }
+  return fallback;
+}
+
+/** Resolves a model's material table. Rejects are treated as "no materials". */
+export type MaterialLoader = (modelId: string) => Promise<ModelMaterialsDto | null>;
+
+/**
+ * Fetches the raw texture payload for one texture id, capped to `maxSize` on
+ * the longest edge. See `decodeTexturePayload` for the accepted containers.
+ */
+export type TextureLoader = (textureId: string, maxSize: number) => Promise<ArrayBuffer>;
+
+/** The pair of loaders the viewport needs in order to draw textured. */
+export interface TextureSource {
+  materials: MaterialLoader;
+  texture: TextureLoader;
+}

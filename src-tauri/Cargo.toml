@@ -56,6 +56,14 @@ name = "missing_probe"
 path = "src/bin/missing_probe.rs"
 
 [[bin]]
+name = "texture_probe"
+path = "src/bin/texture_probe.rs"
+
+[[bin]]
+name = "instance_placement"
+path = "src/bin/instance_placement.rs"
+
+[[bin]]
 name = "dag_check"
 path = "src/bin/dag_check.rs"
 

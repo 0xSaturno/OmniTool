@@ -16,6 +16,14 @@ import { KIND_MODEL, zoneGeometryKey, type SceneObjectDto, type ZoneScene } from
 import * as api from "./api";
 import type { LevelRegion, LevelZoneStats, ZoneEdit, ZoneEntry } from "./api";
 import ZoneBrowser, { type BulkLoadProgress } from "./panels/ZoneBrowser";
+import {
+  analyseRegionMix,
+  relationSentence,
+  resolveRegionKey,
+  spreadStep,
+  type RegionLoadSummary,
+  type RegionMixReport,
+} from "./panels/RegionIndex";
 import SceneTree from "./panels/SceneTree";
 import Inspector, { type TransformValue } from "./panels/Inspector";
 import Toolbar, { type ToolMode } from "./panels/Toolbar";
@@ -58,6 +66,18 @@ interface LoadedZone {
   slot: number;
   scene: ZoneScene;
 }
+
+/**
+ * Artificial X step between regions while "Lay regions out side by side" is on.
+ *
+ * The level format carries NO per-region placement transform — proven in
+ * `src-tauri/src/bin/instance_placement.rs` and documented on
+ * `panels/RegionIndex.tsx` — so any layout the tool draws for two regions at
+ * once is the tool's invention. This one is deliberately a round number of
+ * kilometres, is printed on the button, and disables transform editing while
+ * it is on, so nobody can mistake it for something read out of the game.
+ */
+const SPREAD_MIN_METRES = 1000;
 
 const editKey = (zonePath: string, offset: number) => `${zonePath}#${offset}`;
 
@@ -181,11 +201,23 @@ export default function LevelEditor() {
   const [zones, setZones] = useState<ZoneEntry[]>([]);
   const [loadingRegions, setLoadingRegions] = useState(false);
   const [loadingZones, setLoadingZones] = useState(false);
+  /**
+   * Zone lists already fetched, by region key. The browser's one find box
+   * searches regions across every group instantly, but a zone name can only be
+   * matched inside a list we hold — so every region the user visits stays
+   * searchable, and the panel offers to fetch the rest on request instead of
+   * silently matching nothing.
+   */
+  const [zoneCache, setZoneCache] = useState<Map<string, ZoneEntry[]>>(() => new Map());
+  /** Display-only side-by-side layout; see the note on SPREAD_NOTE below. */
+  const [spread, setSpread] = useState(false);
 
   // ---- loaded zones -------------------------------------------------------
   const [loaded, setLoaded] = useState<LoadedZone[]>([]);
   const loadedRef = useRef<LoadedZone[]>([]);
   loadedRef.current = loaded;
+  const zoneCacheRef = useRef<Map<string, ZoneEntry[]>>(new Map());
+  zoneCacheRef.current = zoneCache;
   const [busyPaths, setBusyPaths] = useState<Set<string>>(() => new Set());
 
   // ---- bulk "Load all" run -------------------------------------------------
@@ -270,6 +302,10 @@ export default function LevelEditor() {
   const loadRegions = useCallback(async () => {
     if (!gameDir) return;
     setLoadingRegions(true);
+    // Re-indexing is the one action that means "the archives may have changed",
+    // so the cached zone lists have to go with them — otherwise `selectRegion`
+    // keeps serving a pre-refresh list and the find box keeps searching it.
+    setZoneCache(new Map());
     try {
       const list = await api.listPlanets(gameDir);
       setRegions(list);
@@ -296,13 +332,51 @@ export default function LevelEditor() {
   const selectRegion = useCallback(
     async (key: string) => {
       setActiveRegion(key);
-      setZones([]);
-      if (!gameDir) return;
+      const cached = zoneCacheRef.current.get(key);
+      setZones(cached ?? []);
+      if (!gameDir || cached) return;
       setLoadingZones(true);
       try {
-        setZones(await api.listZones(gameDir, key));
+        const list = await api.listZones(gameDir, key);
+        setZones(list);
+        setZoneCache((prev) => new Map(prev).set(key, list));
       } catch (e) {
         pushLog("error", `Could not list zones of ${key}: ${e}`);
+      } finally {
+        setLoadingZones(false);
+      }
+    },
+    [gameDir, pushLog],
+  );
+
+  /**
+   * Pull in several regions' zone lists at once so the find box can match zone
+   * names inside them. Bounded by the browser, which never asks for more than a
+   * handful, and skips anything already held.
+   */
+  const prefetchRegions = useCallback(
+    async (keys: string[]) => {
+      if (!gameDir) return;
+      const todo = keys.filter((k) => !zoneCacheRef.current.has(k));
+      if (todo.length === 0) return;
+      setLoadingZones(true);
+      let zonesSeen = 0;
+      try {
+        for (const key of todo) {
+          try {
+            const list = await api.listZones(gameDir, key);
+            zonesSeen += list.length;
+            setZoneCache((prev) => new Map(prev).set(key, list));
+          } catch (e) {
+            pushLog("error", `Could not list zones of ${key}: ${e}`);
+          }
+        }
+        pushLog(
+          "success",
+          `Listed ${zonesSeen.toLocaleString()} zones across ${todo.length} region${
+            todo.length === 1 ? "" : "s"
+          } — their names are now searchable from the find box.`,
+        );
       } finally {
         setLoadingZones(false);
       }
@@ -525,6 +599,125 @@ export default function LevelEditor() {
     if (hit) void selectRegion(hit.key);
   }, [regions, activeRegion, selectRegion]);
 
+  /* ---------------- which region each loaded zone came from ---------------- */
+
+  const regionKeys = useMemo(() => new Set(regions.map((r) => r.key)), [regions]);
+
+  /**
+   * Loaded zone path -> region key. The mapping is derived from the path with
+   * the same rule the backend uses and then checked against the real region
+   * list, so a mismatch shows as "(unknown region)" instead of a wrong label.
+   */
+  const zoneRegion = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const z of loaded) {
+      m.set(z.path, resolveRegionKey(z.path, regionKeys) ?? "(unknown region)");
+    }
+    return m;
+  }, [loaded, regionKeys]);
+
+  /** One row per region with zones in the viewport, in the order they arrived. */
+  const loadedRegions = useMemo<RegionLoadSummary[]>(() => {
+    const order: string[] = [];
+    const byKey = new Map<string, RegionLoadSummary>();
+    for (const z of loaded) {
+      const key = zoneRegion.get(z.path) ?? "(unknown region)";
+      let row = byKey.get(key);
+      if (!row) {
+        const meta = regions.find((r) => r.key === key);
+        row = {
+          key,
+          label: meta?.label ?? key,
+          group: meta?.group ?? "other",
+          zones: 0,
+          objects: 0,
+          min: null,
+          max: null,
+        };
+        byKey.set(key, row);
+        order.push(key);
+      }
+      row.zones++;
+      row.objects += z.scene.objects.length;
+      const b = z.scene.bounds;
+      if (b) {
+        row.min = row.min
+          ? [
+              Math.min(row.min[0], b.min[0]),
+              Math.min(row.min[1], b.min[1]),
+              Math.min(row.min[2], b.min[2]),
+            ]
+          : [...b.min];
+        row.max = row.max
+          ? [
+              Math.max(row.max[0], b.max[0]),
+              Math.max(row.max[1], b.max[1]),
+              Math.max(row.max[2], b.max[2]),
+            ]
+          : [...b.max];
+      }
+    }
+    return order.map((k) => byKey.get(k)!);
+  }, [loaded, zoneRegion, regions]);
+
+  /**
+   * What the loaded regions do to each other in world space, measured rather
+   * than assumed: the level carries no per-region placement, so two regions
+   * either were authored in one space or were not, and only the zones can say
+   * which. Skipped entirely below two regions, which is the common case.
+   */
+  const regionMix = useMemo<RegionMixReport | null>(() => {
+    if (loadedRegions.length < 2) return null;
+    const instances: { region: string; modelId: string; x: number; y: number; z: number }[] = [];
+    for (const z of loaded) {
+      const region = zoneRegion.get(z.path) ?? "(unknown region)";
+      for (const o of z.scene.objects) {
+        if (o.kind !== KIND_MODEL || !o.modelId || o.modelId === "0x0") continue;
+        instances.push({
+          region,
+          modelId: o.modelId,
+          x: o.matrix[12],
+          y: o.matrix[13],
+          z: o.matrix[14],
+        });
+      }
+    }
+    return analyseRegionMix(loadedRegions, instances);
+  }, [loaded, loadedRegions, zoneRegion]);
+
+  const spreadStepMetres = useMemo(() => spreadStep(loadedRegions), [loadedRegions]);
+
+  /**
+   * Region key -> the artificial X shift the viewport draws it at. All zeros
+   * unless the user turned "Lay regions out side by side" on.
+   */
+  const spreadOffsets = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!spread || loadedRegions.length < 2) return m;
+    const step = Math.max(SPREAD_MIN_METRES, spreadStepMetres);
+    loadedRegions.forEach((r, i) => m.set(r.key, i * step));
+    return m;
+  }, [spread, loadedRegions, spreadStepMetres]);
+
+  /** The X shift applied to one loaded zone, 0 when the layout is off. */
+  const spreadOf = useCallback(
+    (zonePath: string) => spreadOffsets.get(zoneRegion.get(zonePath) ?? "") ?? 0,
+    [spreadOffsets, zoneRegion],
+  );
+
+  const unloadRegion = useCallback(
+    (key: string) => {
+      const doomed = loadedRef.current.filter(
+        (z) => (resolveRegionKey(z.path, regionKeys) ?? "(unknown region)") === key,
+      );
+      if (doomed.length === 0) return;
+      const paths = new Set(doomed.map((z) => z.path));
+      setLoaded((prev) => prev.filter((z) => !paths.has(z.path)));
+      pushLog("info", `Unloaded ${doomed.length} zone${doomed.length === 1 ? "" : "s"} of ${key}.`);
+    },
+    [regionKeys, pushLog],
+  );
+
   /* ---------------- composite scene ---------------- */
 
   const scene = useMemo<ZoneScene | null>(() => {
@@ -539,19 +732,27 @@ export default function LevelEditor() {
 
     for (const z of loaded) {
       const base = z.slot * OFFSET_STRIDE;
+      // Display-only X shift, non-zero only while "Lay regions out side by
+      // side" is on. It never reaches an edit or a save: `commitTransform`
+      // refuses while it is on, and the pending edits already in hand were
+      // recorded in real zone space.
+      const dx = spreadOf(z.path);
       for (const o of z.scene.objects) {
         const edit = edits.get(editKey(z.path, o.offset));
         // An impostor's or decal's mesh is addressed by its own zone path and
         // its own offset. Both are gone once the object is in the composite, so
         // the key is stamped on here, while they are still in hand.
         const geometryKey = o.geometry ? zoneGeometryKey(z.path, o.offset) : undefined;
-        if (!edit && base === 0 && !geometryKey) {
+        if (!edit && base === 0 && !geometryKey && dx === 0) {
           objects.push(o);
         } else {
+          const source = edit ? edit.matrix : o.matrix;
+          const matrix = dx === 0 ? source : source.slice();
+          if (dx !== 0) matrix[12] += dx;
           objects.push({
             ...o,
             offset: o.offset + base,
-            matrix: edit ? edit.matrix : o.matrix,
+            matrix,
             scale: edit ? edit.scale : o.scale,
             ...(geometryKey ? { geometryKey } : {}),
           });
@@ -568,16 +769,18 @@ export default function LevelEditor() {
       }
       const b = z.scene.bounds;
       if (b) {
+        const bmin: [number, number, number] = [b.min[0] + dx, b.min[1], b.min[2]];
+        const bmax: [number, number, number] = [b.max[0] + dx, b.max[1], b.max[2]];
         min = min ? ([
-          Math.min(min[0], b.min[0]),
-          Math.min(min[1], b.min[1]),
-          Math.min(min[2], b.min[2]),
-        ] as [number, number, number]) : [...b.min];
+          Math.min(min[0], bmin[0]),
+          Math.min(min[1], bmin[1]),
+          Math.min(min[2], bmin[2]),
+        ] as [number, number, number]) : bmin;
         max = max ? ([
-          Math.max(max[0], b.max[0]),
-          Math.max(max[1], b.max[1]),
-          Math.max(max[2], b.max[2]),
-        ] as [number, number, number]) : [...b.max];
+          Math.max(max[0], bmax[0]),
+          Math.max(max[1], bmax[1]),
+          Math.max(max[2], bmax[2]),
+        ] as [number, number, number]) : bmax;
       }
     }
 
@@ -593,7 +796,7 @@ export default function LevelEditor() {
       actors,
       sections,
     };
-  }, [loaded, editState.edits]);
+  }, [loaded, editState.edits, spreadOf]);
 
   /** synthetic offset -> which zone the object came from and its real offset */
   const objectIndex = useMemo(() => {
@@ -655,6 +858,17 @@ export default function LevelEditor() {
     (syntheticOffset: number, value: TransformValue) => {
       const rec = objectIndex.get(syntheticOffset);
       if (!rec) return;
+      // While the side-by-side layout is on, the viewport's coordinates are the
+      // tool's invention, so a gizmo drag would write an invented position into
+      // a real zone. Refuse rather than guess. Edits made before it was turned
+      // on are untouched and still save.
+      if (spread && spreadOf(rec.zonePath) !== 0) {
+        pushLog(
+          "warning",
+          "Transform edits are off while regions are laid out side by side — the X offset is this tool's own, not the game's. Turn the layout off to edit.",
+        );
+        return;
+      }
       dispatchEdit({
         type: "edit",
         key: editKey(rec.zonePath, rec.object.offset),
@@ -662,7 +876,7 @@ export default function LevelEditor() {
         to: value,
       });
     },
-    [objectIndex],
+    [objectIndex, spread, spreadOf, pushLog],
   );
 
   /** Viewport picks: `additive` extends the current selection (ctrl / box-select). */
@@ -883,6 +1097,42 @@ export default function LevelEditor() {
     return m;
   }, [loaded]);
 
+  // The artificial layout only makes sense with something to lay out.
+  useEffect(() => {
+    if (spread && loadedRegions.length < 2) setSpread(false);
+  }, [spread, loadedRegions.length]);
+
+  /**
+   * The worst thing the loaded regions do to each other, in one line, so the
+   * status bar can carry it without the user having to look at the browser.
+   */
+  const regionNote = useMemo(() => {
+    if (spread) {
+      return `Regions laid out +${spreadStepMetres.toLocaleString()} m apart — this tool's offset, not the game's; edits off`;
+    }
+    const worst = regionMix?.pairs[0];
+    if (!worst || worst.relation === "apart") return null;
+    return worst.relation === "coincident"
+      ? `${worst.duplicates.toLocaleString()} instances are drawn twice — two regions hold the same objects at the same coordinates`
+      : "Two loaded regions occupy overlapping coordinates";
+  }, [spread, spreadStepMetres, regionMix]);
+
+  /** Tell the log the first time a second region joins the view. */
+  const announcedMixRef = useRef<string>("");
+  useEffect(() => {
+    if (loadedRegions.length < 2 || !regionMix) return;
+    const sig = loadedRegions.map((r) => r.key).join("|");
+    if (announcedMixRef.current === sig) return;
+    announcedMixRef.current = sig;
+    const worst = regionMix.pairs[0];
+    if (!worst) return;
+    const shortName = (k: string) => k.split("/").slice(2).join("/") || k;
+    pushLog(
+      worst.relation === "apart" ? "info" : "warning",
+      relationSentence(worst, shortName),
+    );
+  }, [loadedRegions, regionMix, pushLog]);
+
   const instanceCount = scene?.objects.filter((o) => o.kind === 0).length ?? 0;
   const entityCount = (scene?.objects.length ?? 0) - instanceCount;
 
@@ -967,6 +1217,14 @@ export default function LevelEditor() {
             loadingRegions={loadingRegions}
             loadingZones={loadingZones}
             objectCounts={objectCounts}
+            zoneCache={zoneCache}
+            loadedRegions={loadedRegions}
+            mix={regionMix}
+            onUnloadRegion={unloadRegion}
+            onPrefetchRegions={(keys) => void prefetchRegions(keys)}
+            spread={spread}
+            spreadStepMetres={spreadStepMetres}
+            onToggleSpread={() => setSpread((v) => !v)}
             onSelectRegion={(k) => void selectRegion(k)}
             onToggleZone={toggleZone}
             onLoadTile={(entries) => void loadTile(entries)}
@@ -1025,6 +1283,8 @@ export default function LevelEditor() {
 
           <StatusBar
             zoneCount={loaded.length}
+            regionCount={loadedRegions.length}
+            regionNote={regionNote}
             objectCount={scene?.objects.length ?? 0}
             instanceCount={instanceCount}
             entityCount={entityCount}

@@ -7,6 +7,7 @@ import {
   FiLayers,
   FiMaximize,
   FiMaximize2,
+  FiImage,
   FiMove,
   FiRotateCw,
   FiSlash,
@@ -14,6 +15,8 @@ import {
 } from "react-icons/fi";
 import { LevelRenderer, KIND_COLORS, type HudState } from "./viewport/renderer";
 import type { ShadingMode } from "./viewport/materials";
+import { TEXTURE_BUDGET_BYTES, TEXTURE_MAX_SIZE } from "./viewport/textureCache";
+import { defaultTextureSource } from "./api";
 import {
   KIND_DECAL,
   KIND_IMPOSTOR,
@@ -22,6 +25,7 @@ import {
   type GizmoMode,
   type MeshLoader,
   type SceneObjectDto,
+  type TextureSource,
   type ZoneScene,
 } from "./types";
 import styles from "./Viewport.module.css";
@@ -30,6 +34,12 @@ export interface ViewportProps {
   scene: ZoneScene | null;
   /** Returns the RCMS buffer for a model asset id (`"0x…"`). */
   meshLoader: MeshLoader;
+  /**
+   * Material tables and texture bytes. Defaults to the Tauri-backed source for
+   * the game directory the shell last built a mesh loader for, so the shell
+   * needs no new prop; pass one explicitly to mock or disable texturing.
+   */
+  textureSource?: TextureSource | null;
   /** Selected scene-object offsets. */
   selection: number[];
   onSelect: (offsets: number[], additive: boolean) => void;
@@ -57,6 +67,11 @@ const EMPTY_HUD: HudState = {
   blockGeo: 0,
   blockGeoLoaded: 0,
   blockGeoTriangles: 0,
+  textures: 0,
+  textureBytes: 0,
+  textureLoading: 0,
+  textureSkipped: 0,
+  texturedModels: 0,
 };
 
 /** Mirrors `hasBlockGeometry` in the renderer — see the note there. */
@@ -67,7 +82,13 @@ function ownsBlockGeometry(o: SceneObjectDto): boolean {
 }
 
 const SHADING_BUTTONS: { mode: ShadingMode; icon: ReactElement; label: string; title: string }[] = [
-  { mode: "lit", icon: <FiSun />, label: "lit", title: "Lit shading" },
+  {
+    mode: "textured",
+    icon: <FiImage />,
+    label: "textured",
+    title: `Material albedo, lit (N) — requested at up to ${TEXTURE_MAX_SIZE}px`,
+  },
+  { mode: "lit", icon: <FiSun />, label: "lit", title: "Flat per-model hue, lit (N)" },
   { mode: "normals", icon: <FiCompass />, label: "normals", title: "View-space normals as RGB (N)" },
   { mode: "facing", icon: <FiLayers />, label: "facing", title: "Green = outward face, magenta = inward (N)" },
 ];
@@ -78,6 +99,15 @@ function fmt(n: number): string {
 
 export default function Viewport(props: ViewportProps) {
   const { scene, meshLoader, selection, onSelect, onTransform, showEntities, showGeometry, wireframe } = props;
+
+  // `undefined` means "use the default source"; an explicit `null` disables
+  // texturing (the mock source and the tests pass null). `meshLoader` is in the
+  // deps because the shell rebuilds it exactly when the game directory changes,
+  // which is also when the default source has to be rebound.
+  const textureSource = useMemo(
+    () => (props.textureSource === undefined ? defaultTextureSource() : props.textureSource),
+    [props.textureSource, meshLoader],
+  );
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<LevelRenderer | null>(null);
@@ -94,7 +124,7 @@ export default function Viewport(props: ViewportProps) {
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [gizmoMode, setGizmoMode] = useState<GizmoMode | null>("translate");
   const [space, setSpace] = useState<"world" | "local">("world");
-  const [shading, setShading] = useState<ShadingMode>("lit");
+  const [shading, setShading] = useState<ShadingMode>("textured");
   const [ready, setReady] = useState(false);
 
   // -- renderer lifecycle ---------------------------------------------------
@@ -125,11 +155,14 @@ export default function Viewport(props: ViewportProps) {
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
 
+  const textureSourceRef = useRef(textureSource);
+  textureSourceRef.current = textureSource;
+
   useEffect(() => {
     if (!ready) return;
     const r = rendererRef.current;
     if (!r) return;
-    r.setScene(scene, (id) => meshLoaderRef.current(id));
+    r.setScene(scene, (id) => meshLoaderRef.current(id), textureSourceRef.current);
     // A rebuild drops the renderer's selection; re-apply what the shell holds.
     r.setSelection(selectionRef.current);
   }, [ready, scene]);
@@ -339,6 +372,38 @@ export default function Viewport(props: ViewportProps) {
           </span>
           {hud.loading > 0 && <span className={styles.hudWarn}>loading {hud.loading}</span>}
         </div>
+        {shading === "textured" && (
+          <div className={styles.hudRow}>
+            <span
+              title={`Distinct albedo textures resident, shared across every model and zone (requested at up to ${TEXTURE_MAX_SIZE}px)`}
+            >
+              <span className={styles.hudKey}>tex </span>
+              <span className={styles.hudVal}>{fmt(hud.textures)}</span>
+            </span>
+            <span
+              title={`Approximate GPU bytes those textures occupy, against a ${(TEXTURE_BUDGET_BYTES / (1024 * 1024 * 1024)).toFixed(2)} GB budget`}
+            >
+              <span className={styles.hudKey}>vram </span>
+              <span
+                className={hud.textureBytes > TEXTURE_BUDGET_BYTES * 0.9 ? styles.hudWarn : styles.hudVal}
+              >
+                {(hud.textureBytes / (1024 * 1024)).toFixed(0)} MB
+              </span>
+            </span>
+            <span title="Model batches drawing at least one textured submesh">
+              <span className={styles.hudKey}>textured </span>
+              <span className={styles.hudVal}>
+                {fmt(hud.texturedModels)}/{fmt(hud.models)}
+              </span>
+            </span>
+            {hud.textureLoading > 0 && <span className={styles.hudWarn}>+{fmt(hud.textureLoading)}</span>}
+            {hud.textureSkipped > 0 && (
+              <span className={styles.hudWarn} title="Textures refused because the VRAM budget was spent">
+                budget {fmt(hud.textureSkipped)}
+              </span>
+            )}
+          </div>
+        )}
         {hud.blockGeo > 0 && (
           <div className={styles.hudRow}>
             <span title="Scene objects whose mesh lives in the zone's own block 2 (impostor shells, projected decals) — no .model asset exists for these">

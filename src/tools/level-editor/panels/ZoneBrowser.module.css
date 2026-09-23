@@ -4,6 +4,10 @@
   min-height: 0;
   height: 100%;
   gap: 0.4rem;
+  /* The panel now stacks several fixed sections above the zone list (find
+     results, loaded regions, siblings). Each is capped, but the panel must
+     never grow the page if a narrow window makes them add up. */
+  overflow: hidden;
 }
 
 .sectionHead {
@@ -421,4 +425,236 @@
 .tileIconBtn:hover {
   border-color: var(--warning);
   color: var(--warning);
+}
+
+/* ------------------------------------------------------------------ */
+/* Cross-group find                                                    */
+/* ------------------------------------------------------------------ */
+
+.findBox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.15rem 0.4rem;
+  flex-shrink: 0;
+}
+
+.findBox:focus-within { border-color: var(--accent); }
+
+.findIcon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.findInput {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  padding: 0.15rem 0;
+}
+
+.findResults {
+  max-height: 30%;
+  overflow-y: auto;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem;
+  background: var(--bg-base);
+}
+
+.findHead {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0.3rem 0.25rem 0.15rem;
+}
+
+.findMore {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 0.68rem;
+  padding: 0.3rem 0.4rem;
+  margin: 0.25rem 0;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.findMore:hover { background: var(--bg-hover); }
+
+/* Which sidebar group a row came from — the whole point of a cross-group
+   result list is that the group is no longer implied by where the row sits. */
+.groupTag {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border-radius: 3px;
+  padding: 0 0.25rem;
+  flex-shrink: 0;
+}
+
+.loadedTag {
+  font-size: 0.6rem;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Regions currently in the viewport                                   */
+/* ------------------------------------------------------------------ */
+
+/* Capped like every other fixed section, so the zone list below always keeps
+   room: a dozen loaded regions must not push it to zero height. */
+.loadedRegions {
+  flex-shrink: 0;
+  max-height: 18%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 0.3rem;
+}
+
+.loadedHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0 0.25rem 0.2rem;
+}
+
+.loadedRow {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.25rem;
+  font-size: 0.72rem;
+}
+
+.loadedName {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loadedName:hover { color: var(--accent); }
+
+.loadedMeta {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.mixNotes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.3rem 0.25rem 0;
+}
+
+.mixWarn,
+.mixOk {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  font-size: 0.66rem;
+  line-height: 1.4;
+}
+
+.mixWarn { color: var(--warning); }
+.mixOk { color: var(--text-muted); }
+
+.mixWarn svg { flex-shrink: 0; margin-top: 0.12rem; }
+
+.spreadBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  margin-top: 0.35rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  padding: 0.25rem 0.4rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.spreadBtn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+.spreadOn {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Same place, other name                                              */
+/* ------------------------------------------------------------------ */
+
+.siblings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  max-height: 3.5rem;
+  overflow-y: auto;
+  padding: 0.1rem 0;
+}
+
+.siblingLead {
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  width: 100%;
+}
+
+.siblingBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.siblingBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }

@@ -9,6 +9,8 @@
 //! | `level_load_zone`     | one zone's scene objects, actors, models and bounds |
 //! | `level_model_mesh`    | packed LOD geometry for one model, as an ArrayBuffer |
 //! | `level_zone_geometry` | packed geometry an impostor or decal keeps in the zone's own block 2 |
+//! | `level_model_materials` | one model's material slots and the textures they bind |
+//! | `level_texture`       | one texture decoded to a PNG, as an ArrayBuffer    |
 //! | `level_save_zone`     | apply transform edits into a Stager project        |
 //!
 //! The TOC, the asset-name list and the derived zone tree are memoised per game
@@ -22,6 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::ToolkitError;
 use crate::core::level::{self, LevelIndex};
+use crate::core::model_materials::{model_materials, ModelMaterials};
+use crate::core::texture_serve::{self, DEFAULT_MAX_SIZE};
 use crate::core::zone::{ActorRow, SceneObject, Zone};
 
 type Result<T> = std::result::Result<T, ToolkitError>;
@@ -358,6 +362,53 @@ pub async fn level_model_mesh(
     let id = parse_hex_id(&model_id)?;
     let bytes = level::model_mesh_bytes(&idx, id, lod.unwrap_or(0));
     Ok(tauri::ipc::Response::new(bytes.to_vec()))
+}
+
+/// One model's material slots, resolved down to the textures they bind.
+///
+/// `slots[i].index` is exactly the `materialIndex` the RCMS submesh header
+/// carries, so a draw call goes straight to its textures. Nothing here fails
+/// per slot: a material missing from the archives comes back
+/// `resolved: false, placeholder: true` with no textures, which is the
+/// viewport's cue to keep its neutral debug colour for that subset — 27% of
+/// shipped materials bind nothing but 2x2 pink placeholders, and drawing those
+/// would paper a grid over the level.
+///
+/// Resolution is memoised per model id, and the `.texture` headers it reads are
+/// **partial** archive reads (256 bytes each), so cataloguing a busy zone's
+/// several hundred models costs a fraction of a second and never decompresses a
+/// pixel.
+#[tauri::command]
+pub async fn level_model_materials(
+    game_dir: String,
+    model_id: String,
+) -> Result<ModelMaterials> {
+    let idx = index(&game_dir, None)?;
+    let id = parse_hex_id(&model_id)?;
+    Ok((*model_materials(&idx, id)).clone())
+}
+
+/// One texture decoded to a PNG, delivered to JS as an `ArrayBuffer`.
+///
+/// The mip served is the **smallest resident mip at or above `maxSize`** (512
+/// by default, clamped to 16..2048): a 4K albedo is pointless for a model
+/// covering a few hundred screen pixels, and the resident chain already starts
+/// well below native. The streamed HD tiles are never fetched.
+///
+/// A texture that cannot be found or decoded returns an **empty** buffer rather
+/// than an error, so one unsupported format does not abort a zone's upload
+/// loop. Decoded PNGs are memoised in a byte-budgeted LRU keyed by
+/// `(texture, cap)`.
+#[tauri::command]
+pub async fn level_texture(
+    game_dir: String,
+    texture_id: String,
+    max_size: Option<u32>,
+) -> Result<tauri::ipc::Response> {
+    let idx = index(&game_dir, None)?;
+    let id = parse_hex_id(&texture_id)?;
+    let png = texture_serve::texture_png_bytes(&idx, id, max_size.unwrap_or(DEFAULT_MAX_SIZE));
+    Ok(tauri::ipc::Response::new(png.to_vec()))
 }
 
 /// Apply transform edits to a fresh copy of the zone and write the rebuilt

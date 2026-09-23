@@ -5,11 +5,22 @@ import {
   LuCheck,
   LuLayers,
   LuLayers3,
+  LuMoveHorizontal,
   LuRefreshCw,
+  LuSearch,
+  LuTriangleAlert,
   LuX,
 } from "react-icons/lu";
 import type { LevelRegion, LevelZoneStats, ZoneEntry } from "../api";
 import { KIND_LABELS, ZONE_KINDS, formatSize, zoneFileName } from "../api";
+import {
+  relationSentence,
+  searchRegions,
+  searchZones,
+  siblingRegions,
+  type RegionLoadSummary,
+  type RegionMixReport,
+} from "./RegionIndex";
 import styles from "./ZoneBrowser.module.css";
 
 const GROUP_LABELS: Record<string, string> = {
@@ -42,6 +53,12 @@ interface KindCount {
 
 const EMPTY_COUNT: KindCount = { listed: 0, loadable: 0, pending: 0 };
 
+/** How many zone rows the cross-group find box will list at once. */
+const FIND_ZONE_LIMIT = 40;
+
+/** How many regions one "list their zones" click is allowed to fetch. */
+const PREFETCH_LIMIT = 8;
+
 interface Props {
   regions: LevelRegion[];
   stats: LevelZoneStats | null;
@@ -52,6 +69,23 @@ interface Props {
   loadingRegions: boolean;
   loadingZones: boolean;
   objectCounts: Map<string, number>;
+  /**
+   * Zone lists already fetched, by region key. The cross-group find box can
+   * only search inside these, so the panel says which regions it covers and
+   * offers to fetch the rest rather than quietly matching nothing.
+   */
+  zoneCache: Map<string, ZoneEntry[]>;
+  /** Regions with at least one zone in the viewport, and where their content sits. */
+  loadedRegions: RegionLoadSummary[];
+  /** What those regions do to each other in world space; null below two regions. */
+  mix: RegionMixReport | null;
+  onUnloadRegion: (key: string) => void;
+  /** Fetch (and cache) the zone lists of these regions so they become searchable. */
+  onPrefetchRegions: (keys: string[]) => void;
+  /** Display-only artificial layout for regions that would otherwise stack. */
+  spread: boolean;
+  spreadStepMetres: number;
+  onToggleSpread: () => void;
   onSelectRegion: (key: string) => void;
   onToggleZone: (entry: ZoneEntry) => void;
   onLoadTile: (entries: ZoneEntry[]) => void;
@@ -78,6 +112,14 @@ export default function ZoneBrowser({
   loadingRegions,
   loadingZones,
   objectCounts,
+  zoneCache,
+  loadedRegions,
+  mix,
+  onUnloadRegion,
+  onPrefetchRegions,
+  spread,
+  spreadStepMetres,
+  onToggleSpread,
   onSelectRegion,
   onToggleZone,
   onLoadTile,
@@ -88,6 +130,7 @@ export default function ZoneBrowser({
   onClearAll,
   onRefresh,
 }: Props) {
+  const [find, setFind] = useState("");
   const [filter, setFilter] = useState("");
   const [kinds, setKinds] = useState<Set<string>>(new Set());
   const [hideStubs, setHideStubs] = useState(false);
@@ -113,6 +156,45 @@ export default function ZoneBrowser({
       regions: byGroup.get(g)!,
     }));
   }, [regions]);
+
+  /* ---------------- cross-group find ---------------- */
+
+  const findQuery = find.trim();
+  const findActive = findQuery.length >= 2;
+
+  const foundRegions = useMemo(
+    () => (findActive ? searchRegions(regions, findQuery) : []),
+    [findActive, regions, findQuery],
+  );
+
+  const foundZones = useMemo(
+    () => (findActive ? searchZones(zoneCache, findQuery, FIND_ZONE_LIMIT) : []),
+    [findActive, zoneCache, findQuery],
+  );
+
+  /** Matched regions whose zone list has not been fetched, so nothing of theirs can match. */
+  const unlistedMatches = useMemo(
+    () => foundRegions.filter((r) => !zoneCache.has(r.key)).slice(0, PREFETCH_LIMIT),
+    [foundRegions, zoneCache],
+  );
+
+  const foundGroups = useMemo(() => {
+    const seen = new Set(foundRegions.map((r) => r.group));
+    return GROUP_ORDER.filter((g) => seen.has(g));
+  }, [foundRegions]);
+
+  /** Same place, other name or other group — the trap this panel exists to defuse. */
+  const siblings = useMemo(
+    () => siblingRegions(regions, activeRegion),
+    [regions, activeRegion],
+  );
+
+  const loadedByRegion = useMemo(
+    () => new Map(loadedRegions.map((r) => [r.key, r])),
+    [loadedRegions],
+  );
+
+  const shortRegionName = (key: string) => key.split("/").slice(2).join("/") || key;
 
   /**
    * Zones passing the search box and "Hide stubs" but NOT the kind chips —
@@ -316,11 +398,117 @@ export default function ZoneBrowser({
       ? `${r.key}\n${r.zoneCount.toLocaleString()} zones`
       : `${r.key}\n${regionCount(r).toLocaleString()} ${scopeNames} zones of ${r.zoneCount.toLocaleString()} total`;
 
+  const regionRow = (r: LevelRegion, showGroup: boolean) => {
+    const here = loadedByRegion.get(r.key);
+    return (
+      <button
+        key={r.key}
+        className={`${styles.regionRow} ${activeRegion === r.key ? styles.active : ""}`}
+        onClick={() => onSelectRegion(r.key)}
+        title={regionTitle(r)}
+      >
+        {showGroup && (
+          <span className={styles.groupTag}>{GROUP_LABELS[r.group] ?? r.group}</span>
+        )}
+        <span className={styles.regionName}>{r.label}</span>
+        {here && (
+          <span className={styles.loadedTag} title={`${here.zones} zones of this region are loaded`}>
+            {here.zones} loaded
+          </span>
+        )}
+        <span className={styles.count}>{regionCount(r).toLocaleString()}</span>
+      </button>
+    );
+  };
+
   return (
     <div className={styles.panel}>
+      {/* One box over every group. The two Nefarious Cities differ by a single
+          underscore and sit in different groups, so the only reliable way to
+          reach the right one is to search names with the punctuation thrown
+          away — see `squash` in RegionIndex.tsx. */}
+      <div className={styles.findBox}>
+        <LuSearch className={styles.findIcon} />
+        <input
+          className={styles.findInput}
+          placeholder="Find a region or zone in any group…"
+          value={find}
+          onChange={(e) => setFind(e.target.value)}
+        />
+        {find && (
+          <button className={styles.iconBtn} onClick={() => setFind("")} title="Clear">
+            <LuX />
+          </button>
+        )}
+      </div>
+
+      {findActive && (
+        <div className={styles.findResults}>
+          <div className={styles.findHead}>
+            {foundRegions.length.toLocaleString()} region
+            {foundRegions.length === 1 ? "" : "s"}
+            {foundGroups.length > 0 &&
+              ` in ${foundGroups.map((g) => GROUP_LABELS[g] ?? g).join(", ")}`}
+          </div>
+          {foundRegions.length === 0 && (
+            <div className={styles.hint}>No region name contains “{findQuery}”.</div>
+          )}
+          {foundRegions.slice(0, 40).map((r) => regionRow(r, true))}
+
+          {unlistedMatches.length > 0 && (
+            <button
+              className={styles.findMore}
+              onClick={() => onPrefetchRegions(unlistedMatches.map((r) => r.key))}
+              title={
+                "Zone names can only be searched inside regions whose zone list has been fetched.\n" +
+                unlistedMatches.map((r) => r.key).join("\n")
+              }
+            >
+              List the zones of {unlistedMatches.length} matching region
+              {unlistedMatches.length === 1 ? "" : "s"} so their names are searchable too
+            </button>
+          )}
+
+          {foundZones.length > 0 && (
+            <>
+              <div className={styles.findHead}>
+                {foundZones.length.toLocaleString()}
+                {foundZones.length >= FIND_ZONE_LIMIT ? "+" : ""} zone
+                {foundZones.length === 1 ? "" : "s"} in the {zoneCache.size} listed region
+                {zoneCache.size === 1 ? "" : "s"}
+              </div>
+              {foundZones.map(({ region, zone }) => (
+                <button
+                  key={zone.path}
+                  className={`${styles.zoneRow} ${loadedPaths.has(zone.path) ? styles.zoneLoaded : ""} ${
+                    zone.hasObjects ? "" : styles.zoneStub
+                  }`}
+                  onClick={() => onToggleZone(zone)}
+                  title={`${zone.path}\n${shortRegionName(region)}\n${formatSize(zone.size)}`}
+                >
+                  <span className={styles.zoneCheck}>
+                    {loadedPaths.has(zone.path) ? <LuCheck /> : null}
+                  </span>
+                  <span className={`${styles.kindTag} ${styles[`kind_${zone.kind}`] ?? ""}`}>
+                    {zone.kind}
+                  </span>
+                  <span className={styles.zoneName}>{zoneFileName(zone.path)}</span>
+                  <span className={styles.zoneMeta}>{shortRegionName(region)}</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
       <div className={styles.sectionHead}>
-        <button className={styles.sectionToggle} onClick={() => setRegionsOpen((o) => !o)}>
-          {regionsOpen ? <LuChevronDown /> : <LuChevronRight />}
+        <button
+          className={styles.sectionToggle}
+          onClick={() => setRegionsOpen((o) => !o)}
+          disabled={findActive}
+          title={findActive ? "Clear the find box to browse the region tree" : undefined}
+        >
+          {regionsOpen && !findActive ? <LuChevronDown /> : <LuChevronRight />}
           <span>Regions</span>
           <span className={styles.count}>{regions.length}</span>
         </button>
@@ -329,7 +517,10 @@ export default function ZoneBrowser({
         </button>
       </div>
 
-      {regionsOpen && (
+      {/* While the find box is active its results ARE the region list, so the
+          tree steps aside — three stacked percentage-capped sections would
+          otherwise leave the zone list no room. */}
+      {regionsOpen && !findActive && (
         <div className={styles.regionList}>
           {loadingRegions && regions.length === 0 && (
             <div className={styles.hint}>Scanning archives…</div>
@@ -343,17 +534,7 @@ export default function ZoneBrowser({
           {regionGroups.map((g) => (
             <div key={g.group}>
               <div className={styles.groupLabel}>{g.label}</div>
-              {g.regions.map((r) => (
-                <button
-                  key={r.key}
-                  className={`${styles.regionRow} ${activeRegion === r.key ? styles.active : ""}`}
-                  onClick={() => onSelectRegion(r.key)}
-                  title={regionTitle(r)}
-                >
-                  <span className={styles.regionName}>{r.label}</span>
-                  <span className={styles.count}>{regionCount(r).toLocaleString()}</span>
-                </button>
-              ))}
+              {g.regions.map((r) => regionRow(r, false))}
             </div>
           ))}
         </div>
@@ -371,6 +552,81 @@ export default function ZoneBrowser({
           <span>
             With objects <b>{stats.withObjects.toLocaleString()}</b>
           </span>
+        </div>
+      )}
+
+      {loadedRegions.length > 0 && (
+        <div className={styles.loadedRegions}>
+          <div className={styles.loadedHead}>
+            In the viewport
+            <span className={styles.count}>
+              {loadedRegions.length} region{loadedRegions.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          {loadedRegions.map((r) => (
+            <div key={r.key} className={styles.loadedRow}>
+              <span className={styles.groupTag}>{GROUP_LABELS[r.group] ?? r.group}</span>
+              <button
+                className={styles.loadedName}
+                onClick={() => onSelectRegion(r.key)}
+                title={`${r.key}\nShow this region's zone list`}
+              >
+                {shortRegionName(r.key)}
+              </button>
+              <span className={styles.loadedMeta}>
+                {r.zones} zone{r.zones === 1 ? "" : "s"} · {r.objects.toLocaleString()} obj
+              </span>
+              <button
+                className={styles.tileIconBtn}
+                onClick={() => onUnloadRegion(r.key)}
+                title={`Unload the ${r.zones} loaded zone${r.zones === 1 ? "" : "s"} of this region`}
+              >
+                <LuX />
+              </button>
+            </div>
+          ))}
+
+          {/* The level asset carries no per-region placement transform — regions
+              hold whatever coordinates they were authored in. So the panel never
+              claims the regions relate; it measures what they actually do and
+              says that instead. */}
+          {mix && mix.pairs.length > 0 && (
+            <div className={styles.mixNotes}>
+              {mix.pairs.slice(0, 4).map((pair) => (
+                <div
+                  key={`${pair.a}|${pair.b}`}
+                  className={
+                    pair.relation === "apart" ? styles.mixOk : styles.mixWarn
+                  }
+                >
+                  {pair.relation !== "apart" && <LuTriangleAlert />}
+                  <span>{relationSentence(pair, shortRegionName)}</span>
+                </div>
+              ))}
+              {mix.truncated && (
+                <div className={styles.mixOk}>
+                  The duplicate scan stopped at its cap, so those counts are lower bounds.
+                </div>
+              )}
+            </div>
+          )}
+
+          {loadedRegions.length > 1 && spreadStepMetres > 0 && (
+            <button
+              className={`${styles.spreadBtn} ${spread ? styles.spreadOn : ""}`}
+              onClick={onToggleSpread}
+              title={
+                spread
+                  ? `Each region after the first is drawn ${spreadStepMetres.toLocaleString()} m further along X than the one before. The offset is invented by this tool — the game has no such transform — so transform editing is off while it is on.`
+                  : `Draw each region ${spreadStepMetres.toLocaleString()} m apart along X so they can be compared side by side. The offset is invented by this tool, not read from the level, and transform editing is off while it is on.`
+              }
+            >
+              <LuMoveHorizontal />
+              {spread
+                ? `Side by side: +${spreadStepMetres.toLocaleString()} m per region (display only)`
+                : "Lay regions out side by side"}
+            </button>
+          )}
         </div>
       )}
 
@@ -420,10 +676,36 @@ export default function ZoneBrowser({
 
       <input
         className={styles.search}
-        placeholder="Filter zones by path…"
+        placeholder="Filter zones in this region by path…"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
+
+      {/* Nefarious City is authored twice: `openarea/nefarious_city` (1,176
+          zones) and `instance/nefariouscity/nefariouscity` (28 zones, 91,245
+          model instances), plus four more siblings. Nothing in the region list
+          links them, so the panel links them here. */}
+      {siblings.length > 0 && (
+        <div className={styles.siblings}>
+          <span className={styles.siblingLead}>
+            Also authored as {siblings.length === 1 ? "another region" : `${siblings.length} other regions`}:
+          </span>
+          {siblings.slice(0, 6).map((r) => (
+            <button
+              key={r.key}
+              className={styles.siblingBtn}
+              onClick={() => onSelectRegion(r.key)}
+              title={`${r.key}\n${r.zoneCount.toLocaleString()} zones · ${Object.entries(r.kinds)
+                .map(([k, n]) => `${KIND_LABELS[k] ?? k} ${n}`)
+                .join(", ")}`}
+            >
+              <span className={styles.groupTag}>{GROUP_LABELS[r.group] ?? r.group}</span>
+              {shortRegionName(r.key)}
+              <span className={styles.count}>{r.zoneCount.toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className={styles.chips}>
         {ZONE_KINDS.map((k) => {

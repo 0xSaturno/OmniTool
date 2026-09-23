@@ -87,6 +87,8 @@ pub fn run() {
             commands_level_editor::level_load_zone,
             commands_level_editor::level_model_mesh,
             commands_level_editor::level_zone_geometry,
+            commands_level_editor::level_model_materials,
+            commands_level_editor::level_texture,
             commands_level_editor::level_save_zone,
             commands_level_editor::level_zone_stats,
         ])

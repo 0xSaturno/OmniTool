@@ -53,9 +53,14 @@
 import * as THREE from "three";
 
 /** How model geometry is shaded. */
-export type ShadingMode = "lit" | "normals" | "facing";
+export type ShadingMode = "textured" | "lit" | "normals" | "facing";
 
-export const SHADING_MODES: ShadingMode[] = ["lit", "normals", "facing"];
+export const SHADING_MODES: ShadingMode[] = ["textured", "lit", "normals", "facing"];
+
+/** True for the modes that sample a material's albedo map. */
+export function usesTextures(mode: ShadingMode): boolean {
+  return mode === "textured";
+}
 
 /**
  * Declare the mirror-sign varying and fill it from the instance matrix.
@@ -98,18 +103,64 @@ function patchMirroredNormal(material: THREE.Material, cacheKey: string): void {
 }
 
 /**
- * The material for one model batch.
- *
- * `lit`     soft key/fill/rim clay shading, per-instance tint from the caller.
- * `normals` view-space normals packed to RGB (three's MeshNormalMaterial) —
- *           the fastest way to spot a flipped, handedness-swapped or
- *           mis-decoded normal buffer.
- * `facing`  green where the camera sees the outward side of a triangle,
- *           magenta where it sees the inward side. Reads winding directly, so
- *           an inside-out mesh or a mirrored instance is obvious at a glance.
+ * Extras for one model-batch material. All optional; all only meaningful in
+ * `textured` mode.
  */
-export function createModelMaterial(mode: ShadingMode, wireframe: boolean): THREE.Material {
+export interface ModelMaterialOptions {
+  /** Albedo map. Absent/null falls back to the flat hue below. */
+  map?: THREE.Texture | null;
+  /**
+   * The flat per-model hue, baked into `material.color`.
+   *
+   * In `lit` mode the hue rides on the per-instance colour, which is also what
+   * carries selection and hover. That cannot work in `textured` mode: the
+   * instance colour must be white there or it would tint every texture, so a
+   * submesh with no texture would render white and vanish into the background.
+   * Putting the hue in the material instead keeps the *untextured* parts of a
+   * partly-textured model readable while the textured parts stay true colour,
+   * and leaves selection/hover free to keep using the instance colour.
+   */
+  tint?: THREE.Color | null;
+}
+
+/**
+ * The material for one model batch (or, in `textured` mode, one submesh group).
+ *
+ * `textured` the material's albedo map under the same lighting rig as `lit`.
+ *            Lit, not unlit: an albedo shown flat reads as a painted cut-out
+ *            and hides every geometric error the other modes exist to find.
+ * `lit`      soft key/fill/rim clay shading, per-instance tint from the caller.
+ * `normals`  view-space normals packed to RGB (three's MeshNormalMaterial) —
+ *            the fastest way to spot a flipped, handedness-swapped or
+ *            mis-decoded normal buffer.
+ * `facing`   green where the camera sees the outward side of a triangle,
+ *            magenta where it sees the inward side. Reads winding directly, so
+ *            an inside-out mesh or a mirrored instance is obvious at a glance.
+ */
+export function createModelMaterial(
+  mode: ShadingMode,
+  wireframe: boolean,
+  opts?: ModelMaterialOptions,
+): THREE.Material {
   switch (mode) {
+    case "textured": {
+      const map = opts?.map ?? null;
+      const m = new THREE.MeshPhongMaterial({
+        // White under a map so the texture shows its own colour; the flat hue
+        // otherwise, so an untextured submesh still reads as "this model".
+        color: map ? 0xffffff : (opts?.tint ?? new THREE.Color(0xffffff)),
+        map,
+        // Albedo maps already carry most of the material's character, so the
+        // specular lobe drops well below the untextured `lit` one — at `lit`
+        // strength it reads as a wet sheen over every surface.
+        specular: 0x0b0e13,
+        shininess: 6,
+        side: THREE.DoubleSide,
+        wireframe,
+      });
+      patchMirroredNormal(m, "rcra-textured");
+      return m;
+    }
     case "normals": {
       const m = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide, wireframe });
       patchMirroredNormal(m, "rcra-normals");
@@ -244,6 +295,13 @@ function patchDepthBias(shader: { vertexShader: string }, bias: number): void {
  * mode, a flatter response: impostors are lighting-baked billboardy shells, so
  * a strong specular on them reads as a bug.
  */
+/**
+ * What a block-2 mesh is tinted in textured mode: a neutral grey that sits with
+ * real albedo instead of competing with it. The saturated kind tints stay for
+ * the other modes, where they are the legend.
+ */
+export const BLOCK_GEO_NEUTRAL = 0xb9bec6;
+
 export function createBlockGeoMaterial(
   kind: BlockGeoKind,
   mode: ShadingMode,
@@ -283,7 +341,15 @@ export function createBlockGeoMaterial(
       return m;
     }
     case "lit":
+    case "textured":
     default: {
+      // Block-2 meshes carry no material of their own, so there is nothing to
+      // texture them with. In `lit` they wear their kind tint, which is how the
+      // legend reads them. In `textured` that tint would be the only saturated
+      // thing on screen — 438 impostor shells glowing blue over a city of real
+      // albedo — so they drop to neutral grey and simply read as untextured
+      // geometry, which is what they are.
+      const textured = mode === "textured";
       const m = new THREE.MeshPhongMaterial({
         // White base: the per-instance colour carries the tint, so selection
         // and hover can recolour a block-geo object exactly like a model.
@@ -292,8 +358,8 @@ export function createBlockGeoMaterial(
         shininess: kind === "impostor" ? 2 : 6,
         // Keeps unlit faces of a baked shell from going to black, and gives
         // decals the slight self-lit look they have in game.
-        emissive: BLOCK_GEO_TINTS[kind],
-        emissiveIntensity: kind === "impostor" ? 0.14 : 0.2,
+        emissive: textured ? 0x2a2e34 : BLOCK_GEO_TINTS[kind],
+        emissiveIntensity: textured ? 0.10 : kind === "impostor" ? 0.14 : 0.2,
         side: THREE.DoubleSide,
         wireframe,
       });

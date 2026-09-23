@@ -29,21 +29,32 @@ import { MeshQueue } from "./meshCache";
 import { isFiniteMatrix, zoneToMatrix4 } from "./matrix";
 import {
   BLOCK_GEO_TINTS,
+  BLOCK_GEO_NEUTRAL,
   createBlockGeoMaterial,
   createLightRig,
   depthBiasFor,
   createModelMaterial,
+  usesTextures,
   type BlockGeoKind,
   type ShadingMode,
 } from "./materials";
 import {
+  TEXTURE_MAX_SIZE,
+  TextureQueue,
+  setTextureContext,
+  textureCacheStats,
+} from "./textureCache";
+import {
   KIND_DECAL,
   KIND_IMPOSTOR,
   KIND_MODEL,
+  albedoOf,
   zoneGeometryKey,
   type GizmoMode,
   type MeshLoader,
+  type ModelMaterialsDto,
   type SceneObjectDto,
+  type TextureSource,
   type ZoneScene,
 } from "../types";
 
@@ -71,6 +82,16 @@ export interface HudState {
   blockGeoLoaded: number;
   /** Triangles those meshes contribute. */
   blockGeoTriangles: number;
+  /** Distinct albedo textures resident in the shared cache. */
+  textures: number;
+  /** Approximate GPU bytes those textures occupy. */
+  textureBytes: number;
+  /** Texture fetches still outstanding. */
+  textureLoading: number;
+  /** Textures refused because the VRAM budget was already spent. */
+  textureSkipped: number;
+  /** Model batches drawing at least one textured submesh. */
+  texturedModels: number;
 }
 
 export interface LevelRendererOptions {
@@ -101,6 +122,82 @@ interface Batch {
   geoKind?: BlockGeoKind;
   /** `blockGeo` only: real geometry has replaced the placeholder marker box. */
   resolved: boolean;
+  /** `model` only: the material table, once `level_model_materials` answered. */
+  materials?: ModelMaterialsDto | null;
+  /**
+   * `model` only: the albedo texture id each entry of the material ARRAY wants,
+   * parallel to `mesh.material` when that is an array. Lets a texture arriving
+   * later patch exactly the slots that asked for it instead of rebuilding.
+   */
+  slotTextureIds?: (string | null)[];
+}
+
+/**
+ * Submesh tables, keyed the same way meshes are.
+ *
+ * `decodeRcms` throws the submesh table away and `rcms.ts` is not this change's
+ * to edit, so the loader is wrapped (see `setScene`) and the table read off the
+ * raw buffer here. Module level, because `MeshQueue`'s geometry cache can hand
+ * back a geometry whose buffer this process already consumed and will not fetch
+ * again. 16 bytes per submesh, so a whole planet's tables are well under a
+ * megabyte. TODO: fold this into `rcmsToGeometry` (as `geometry.groups`) once
+ * that file is free to change.
+ */
+const submeshTables = new Map<string, { firstIndex: number; indexCount: number; materialIndex: number }[]>();
+
+/** Read only the header and submesh table of an RCMS buffer. */
+function readRcmsSubmeshes(
+  buf: ArrayBuffer,
+): { firstIndex: number; indexCount: number; materialIndex: number }[] | null {
+  if (!buf || buf.byteLength < 48) return null;
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x534d4352 || dv.getUint32(4, true) !== 1) return null;
+  const vertexCount = dv.getUint32(8, true);
+  const indexCount = dv.getUint32(12, true);
+  const submeshCount = dv.getUint32(16, true);
+  if (!vertexCount || !indexCount || !submeshCount) return null;
+  const base = 48 + vertexCount * 8 * 4 + indexCount * 4;
+  if (base + submeshCount * 16 > buf.byteLength) return null;
+  const out = [];
+  for (let i = 0; i < submeshCount; i++) {
+    const b = base + i * 16;
+    out.push({
+      firstIndex: dv.getUint32(b, true),
+      indexCount: dv.getUint32(b + 4, true),
+      materialIndex: dv.getUint32(b + 8, true),
+    });
+  }
+  return out;
+}
+
+/**
+ * Turn the submesh table into geometry GROUPS.
+ *
+ * One RCMS mesh is one BufferGeometry whose submeshes are index ranges, so the
+ * textured path draws it as one InstancedMesh with an array of materials — one
+ * per group — rather than splitting the model into several meshes. Splitting
+ * would multiply the instance buffers (a tile holds thousands of instances per
+ * model) for nothing: the draw-call count is identical either way, because
+ * three issues one call per group.
+ *
+ * Groups are idempotent and belong to the geometry, which is shared through the
+ * mesh cache, so this runs at most once per model.
+ */
+function applyGroups(geometry: THREE.BufferGeometry, key: string): void {
+  if (geometry.groups.length > 0) return;
+  const subs = submeshTables.get(key);
+  if (!subs || subs.length < 2) return; // a single submesh needs no split
+  const idx = geometry.getIndex();
+  const total = idx ? idx.count : 0;
+  for (const s of subs) {
+    if (s.indexCount <= 0 || s.firstIndex + s.indexCount > total) continue;
+    geometry.addGroup(s.firstIndex, s.indexCount, s.materialIndex);
+  }
+}
+
+function disposeMaterial(m: THREE.Material | THREE.Material[]): void {
+  if (Array.isArray(m)) for (const x of m) x.dispose();
+  else m.dispose();
 }
 
 /** True while a batch is drawn as a scale-hint wireframe box rather than a mesh. */
@@ -209,6 +306,18 @@ export class LevelRenderer {
   private sceneBounds = new THREE.Box3();
   private currentPath: string | null = null;
 
+  /** Materials + textures for the loaded scene; null before the backend lands. */
+  private textureSource: TextureSource | null = null;
+  private textureQueue: TextureQueue | null = null;
+  /** Resolved textures by asset id (`null` = asked for, came back unusable). */
+  private textures = new Map<string, THREE.Texture | null>();
+  /** Which model batches want each texture id, so an arrival patches only those. */
+  private textureUsers = new Map<string, Set<Batch>>();
+  /** Model ids whose material table has been requested this scene. */
+  private materialsRequested = new Set<string>();
+  private materialsInFlight = 0;
+  private materialsPending: string[] = [];
+
   private selection: number[] = [];
   private selectionSet = new Set<number>();
   private hovered: number | null = null;
@@ -216,7 +325,12 @@ export class LevelRenderer {
   private showGeometry = true;
   private showEntities = true;
   private wireframe = false;
-  private shading: ShadingMode = "lit";
+  /**
+   * Textured is the default: it is what the level actually looks like, and the
+   * flat-hue `lit` mode stays one key away because reading structure (which
+   * prop is which, where a model repeats) is genuinely easier without albedo.
+   */
+  private shading: ShadingMode = "textured";
 
   private modelInstanceCount = 0;
   private entityInstanceCount = 0;
@@ -267,6 +381,11 @@ export class LevelRenderer {
     this.renderer.domElement.style.outline = "none";
     this.container.appendChild(this.renderer.domElement);
 
+    // Which compressed formats this context can take, and the anisotropy
+    // ceiling. Level art is mostly ground and walls seen at a glancing angle,
+    // where isotropic filtering turns a texture to mush a few metres out.
+    setTextureContext(this.renderer);
+
     // Tiles are hundreds of metres across; a log depth buffer keeps 0.1..20000
     // free of z-fighting.
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 20000);
@@ -306,9 +425,10 @@ export class LevelRenderer {
   // -- public API -----------------------------------------------------------
 
   /** Load (or clear) a zone. Meshes stream in behind placeholder boxes. */
-  setScene(scene: ZoneScene | null, meshLoader: MeshLoader): void {
+  setScene(scene: ZoneScene | null, meshLoader: MeshLoader, textureSource?: TextureSource | null): void {
     const previousPath = this.currentPath;
     this.clearScene();
+    this.textureSource = textureSource ?? null;
     this.currentPath = scene?.path ?? null;
     if (!scene) {
       this.needsRender = true;
@@ -361,12 +481,12 @@ export class LevelRenderer {
       const objects = byModel.get(modelId)!;
       const mesh = new THREE.InstancedMesh(
         getPlaceholderGeometry(),
-        createModelMaterial(this.shading, this.wireframe),
+        createModelMaterial(this.shading, this.wireframe, { tint: colorForKey(modelId) }),
         objects.length,
       );
       mesh.name = modelId;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      const base = colorForKey(modelId);
+      const base = this.baseInstanceColor(modelId);
       for (let i = 0; i < objects.length; i++) {
         const o = objects[i];
         zoneToMatrix4(o.matrix, m4);
@@ -459,9 +579,30 @@ export class LevelRenderer {
     // sorted by instance count, so the visually dominant art lands first), then
     // the block-2 meshes, which are one object each and therefore cheaper to
     // wait for.
-    this.meshQueue = new MeshQueue(meshLoader, (key, geom) => this.onGeometry(key, geom), 4);
+    //
+    // The loader is wrapped so the RCMS submesh table is kept as the buffer
+    // goes past: `decodeRcms` discards it, and it is what turns submeshes into
+    // geometry groups (see `submeshTables`).
+    const withSubmeshes: MeshLoader = async (key) => {
+      const buf = await meshLoader(key);
+      if (!submeshTables.has(key)) {
+        const table = readRcmsSubmeshes(buf);
+        if (table) submeshTables.set(key, table);
+      }
+      return buf;
+    };
+    this.meshQueue = new MeshQueue(withSubmeshes, (key, geom) => this.onGeometry(key, geom), 4);
     for (const modelId of order) this.meshQueue.request(modelId);
     for (const o of blockGeo) this.meshQueue.request(geoKeyOf(o));
+
+    if (this.textureSource) {
+      this.textureQueue = new TextureQueue(
+        (id) => this.textureSource!.texture(id, TEXTURE_MAX_SIZE),
+        (id, tex) => this.onTexture(id, tex),
+        6,
+      );
+      if (usesTextures(this.shading)) this.requestMaterials(order);
+    }
 
     this.setSelection([]);
     this.needsRender = true;
@@ -522,7 +663,10 @@ export class LevelRenderer {
       for (const b of this.batches) {
         // A marker box is already a wireframe; only real meshes have a mode.
         if (isMarkerBox(b)) continue;
-        (b.mesh.material as THREE.MeshPhongMaterial).wireframe = this.wireframe;
+        const m = b.mesh.material;
+        for (const one of Array.isArray(m) ? m : [m]) {
+          (one as THREE.MeshPhongMaterial).wireframe = this.wireframe;
+        }
       }
     }
     this.applyGroupVisibility();
@@ -530,18 +674,30 @@ export class LevelRenderer {
     this.needsRender = true;
   }
 
-  /** Swap the model-batch material (lit / normals / facing). */
+  /** Swap the model-batch material (textured / lit / normals / facing). */
   setShadingMode(mode: ShadingMode): void {
     if (this.shading === mode) return;
     this.shading = mode;
     for (const b of this.batches) {
       if (isMarkerBox(b)) continue;
-      const old = b.mesh.material as THREE.Material;
-      b.mesh.material =
-        b.kind === "blockGeo"
-          ? createBlockGeoMaterial(b.geoKind!, this.shading, this.wireframe)
-          : createModelMaterial(this.shading, this.wireframe);
-      old.dispose();
+      if (b.kind === "blockGeo") {
+        const old = b.mesh.material as THREE.Material;
+        b.mesh.material = createBlockGeoMaterial(b.geoKind!, this.shading, this.wireframe);
+        old.dispose();
+      } else {
+        this.rebuildBatchMaterials(b);
+      }
+    }
+    // Raw sRGB albedo under this rig reads much darker than the flat clay of
+    // `lit` — dark-substance assets (carbon steel, rubber, black paint) fall
+    // close to black. Lift the exposure for the textured mode only, so the
+    // debug modes keep the contrast they were tuned for.
+    this.renderer.toneMappingExposure = usesTextures(mode) ? 1.55 : 1.05;
+    // The instance colour means something different in textured mode, and the
+    // material tables are only fetched for the mode that needs them.
+    this.applyBaseColors();
+    if (usesTextures(mode)) {
+      this.requestMaterials(this.batches.filter((b) => b.kind === "model").map((b) => b.key));
     }
     this.needsRender = true;
   }
@@ -620,13 +776,22 @@ export class LevelRenderer {
   private clearScene(): void {
     this.meshQueue?.dispose();
     this.meshQueue = null;
+    // Releases this scene's hold on every texture it asked for; those nothing
+    // else references are disposed and their bytes come off the budget.
+    this.textureQueue?.dispose();
+    this.textureQueue = null;
+    this.textures.clear();
+    this.textureUsers.clear();
+    this.materialsRequested.clear();
+    this.materialsPending.length = 0;
 
     for (const b of this.batches) {
       b.mesh.removeFromParent();
-      // Model geometries are owned by the shared mesh cache; placeholder and
-      // entity geometries are module-level singletons. Only the per-batch
-      // material and instance buffers belong to us.
-      (b.mesh.material as THREE.Material).dispose();
+      // Model geometries are owned by the shared mesh cache and textures by the
+      // shared texture cache; placeholder and entity geometries are
+      // module-level singletons. Only the per-batch material wrappers and
+      // instance buffers belong to us.
+      disposeMaterial(b.mesh.material);
       b.mesh.dispose();
     }
     this.batches = [];
@@ -689,8 +854,207 @@ export class LevelRenderer {
 
     batch.mesh.geometry = geometry;
     batch.mesh.computeBoundingSphere();
+    if (batch.kind === "model") {
+      applyGroups(geometry, key);
+      // The material table may have arrived first; the groups it indexes only
+      // exist now, so the array is built (or rebuilt) here.
+      this.rebuildBatchMaterials(batch);
+    }
     this.updateOutline();
     this.needsRender = true;
+  }
+
+  // -- materials and textures -----------------------------------------------
+
+  /**
+   * Ask for the material tables of these models, a few at a time.
+   *
+   * One command per model (memoised per game directory in `api.ts`), so a
+   * region with 881 distinct models is 881 small JSON round trips. Bounded
+   * concurrency keeps them from competing with the mesh fetches, and the order
+   * is the same instance-count order the meshes stream in, so the art that
+   * covers the most screen gets its textures first.
+   */
+  private requestMaterials(modelIds: string[]): void {
+    if (!this.textureSource) return;
+    for (const id of modelIds) {
+      if (this.materialsRequested.has(id)) continue;
+      this.materialsRequested.add(id);
+      this.materialsPending.push(id);
+    }
+    this.pumpMaterials();
+  }
+
+  private pumpMaterials(): void {
+    const src = this.textureSource;
+    if (!src) return;
+    while (this.materialsInFlight < 6 && this.materialsPending.length > 0) {
+      const id = this.materialsPending.shift()!;
+      const batch = this.batchByKey.get(id);
+      if (!batch || batch.kind !== "model") continue;
+      this.materialsInFlight++;
+      src
+        .materials(id)
+        .catch(() => null)
+        .then((dto) => {
+          // A zone swap between request and answer invalidates the batch.
+          if (this.batchByKey.get(id) !== batch) return;
+          batch.materials = dto;
+          this.rebuildBatchMaterials(batch);
+          this.needsRender = true;
+        })
+        .finally(() => {
+          this.materialsInFlight--;
+          this.pumpMaterials();
+        });
+    }
+  }
+
+  /**
+   * The texture for one id, requesting it the first time it is asked for.
+   *
+   * Returns null while it is in flight (and for good if it will not decode or
+   * the VRAM budget refused it) — the caller falls back to the flat hue, and
+   * `onTexture` patches the material in when it lands.
+   */
+  private textureFor(id: string, user: Batch): THREE.Texture | null {
+    let users = this.textureUsers.get(id);
+    if (!users) this.textureUsers.set(id, (users = new Set()));
+    users.add(user);
+    const hit = this.textures.get(id);
+    if (hit !== undefined) return hit;
+    this.textureQueue?.request(id);
+    return null;
+  }
+
+  private onTexture(id: string, texture: THREE.Texture | null): void {
+    this.textures.set(id, texture);
+    const users = this.textureUsers.get(id);
+    if (!users) return;
+    for (const batch of users) {
+      if (this.batchByKey.get(batch.key) !== batch) continue;
+      const mats = batch.mesh.material;
+      if (!texture || !Array.isArray(mats) || !batch.slotTextureIds) {
+        // First texture of this model: it is still on a single flat material,
+        // so the array has to be built now.
+        if (texture) this.rebuildBatchMaterials(batch);
+        continue;
+      }
+      for (let i = 0; i < mats.length; i++) {
+        if (batch.slotTextureIds[i] !== id) continue;
+        const m = mats[i] as THREE.MeshPhongMaterial;
+        m.map = texture;
+        m.color.setRGB(1, 1, 1);
+        m.needsUpdate = true;
+      }
+    }
+    this.needsRender = true;
+  }
+
+  /**
+   * (Re)build one model batch's material(s) for the current shading mode.
+   *
+   * Three outcomes, cheapest first:
+   *   - not textured, or no material table, or no slot with a usable albedo:
+   *     ONE material for the whole batch, exactly as before this change. That
+   *     keeps a model at one draw call, which matters when a region has 881 of
+   *     them.
+   *   - one submesh: one material, carrying that submesh's albedo.
+   *   - several submeshes: an array indexed by the geometry groups' material
+   *     index, so three draws one call per submesh with its own albedo.
+   */
+  private rebuildBatchMaterials(batch: Batch): void {
+    if (batch.kind !== "model") return;
+    const tint = colorForKey(batch.key);
+    const flat = () => {
+      batch.slotTextureIds = undefined;
+      this.setBatchMaterial(batch, createModelMaterial(this.shading, this.wireframe, { tint }));
+    };
+
+    const slots = batch.materials?.slots;
+    if (!usesTextures(this.shading) || !slots || slots.length === 0) return flat();
+
+    const subs = submeshTables.get(batch.key);
+    const byIndex = new Map(slots.map((s) => [s.index, s]));
+    const makeFor = (materialIndex: number): { material: THREE.Material; textureId: string | null } => {
+      const slot = byIndex.get(materialIndex);
+      const albedo = slot ? albedoOf(slot) : null;
+      const id = albedo?.textureId ?? null;
+      const map = id ? this.textureFor(id, batch) : null;
+      return {
+        material: createModelMaterial(this.shading, this.wireframe, { tint, map }),
+        textureId: id,
+      };
+    };
+
+    // One submesh (or an unknown table): a single material, no groups needed.
+    if (!subs || subs.length < 2) {
+      const only = makeFor(subs?.[0]?.materialIndex ?? slots[0].index);
+      if (!only.textureId || !this.textures.get(only.textureId)) {
+        only.material.dispose();
+        return flat();
+      }
+      batch.slotTextureIds = [only.textureId];
+      this.setBatchMaterial(batch, only.material);
+      return;
+    }
+
+    // Several submeshes: the geometry must already carry the matching groups.
+    const groups = batch.mesh.geometry.groups;
+    if (groups.length === 0) return flat();
+
+    let highest = 0;
+    for (const g of groups) highest = Math.max(highest, g.materialIndex ?? 0);
+    const built: THREE.Material[] = [];
+    const ids: (string | null)[] = [];
+    let textured = 0;
+    for (let i = 0; i <= highest; i++) {
+      const made = makeFor(i);
+      built.push(made.material);
+      ids.push(made.textureId);
+      if (made.textureId && this.textures.get(made.textureId)) textured++;
+    }
+    if (textured === 0) {
+      // Nothing to show yet — stay on one draw call until a texture lands.
+      for (const m of built) m.dispose();
+      return flat();
+    }
+    batch.slotTextureIds = ids;
+    this.setBatchMaterial(batch, built);
+  }
+
+  private setBatchMaterial(batch: Batch, material: THREE.Material | THREE.Material[]): void {
+    const old = batch.mesh.material;
+    batch.mesh.material = material;
+    // Textures belong to the shared cache and are NOT disposed here — only the
+    // material wrappers, which are per batch.
+    disposeMaterial(old);
+    this.needsRender = true;
+  }
+
+  /**
+   * The per-instance colour a model batch sits at when nothing is selected.
+   *
+   * In `textured` mode that is white, because the instance colour multiplies
+   * the albedo; the per-model hue moves into `material.color` for the submeshes
+   * that have no texture (see `ModelMaterialOptions.tint`). Selection and hover
+   * keep using the instance colour in every mode, so a selected instance still
+   * turns blue over its texture.
+   */
+  private baseInstanceColor(modelId: string): THREE.Color {
+    return usesTextures(this.shading) ? new THREE.Color(0xffffff) : colorForKey(modelId);
+  }
+
+  /** Re-stamp every model batch's base instance colour after a mode change. */
+  private applyBaseColors(): void {
+    for (const b of this.batches) {
+      if (b.kind !== "model") continue;
+      const c = this.baseInstanceColor(b.key);
+      for (let i = 0; i < b.objects.length; i++) b.mesh.setColorAt(i, c);
+      if (b.mesh.instanceColor) b.mesh.instanceColor.needsUpdate = true;
+    }
+    for (const off of this.selectionSet) this.refreshColor(off);
+    if (this.hovered !== null) this.refreshColor(this.hovered);
   }
 
   // -- helpers --------------------------------------------------------------
@@ -750,9 +1114,14 @@ export class LevelRenderer {
     let color: THREE.Color;
     if (this.selectionSet.has(offset)) color = SELECT_COLOR;
     else if (this.hovered === offset) color = HOVER_COLOR;
-    else if (batch.kind === "blockGeo") color = new THREE.Color(BLOCK_GEO_TINTS[batch.geoKind!]);
+    // In textured mode the kind tint would be the only saturated thing on
+    // screen, so block-2 meshes go neutral and read as untextured geometry.
+    else if (batch.kind === "blockGeo")
+      color = usesTextures(this.shading)
+        ? new THREE.Color(BLOCK_GEO_NEUTRAL)
+        : new THREE.Color(BLOCK_GEO_TINTS[batch.geoKind!]);
     else if (batch.kind === "entity") color = new THREE.Color(KIND_COLORS[object.kind] ?? KIND_FALLBACK);
-    else color = colorForKey(batch.key);
+    else color = this.baseInstanceColor(batch.key);
     batch.mesh.setColorAt(index, color);
     if (batch.mesh.instanceColor) batch.mesh.instanceColor.needsUpdate = true;
   }
@@ -1196,6 +1565,9 @@ export class LevelRenderer {
     while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
 
     const info = this.renderer.info.render;
+    const tex = textureCacheStats(this.textureQueue?.outstanding ?? 0);
+    let texturedModels = 0;
+    for (const b of this.batches) if (b.kind === "model" && b.slotTextureIds) texturedModels++;
     const hoveredObj = this.hovered !== null ? this.slots.get(this.hovered) : undefined;
     const selectedObj = this.selection.length ? this.slots.get(this.selection[0]) : undefined;
 
@@ -1216,6 +1588,11 @@ export class LevelRenderer {
       blockGeo: this.blockGeoCount,
       blockGeoLoaded: this.blockGeoLoaded,
       blockGeoTriangles: this.blockGeoTriangles,
+      textures: tex.count,
+      textureBytes: tex.bytes,
+      textureLoading: tex.loading + this.materialsPending.length + this.materialsInFlight,
+      textureSkipped: tex.skipped,
+      texturedModels,
     });
   }
 }
