@@ -12,7 +12,7 @@ import { useSettings } from "../../contexts/SettingsContext";
 import { useProjects } from "../../contexts/ProjectsContext";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
 import Viewport from "./Viewport";
-import { KIND_MODEL, type SceneObjectDto, type ZoneScene } from "./types";
+import { KIND_MODEL, zoneGeometryKey, type SceneObjectDto, type ZoneScene } from "./types";
 import * as api from "./api";
 import type { LevelRegion, LevelZoneStats, ZoneEdit, ZoneEntry } from "./api";
 import ZoneBrowser, { type BulkLoadProgress } from "./panels/ZoneBrowser";
@@ -541,7 +541,11 @@ export default function LevelEditor() {
       const base = z.slot * OFFSET_STRIDE;
       for (const o of z.scene.objects) {
         const edit = edits.get(editKey(z.path, o.offset));
-        if (!edit && base === 0) {
+        // An impostor's or decal's mesh is addressed by its own zone path and
+        // its own offset. Both are gone once the object is in the composite, so
+        // the key is stamped on here, while they are still in hand.
+        const geometryKey = o.geometry ? zoneGeometryKey(z.path, o.offset) : undefined;
+        if (!edit && base === 0 && !geometryKey) {
           objects.push(o);
         } else {
           objects.push({
@@ -549,6 +553,7 @@ export default function LevelEditor() {
             offset: o.offset + base,
             matrix: edit ? edit.matrix : o.matrix,
             scale: edit ? edit.scale : o.scale,
+            ...(geometryKey ? { geometryKey } : {}),
           });
         }
       }

@@ -20,6 +20,10 @@ name = "dev_dump_scene"
 path = "src/bin/dev_dump_scene.rs"
 
 [[bin]]
+name = "dump_region"
+path = "src/bin/dump_region.rs"
+
+[[bin]]
 name = "block2_probe"
 path = "src/bin/block2_probe.rs"
 

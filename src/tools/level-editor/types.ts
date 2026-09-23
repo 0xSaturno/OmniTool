@@ -115,6 +115,18 @@ export interface SceneObjectDto {
   assetPath?: string;
   /** Block-2 mesh span; absent on every kind that has none. See {@link GeoRef}. */
   geometry?: GeoRef | null;
+  /**
+   * Mesh-loader key for this object's own block-2 geometry, stamped by the
+   * shell when objects from several zones are merged into one composite scene.
+   *
+   * The key is `(zone path, real offset)` — see {@link zoneGeometryKey} — and a
+   * composite scene destroys both halves: its `path` is every loaded zone path
+   * joined together and its offsets are slot-shifted to stay unique. Without
+   * this the renderer would ask `level_zone_geometry` for a zone that does not
+   * exist and every impostor and decal on a multi-zone load would stay a
+   * wireframe box.
+   */
+  geometryKey?: string;
 }
 
 export interface ZoneModelRef {

@@ -387,6 +387,11 @@ export class LevelRenderer {
     // Block-2 geometry: one single-instance batch per object, drawn as the same
     // wireframe marker box it used to be until its mesh arrives (and left that
     // way for good if the decode comes back empty).
+    // A composite scene stamps the real `(zone path, offset)` key on the object
+    // itself, because neither half survives the merge; a single-zone scene has
+    // both to hand.
+    const geoKeyOf = (o: SceneObjectDto) => o.geometryKey ?? zoneGeometryKey(scene.path, o.offset);
+
     for (const o of blockGeo) {
       const geoKind: BlockGeoKind = o.kind === KIND_IMPOSTOR ? "impostor" : "decal";
       const mesh = new THREE.InstancedMesh(getEntityGeometry(), makeMarkerMaterial(), 1);
@@ -402,7 +407,7 @@ export class LevelRenderer {
       if (determinant3(o.matrix) < 0) this.mirroredInstanceCount++;
 
       this.registerBatch(
-        { key: zoneGeometryKey(scene.path, o.offset), mesh, objects: [o], kind: "blockGeo", geoKind, resolved: false },
+        { key: geoKeyOf(o), mesh, objects: [o], kind: "blockGeo", geoKind, resolved: false },
         this.blockGeoGroup,
       );
     }
@@ -456,7 +461,7 @@ export class LevelRenderer {
     // wait for.
     this.meshQueue = new MeshQueue(meshLoader, (key, geom) => this.onGeometry(key, geom), 4);
     for (const modelId of order) this.meshQueue.request(modelId);
-    for (const o of blockGeo) this.meshQueue.request(zoneGeometryKey(scene.path, o.offset));
+    for (const o of blockGeo) this.meshQueue.request(geoKeyOf(o));
 
     this.setSelection([]);
     this.needsRender = true;
