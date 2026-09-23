@@ -48,6 +48,10 @@ name = "name_source_check"
 path = "src/bin/name_source_check.rs"
 
 [[bin]]
+name = "missing_probe"
+path = "src/bin/missing_probe.rs"
+
+[[bin]]
 name = "dag_check"
 path = "src/bin/dag_check.rs"
 
