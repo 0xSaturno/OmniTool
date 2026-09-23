@@ -85,37 +85,48 @@ fn main() {
     println!("{} loadable zones matching {want:?}\n", zones.len());
 
     let mut reasons: HashMap<&'static str, HashMap<u64, Bin>> = HashMap::new();
-    let mut total = 0usize;
-    // Slot order matches the shell: the order zones are listed in.
-    for (slot, (path, id)) in zones.iter().enumerate() {
-        let Ok(raw) = idx.extract(*id) else { continue };
-        let Ok(zone) = Zone::parse(&raw) else { continue };
+    // Parse every zone once, in parallel. Slot order matches the shell: the
+    // order zones are listed in.
+    use rayon::prelude::*;
+    let parsed: Vec<(usize, &String, Option<Zone>)> = zones
+        .par_iter()
+        .enumerate()
+        .map(|(slot, (path, id))| {
+            let zone = idx
+                .extract(*id)
+                .ok()
+                .and_then(|raw| Zone::parse(&raw).ok());
+            (slot, path, zone)
+        })
+        .collect();
 
-        for o in &zone.scene_objects {
-            if o.kind != KIND_MODEL {
-                continue;
-            }
-            total += 1;
+    // Every distinct model, judged ONCE. Judging per instance instead means
+    // thousands of redundant extracts and decodes — that is what made the first
+    // version of this probe unable to finish a region inside ten minutes.
+    let mut distinct: Vec<u64> = parsed
+        .iter()
+        .filter_map(|(_, _, z)| z.as_ref())
+        .flat_map(|z| z.scene_objects.iter())
+        .filter(|o| o.kind == KIND_MODEL)
+        .map(|o| o.model_id)
+        .collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    println!("judging {} distinct models...", distinct.len());
 
-            if let Some(want_off) = probe_offset {
-                let composite = slot as u64 * OFFSET_STRIDE + o.offset as u64;
-                if composite == want_off || o.offset as u64 == want_off {
-                    println!("=== object at {want_off} ===");
-                    println!("  zone      {path}  (slot {slot})");
-                    println!("  offset    {} (0x{:X})", o.offset, o.offset);
-                    println!("  model     {} ({:#018X})", o.model_path, o.model_id);
-                    println!("  position  {:?}", o.position());
-                    println!("  scale     {:?}\n", o.scale);
-                }
-            }
-
-            let reason = match idx.asset(o.model_id) {
+    let verdicts: HashMap<u64, &'static str> = distinct
+        .par_iter()
+        .map(|&mid| {
+            let reason = match idx.asset(mid) {
                 None => "no-toc-asset",
-                Some(_) => match idx.extract(o.model_id).ok().and_then(|b| level::parse_model_asset(&b).ok()) {
+                Some(_) => match idx
+                    .extract(mid)
+                    .ok()
+                    .and_then(|b| level::parse_model_asset(&b).ok())
+                {
                     None => "parse-failed",
                     Some(model) => {
-                        let collision = ModelBuilt::of(&model).is_some_and(|b| b.collision_only());
-                        if collision {
+                        if ModelBuilt::of(&model).is_some_and(|b| b.collision_only()) {
                             "skipped-collision"
                         } else {
                             match level::decode_model_mesh(&model, 0) {
@@ -127,6 +138,33 @@ fn main() {
                     }
                 },
             };
+            (mid, reason)
+        })
+        .collect();
+
+    let mut total = 0usize;
+    for (slot, path, zone) in &parsed {
+        let Some(zone) = zone else { continue };
+        for o in &zone.scene_objects {
+            if o.kind != KIND_MODEL {
+                continue;
+            }
+            total += 1;
+
+            if let Some(want_off) = probe_offset {
+                let composite = *slot as u64 * OFFSET_STRIDE + o.offset as u64;
+                if composite == want_off || o.offset as u64 == want_off {
+                    println!("=== object at {want_off} ===");
+                    println!("  zone      {path}  (slot {slot})");
+                    println!("  offset    {} (0x{:X})", o.offset, o.offset);
+                    println!("  model     {} ({:#018X})", o.model_path, o.model_id);
+                    println!("  position  {:?}", o.position());
+                    println!("  scale     {:?}", o.scale);
+                    println!("  verdict   {}\n", verdicts.get(&o.model_id).copied().unwrap_or("?"));
+                }
+            }
+
+            let reason = verdicts.get(&o.model_id).copied().unwrap_or("parse-failed");
             reasons
                 .entry(reason)
                 .or_default()

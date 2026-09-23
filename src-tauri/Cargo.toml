@@ -48,6 +48,10 @@ name = "name_source_check"
 path = "src/bin/name_source_check.rs"
 
 [[bin]]
+name = "zone_bounds"
+path = "src/bin/zone_bounds.rs"
+
+[[bin]]
 name = "missing_probe"
 path = "src/bin/missing_probe.rs"
 
