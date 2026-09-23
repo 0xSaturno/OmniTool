@@ -316,13 +316,21 @@ export interface BlendLayerDto {
   texturePath: string;
   /** False when the layer has no sampler of its own and reads the base's map. */
   ownTexture: boolean;
-  /** Multiplies UV0 for this layer. */
+  /** Multiplies the colour UV set for this layer. The base layer has one too. */
   uvScale: [number, number];
-  /** `[hue, saturation, luminance]`, each `0..1` with **0.5 neutral**. */
+  /**
+   * `[hue, saturation, value]`, each `0..1` with **0.5 neutral**. Named `_HSL_`
+   * in the graph; the shader's third axis is HSV's value.
+   */
   hsl: [number, number, number];
   /** `"measured"` | `"assumed"` — how the triple was tied to this layer. */
   hslSource: string;
-  scale: number;
+  /** `[mask gain, height softness]`; `[1, 0.33]` is the shipped default. */
+  blend: [number, number];
+  /** `ceil()`ed to a flag by the shader: non-zero flips this layer's channel. */
+  invert: number;
+  /** Intensity of this layer's own tangent normal. Not applied by the viewport. */
+  normalScale: number;
 }
 
 /** Mirrors the Rust `BlendRecipe`. See `model_materials.rs` for the derivation. */
@@ -332,6 +340,8 @@ export interface BlendRecipeDto {
   template: string;
   maskTextureId: string;
   maskTexturePath: string;
+  /** Multiplies UV0 for the mask and the shared normal. */
+  maskUvScale: [number, number];
   /** base, r, g, b — but a variant may declare fewer, so read `channel`. */
   layers: BlendLayerDto[];
   normalTextureId: string;
@@ -439,7 +449,12 @@ export function albedoOf(slot: ModelMaterialSlotDto): TextureRefDto | null {
 export interface BlendPlanLayer {
   textureId: string;
   uvScale: [number, number];
+  /** `[hue, saturation, value]`, 0.5 neutral. */
   hsl: [number, number, number];
+  /** `[mask gain, height softness]`. Identity/default `[1, 0.33]` on the base. */
+  blend: [number, number];
+  /** Non-zero flips this layer's splat channel. 0 on the base. */
+  invert: number;
 }
 
 /**
@@ -454,6 +469,8 @@ export interface BlendPlanLayer {
  */
 export interface BlendPlan {
   maskTextureId: string;
+  /** Multiplies UV0 for the mask. Its own constant, not a layer's. */
+  maskUvScale: [number, number];
   /** Exactly four: base, r, g, b. */
   layers: BlendPlanLayer[];
   /** r, g, b — false where the template declares no such layer. */
@@ -516,6 +533,8 @@ export function blendPlanOf(slot: ModelMaterialSlotDto): BlendPlan | null {
       textureId: id,
       uvScale: l && l.uvScale && l.uvScale.length >= 2 ? [l.uvScale[0], l.uvScale[1]] : [1, 1],
       hsl: l && l.hsl && l.hsl.length >= 3 ? [l.hsl[0], l.hsl[1], l.hsl[2]] : [0.5, 0.5, 0.5],
+      blend: l && l.blend && l.blend.length >= 2 ? [l.blend[0], l.blend[1]] : [1, 0.33],
+      invert: l?.invert ?? 0,
     });
     if (i > 0) enabled[i - 1] = Boolean(l);
   }
@@ -528,6 +547,7 @@ export function blendPlanOf(slot: ModelMaterialSlotDto): BlendPlan | null {
     meaningful =
       l.textureId !== baseId ||
       !neutralHsl(l.hsl) ||
+      l.invert !== 0 ||
       Math.abs(l.uvScale[0] - layers[0].uvScale[0]) > 1e-3 ||
       Math.abs(l.uvScale[1] - layers[0].uvScale[1]) > 1e-3;
   }
@@ -535,7 +555,11 @@ export function blendPlanOf(slot: ModelMaterialSlotDto): BlendPlan | null {
 
   const ids = new Set<string>([mask]);
   for (let i = 0; i < 4; i++) if (i === 0 || enabled[i - 1]) ids.add(layers[i].textureId);
-  return { maskTextureId: mask, layers, enabled, textureIds: [...ids] };
+  const maskUvScale: [number, number] =
+    recipe.maskUvScale && recipe.maskUvScale.length >= 2
+      ? [recipe.maskUvScale[0], recipe.maskUvScale[1]]
+      : [1, 1];
+  return { maskTextureId: mask, maskUvScale, layers, enabled, textureIds: [...ids] };
 }
 
 /** Resolves a model's material table. Rejects are treated as "no materials". */

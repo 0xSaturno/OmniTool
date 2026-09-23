@@ -979,10 +979,13 @@ export class LevelRenderer {
     const base = this.textureFor(plan.layers[0].textureId, batch);
     return {
       mask: this.textureFor(plan.maskTextureId, batch),
+      maskUvScale: plan.maskUvScale,
       layers: plan.layers.map((l, i) => ({
         texture: i === 0 ? base : plan.enabled[i - 1] ? this.textureFor(l.textureId, batch) : null,
         uvScale: l.uvScale,
         hsl: l.hsl,
+        blend: l.blend,
+        invert: l.invert,
       })),
     };
   }

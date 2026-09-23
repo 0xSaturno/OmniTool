@@ -89,6 +89,8 @@ pub struct TextureRef {
 /// of the template declare fewer samplers and let several layers read the same
 /// map, differing only by their HSL shift — `gbl_rgb_hsl_blend` is the extreme
 /// case, one texture recoloured four ways. `own_texture` says which happened.
+/// That is also why the shift is not optional: with it neutral, those layers
+/// collapse into one flat colour and the surface loses every substance break.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlendLayer {
@@ -100,12 +102,14 @@ pub struct BlendLayer {
     /// False when the template declares no sampler for this layer, or the
     /// material leaves it unbound, and the base layer's map is used instead.
     pub own_texture: bool,
-    /// Multiplies UV0 for this layer. `[1, 1]` when the template has no
-    /// per-layer tiling constant, or the material never overrode it.
+    /// Multiplies the **colour** UV set for this layer. `[1, 1]` when the
+    /// material never overrode the template's default. All four layers —
+    /// the base included — have one; see [`rgb_blend::LAYERS`].
     pub uv_scale: [f32; 2],
-    /// `[hue, saturation, luminance]`, each `0..1` with **0.5 neutral** — the
-    /// shipped default of all twelve of these constants. See
-    /// [`BlendRecipe`] for the shift this is believed to drive.
+    /// `[hue, saturation, value]`, each `0..1` with **0.5 neutral** — the
+    /// shipped default of all twelve of these constants. Named `_HSL_` in the
+    /// graph, but the shader's third axis is HSV's *value*; see
+    /// [`BlendRecipe`] for the exact transform.
     pub hsl: [f32; 3],
     /// `"measured"` when the triple was tied to this layer by recovering its
     /// declared name (`"<Channel>_HSL_<Hue|Saturation|Luminance>"`) from the
@@ -113,45 +117,85 @@ pub struct BlendLayer {
     /// module's convention and nothing contradicts it. All four are
     /// `"measured"` today; the field stays so a later family can be honest.
     pub hsl_source: String,
-    /// The per-layer scalar that a template variant drops together with this
-    /// layer's sampler and tiling. Ships as 1.0 and is rarely overridden; its
-    /// declared name has not been recovered, so what it scales is unknown and
-    /// the renderer does not apply it.
-    pub scale: f32,
+    /// `[mask gain, height softness]` — the two numbers that shape this layer's
+    /// blend weight (see [`BlendRecipe`]). Ships as `[1.0, 0.33]`. The base
+    /// layer has no such constant and reports the identity `[1.0, 0.33]`.
+    pub blend: [f32; 2],
+    /// `ceil()`ed to a flag by the shader: non-zero flips this layer's splat
+    /// channel, so the layer shows where the mask is *dark*. 0 for the base.
+    pub invert: f32,
+    /// Intensity of this layer's own tangent normal, taken from slice 3 of its
+    /// colour array. Ships as 1.0. The viewport does not apply it — it has no
+    /// per-layer normal to scale, because it only ever fetches slice 0.
+    pub normal_scale: f32,
 }
 
 /// What a `gbl_rgb_blend` material computes, in a form a renderer can evaluate.
 ///
 /// # The blend
 ///
+/// This is **read off the shipped pixel shader**, not fitted. A built
+/// `.materialgraph` carries its compiled programs in section `0xBBFC8900`,
+/// indexed by the 18-slot table `0x8C049CCA`; slot 4 is the deferred G-buffer
+/// pixel shader (four render targets) and disassembles with `fxc /dumpbin`.
+/// `src/bin/shader_dump.rs` extracts and annotates it, and
+/// [`crate::core::material_graph`] carries the slot table this module's hashes
+/// come from. Slots 5 and 14 compute the same blend.
+///
 /// ```text
-/// uv_i = uv0 * layer[i].uv_scale
-/// c_i  = hsl(sample(layer[i].texture, uv_i), layer[i].hsl)
-/// out  = c_base
-/// out  = lerp(out, c_r, mask.r)
-/// out  = lerp(out, c_g, mask.g)
-/// out  = lerp(out, c_b, mask.b)
+/// mask = sample(splat_mask, uv0 * mask_uv_scale).rgb          // raw; the mask is not sRGB
+/// h    = sqrt(sample(base_colour, uv1 * base.uv_scale, slice 2).g)
+/// out  = tint(sample(base_colour, uv1 * base.uv_scale, slice 0), base.hsl)
+/// for L in [r, g, b]:                                          // this order
+///     m    = mix(mask[L], 1 - mask[L], ceil(L.invert))
+///     lo   = saturate(h - L.blend[1])
+///     t    = saturate((L.blend[0] * m - lo) / (h - lo))
+///     out  = mix(out, tint(sample(L.colour, uv1 * L.uv_scale, slice 0), L.hsl),
+///                t * t * (3 - 2 * t))
 /// ```
 ///
-/// **Why three independent weights over a base, and not a partition.** Over 21
-/// distinct splat maps of one Nefarious City tile, `R+G+B` averages 0.80 but
-/// only 78% of texels have `R+G+B <= 1` and single texels reach 2.9, so the
-/// channels are not a partition of unity; and 17.5% of texels have all three
-/// channels dark, which is where the base layer is meant to show. 55% of texels
-/// are within 0.1 of 0 or 1, so the channels are mostly — not entirely — hard
-/// region ids. Where two channels overlap the *order* of the three `lerp`s
-/// decides the result, and the order here (R, then G, then B) is a convention,
-/// not a measurement.
+/// So it *is* three sequential lerps over a base rather than a partition of the
+/// three channels — which is what the splat maps themselves say (over 21
+/// distinct maps of one Nefarious City art tile, `R+G+B` averages 0.80, only
+/// 78% of texels keep it at or below 1, single texels reach 2.9, and 17.5% have
+/// all three channels dark, which is where the base shows). What is new is that
+/// each lerp's weight is not the raw channel: a **height** from the colour
+/// array's own slice 2 contrast-boosts it into a near-hard region id, which is
+/// why the shipped masks can be soft and the surface still reads as distinct
+/// materials. `h - lo` is zero where the height is zero, so a renderer must
+/// clamp that denominator.
 ///
-/// **The HSL shift.** *Which* triple belongs to which layer, and which member
-/// of a triple is hue / saturation / luminance, are both known: the declared
-/// names `"{Base,Red,Green,Blue}_HSL_{Hue,Saturation,Luminance}"` all hash to
-/// the twelve constants (see [`rgb_blend::LAYERS`]). What the graph *does* with
-/// them is still an assumption: all twelve ship at 0.5 and shipped materials
-/// keep them inside `0..1`, so they are 0.5-neutral sliders, and
-/// `hue += h - 0.5`, `saturation *= 2s`, `luminance *= 2l` reproduces both the
-/// neutral point and the range — but the curve is not recoverable from the
-/// data, and neither is whether the engine works in HSL or HSV.
+/// **The shared height sampler is a red herring.** `0x3C651BCB` is declared and
+/// never read by any compiled program of this graph; the height above comes from
+/// whichever colour layer is on top. (The shader then stochastically swaps in
+/// the winning layer's height for the next comparison; a viewer that keeps the
+/// base's is close and deterministic.)
+///
+/// # The tint
+///
+/// The twelve constants are named `_HSL_` but the shader's third axis is HSV's
+/// **value** — `V = max(r, g, b)`, not lightness. The transform, in **linear**
+/// space (the colour slots are `*_UNORM_SRGB`, so the sampler has already
+/// decoded them), with every constant defaulting to 0.5 = identity:
+///
+/// ```text
+/// hsv = rgb_to_hsv(colour)
+/// hue = frac(hsv.x + HUE - 0.5)          // additive and wrapped
+/// sat = 2 * SATURATION * hsv.y           // plain multiply, NOT clamped here
+/// val = 2 * LUMINANCE  * hsv.z           // plain multiply, NOT clamped here
+/// out = saturate(val * mix(1, hue_ramp(hue), sat))
+/// ```
+///
+/// `sat` above 1 deliberately extrapolates past the hue ramp and only the final
+/// `saturate` clamps, so clamping it early gives visibly different colours. The
+/// shipped `rgb_to_hsv` carries no epsilon and therefore produces `inf`/`NaN` on
+/// pure grey and pure black; a viewer has to add one.
+///
+/// # Two UV sets
+///
+/// The splat mask and the shared normal sample `TEXCOORD0`; all four colour
+/// layers sample `TEXCOORD1`. `uv_scale` above is therefore *not* a scale on the
+/// same interpolant as `mask_uv_scale`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlendRecipe {
@@ -164,6 +208,9 @@ pub struct BlendRecipe {
     /// in every case measured.
     pub mask_texture_id: String,
     pub mask_texture_path: String,
+    /// Multiplies **UV0** for the mask and the shared normal — a different
+    /// interpolant from the one the colour layers' `uv_scale` multiplies.
+    pub mask_uv_scale: [f32; 2],
     /// base, r, g, b — in that order, always four entries.
     pub layers: Vec<BlendLayer>,
     /// The one normal map the whole surface shares.
@@ -178,17 +225,14 @@ pub struct BlendRecipe {
     /// uses. Includes the ones already broken out above, so nothing the blend
     /// might need is lost to this module's reading of it.
     ///
-    /// Two groups inside it are understood but not named, and are left here
-    /// rather than guessed at:
-    ///
-    /// | hashes | ships as | what is known |
-    /// |---|---|---|
-    /// | `0xB53BBE4C` (blue), `0xC5442A93` + `0xFAE546A6` (red) | `[1, 0.5]`, `[1, 0.33]` | a second `float2` per layer, tracking the *layer* rather than its texture; every shipped material drives them across `0..1`, so a range or a min/max, not a tiling |
-    /// | `0x6BB5844F` (red), `0x1F45075A` (green), `0xE571B1EB` (blue) | `0.0` | one `float` per layer, almost always left at 0 |
-    ///
-    /// The nine `float2`s and the `0xD4404077` `float` that every variant of the
-    /// family declares belong to the base layer or to the whole surface; since
-    /// no shipped variant drops the base layer, they cannot be separated.
+    /// The groups that used to sit here unnamed are now broken out above: the
+    /// per-layer `float2` is `(mask gain, height softness)` (`blend`), and the
+    /// per-layer `float` that ships at 0 is `*_Splat_Mask_Invert` (`invert`).
+    /// What is still unmodelled is the gloss chain — a `float2` gloss remap
+    /// `(range, position)` per layer and a `float` switch choosing whether the
+    /// colour array's slice 1 carries a specular colour plus alpha gloss or a
+    /// single `sqrt`-decoded gloss — which a diffuse-only viewport has nothing
+    /// to do with.
     pub params: BTreeMap<String, Vec<f32>>,
 }
 
@@ -196,56 +240,73 @@ pub struct BlendRecipe {
 /// under. These hashes are stable across the whole family — the texture *unit*
 /// is not, so nothing here indexes by unit.
 mod rgb_blend {
-    /// RGB splat / id mask. Its own declared name has not been recovered, but
-    /// the three constants `E2F04E17` / `9E7FE3F1` / `7A50C706` hash exactly to
-    /// `"{Red,Green,Blue}_Splat_Mask_Invert"`, which is what says the mask is a
-    /// *splat* map and that its R/G/B drive the red/green/blue layers. Shipped
-    /// materials bind a `…_id` texture here in every case measured (37/37 on
-    /// one Nefarious City art tile).
+    /// RGB splat / id mask, sampled on **UV0** (`TEXCOORD0`). Shipped materials
+    /// bind a `…_id` texture here in every case measured (37/37 on one Nefarious
+    /// City art tile). Its R/G/B drive the red/green/blue layers, which the
+    /// constants `E2F04E17` / `9E7FE3F1` / `7A50C706` — exactly
+    /// `"{Red,Green,Blue}_Splat_Mask_Invert"` — name, and which the compiled
+    /// shader confirms by reading `mask.x`/`.y`/`.z` next to each of them.
     pub const SPLAT: u32 = 0x205D_ECC3;
     pub const NORMAL: u32 = 0x61D0_637F;
-    /// Height / AO / misc; its template default is `mo_white_h`.
+    /// Height / AO / misc; its template default is `mo_white_h`. **Declared and
+    /// never sampled** by any compiled program of this graph — the height that
+    /// drives the blend comes from each colour layer's own array slice 2.
     pub const MISC: u32 = 0x3C65_1BCB;
+    /// `float2` tiling for the splat mask *and* the shared normal, both of which
+    /// sample UV0. Not a colour layer's tiling: `mul r8.xy, v1.xyxx, <28BB963E>`
+    /// feeds only the `205DECC3` and `61D0637F` samplers.
+    pub const MASK_UV: u32 = 0x28BB_963E;
 
-    /// `(sampler, uv_scale float2, scale float, [hue, saturation, luminance],
-    ///   hsl measured?)` for base, red, green, blue.
+    /// `(sampler, uv_scale float2, normal_scale float, [hue, saturation,
+    ///   luminance], blend float2, splat_mask_invert float)` for base, red,
+    /// green, blue.
     ///
-    /// SAMPLER, TILING AND SCALE come from variant algebra, which is decisive
-    /// here because each variant drops one layer's whole group at once:
-    /// `9E34A894` is declared by every variant, so it is the base;
-    /// `_red_green` drops `E4CF0EAD` + `62D7112C` + `BBABD142`, so those are
-    /// blue; `_red_blue` drops `013DD88D` + `4BAF5B9E` + `D1C7B633`, so those
-    /// are green; `sav_rgb_blend_scale_sand_up_01` drops `54C83B26` +
-    /// `1D93CDB7` + `1BD045A3`, so those are red.
+    /// **Every hash here is now confirmed against the compiled G-buffer pixel
+    /// shader** (`gbl_rgb_blend.materialgraph` program slot 4, disassembled with
+    /// `fxc /dumpbin` and annotated by `shader_dump annotate`, which maps each
+    /// `cb2[r].c` back to the template constant at `buffer_offset == r*16 + c*4`
+    /// and each `tN` back to sampler slot `N - 5`). Two entries in this table
+    /// used to be wrong, both fixed here:
     ///
-    /// HSL is not derivable that way — `_red_green` and `_red_blue` both
-    /// declare all twelve constants, and over the 368 shipped materials on the
-    /// full template the correlation between "layer has its own map" and
-    /// "triple overridden" is noise (|ΔP| <= 0.24, no diagonal). The four
-    /// triples are instead pinned by **inverting the CRC32 of the declared
-    /// name**: the builder hashes `"<node variable>_<port>"`, and the twelve
-    /// hashes below are exactly `"{Base,Red,Green,Blue}_HSL_{Hue,Saturation,
-    /// Luminance}"`. Twelve simultaneous hits forming one naming scheme is not
-    /// coincidence, and the same scheme also names `"{Red,Green,Blue}_Splat_
-    /// Mask_Invert"` (`E2F04E17` / `9E7FE3F1` / `7A50C706`), which independently
-    /// confirms that the splat map's R/G/B drive the red/green/blue layers.
+    ///   * **The base layer's tiling is `8D2566DE`.** The disassembly packs two
+    ///     tilings into one multiply — `mul r3.xyzw, v2.xyxy,
+    ///     <1D93CDB7.x|1D93CDB7.y|8D2566DE.z|8D2566DE.w>` — and the `.zw` half
+    ///     is what the base sampler `9E34A894` reads. Previously this was `0`
+    ///     ("it is `8D2566DE` or `28BB963E` and nothing separates them"), so the
+    ///     base was drawn at raw UV while the other three were tiled: a
+    ///     stretched, smeared base across ~38% of the family's materials, which
+    ///     are the ones that override it (observed range 0.5..2).
+    ///   * **Green and blue were swapped.** The variant algebra that assigned
+    ///     them — `_red_green` drops `E4CF0EAD`, therefore `E4CF0EAD` is blue —
+    ///     is wrong, because a variant's *name* is not the mask channel it
+    ///     keeps. The shader blends `E4CF0EAD` from `mask.y` with the
+    ///     `Green_HSL_*` triple and `9E7FE3F1` (`Green_Splat_Mask_Invert`), and
+    ///     `013DD88D` from `mask.z` with `Blue_HSL_*` and `7A50C706`. The HSL
+    ///     triples were already right (they were pinned by inverting the CRC32
+    ///     of their declared names, not by variant algebra) — so the old table
+    ///     had each of those two layers reading the *other* layer's texture,
+    ///     tiling and normal intensity under its own name.
     ///
-    /// The base layer's tiling constant is `0`, i.e. still unknown: it is
-    /// `8D2566DE` or `28BB963E`, the two `float2`s that survive every variant
-    /// (the other is the splat map's own tiling), and nothing measured
-    /// separates them. `0` is never a real slot hash, so the lookup simply
-    /// misses and the base layer gets `[1, 1]` — which is wrong for the ~38%
-    /// of materials that override `8D2566DE` (observed range `0.5..2`).
-    pub const LAYERS: [(u32, u32, u32, [u32; 3], bool); 4] = [
-        // base — "Base_HSL_{Hue,Saturation,Luminance}"
-        (0x9E34_A894, 0, 0x2356_CD0C, [0x886E_717D, 0x6A81_9148, 0x92F0_4E42], true),
-        // red — "Red_HSL_{Hue,Saturation,Luminance}"
-        (0x54C8_3B26, 0x1D93_CDB7, 0x1BD0_45A3, [0x18D8_DA14, 0x25B3_6543, 0x7FF6_17E1], true),
-        // green — "Green_HSL_{Hue,Saturation,Luminance}"
-        (0x013D_D88D, 0x4BAF_5B9E, 0xD1C7_B633, [0x679C_068F, 0x33AF_D592, 0x0F89_833E], true),
-        // blue — "Blue_HSL_{Hue,Saturation,Luminance}"
-        (0xE4CF_0EAD, 0x62D7_112C, 0xBBAB_D142, [0x4EE4_4C3D, 0x3E1E_E9AB, 0xD3DF_84B4], true),
+    /// The tint constants stand as they were: the builder hashes
+    /// `"<node variable>_<port>"`, and these twelve are exactly
+    /// `"{Base,Red,Green,Blue}_HSL_{Hue,Saturation,Luminance}"`. Twelve
+    /// simultaneous hits forming one naming scheme is not coincidence, and the
+    /// shader independently drives each triple from the matching mask channel.
+    pub const LAYERS: [(u32, u32, u32, [u32; 3], u32, u32); 4] = [
+        // base — "Base_HSL_{Hue,Saturation,Luminance}"; no mask channel, so no
+        // blend float2 and no invert.
+        (0x9E34_A894, 0x8D25_66DE, 0x2356_CD0C, [0x886E_717D, 0x6A81_9148, 0x92F0_4E42], 0, 0),
+        // red — mask.r
+        (0x54C8_3B26, 0x1D93_CDB7, 0x1BD0_45A3, [0x18D8_DA14, 0x25B3_6543, 0x7FF6_17E1], 0xFAE5_46A6, 0xE2F0_4E17),
+        // green — mask.g
+        (0xE4CF_0EAD, 0x62D7_112C, 0xBBAB_D142, [0x679C_068F, 0x33AF_D592, 0x0F89_833E], 0x3124_B6DD, 0x9E7F_E3F1),
+        // blue — mask.b
+        (0x013D_D88D, 0x4BAF_5B9E, 0xD1C7_B633, [0x4EE4_4C3D, 0x3E1E_E9AB, 0xD3DF_84B4], 0xDB96_0F93, 0x7A50_C706),
     ];
+
+    /// The identity of the `(mask gain, height softness)` pair, which is also its
+    /// shipped default, and what the base layer reports.
+    pub const BLEND_DEFAULT: [f32; 2] = [1.0, 0.33];
 
     pub const CHANNELS: [&str; 4] = ["base", "r", "g", "b"];
 }
@@ -300,8 +361,20 @@ pub fn derive_blend(
     let misc = bound(rgb_blend::MISC).unwrap_or_default();
     let base_tex = bound(rgb_blend::LAYERS[0].0);
 
+    // `float2`s are stored as a pair; a template that ships a scalar broadcasts.
+    let float2 = |hash: u32, fallback: [f32; 2]| -> [f32; 2] {
+        match value(hash) {
+            Some(v) if v.len() >= 2 => [v[0], v[1]],
+            Some(v) if v.len() == 1 => [v[0], v[0]],
+            _ => fallback,
+        }
+    };
+
+    let mask_uv_scale = float2(rgb_blend::MASK_UV, [1.0, 1.0]);
+
     let mut layers = Vec::with_capacity(4);
-    for (i, (sampler, uv, scale, hsl, measured)) in rgb_blend::LAYERS.iter().enumerate() {
+    for (i, (sampler, uv, normal_scale, hsl, blend, invert)) in rgb_blend::LAYERS.iter().enumerate()
+    {
         // The template must declare the layer at all — a three-layer variant
         // has no fourth layer, not a fourth layer sharing the base's map.
         if i > 0 && template.sampler_by_hash(*sampler).is_none() && template
@@ -312,11 +385,6 @@ pub fn derive_blend(
         }
         let own = bound(*sampler);
         let path = own.clone().or_else(|| base_tex.clone()).unwrap_or_default();
-        let uv_scale = match value(*uv) {
-            Some(v) if v.len() >= 2 => [v[0], v[1]],
-            Some(v) if v.len() == 1 => [v[0], v[0]],
-            _ => [1.0, 1.0],
-        };
         let hsl_values = [
             value(hsl[0]).and_then(|v| v.first().copied()).unwrap_or(0.5),
             value(hsl[1]).and_then(|v| v.first().copied()).unwrap_or(0.5),
@@ -327,10 +395,16 @@ pub fn derive_blend(
             texture_id: hex_id(texture_id_of(&path)),
             texture_path: path,
             own_texture: own.is_some(),
-            uv_scale,
+            uv_scale: float2(*uv, [1.0, 1.0]),
             hsl: hsl_values,
-            hsl_source: if *measured { "measured".into() } else { "assumed".into() },
-            scale: value(*scale).and_then(|v| v.first().copied()).unwrap_or(1.0),
+            // Every triple is tied to its layer by the recovered name, and the
+            // compiled shader drives each one from the matching mask channel.
+            hsl_source: "measured".into(),
+            blend: float2(*blend, rgb_blend::BLEND_DEFAULT),
+            invert: value(*invert).and_then(|v| v.first().copied()).unwrap_or(0.0),
+            normal_scale: value(*normal_scale)
+                .and_then(|v| v.first().copied())
+                .unwrap_or(1.0),
         });
     }
 
@@ -354,6 +428,7 @@ pub fn derive_blend(
         template: crc64::normalize_path(template_path),
         mask_texture_id: hex_id(texture_id_of(&mask)),
         mask_texture_path: mask,
+        mask_uv_scale,
         layers,
         normal_texture_id: hex_id(texture_id_of(&normal)),
         normal_texture_path: normal,
@@ -962,18 +1037,28 @@ mod tests {
         let ch: Vec<&str> = r.layers.iter().map(|l| l.channel.as_str()).collect();
         assert_eq!(ch, ["base", "r", "g", "b"]);
         assert!(r.layers.iter().all(|l| l.own_texture));
-        assert!(r.layers[3].texture_path.ends_with("rust_001_c.texture"));
         assert!(r.layers[0].texture_path.ends_with("steel_001_c.texture"));
-        // `Green_HSL_*` is what this material tuned, so the shift lands on the
-        // GREEN layer — not on blue, which is where a triple-to-layer mix-up
-        // would put it.
+        // ONE COHERENT GREEN LAYER. This material overrides exactly three things
+        // — the `E4CF0EAD` sampler, the `62D7112C` tiling and `Green_HSL_*` —
+        // and the compiled shader reads all three as the layer driven by the
+        // splat mask's GREEN channel. The table this test used to assert split
+        // them across two layers: the texture and the tiling landed on blue
+        // while the tint stayed on green, so the surface showed rust with no
+        // tint next to tinted steel at the wrong tiling. Keeping the three
+        // assertions adjacent is the regression guard.
+        assert!(r.layers[2].texture_path.ends_with("rust_001_c.texture"));
+        assert_eq!(r.layers[2].uv_scale, [2.0, 3.0]);
+        assert_eq!(r.layers[2].hsl, [0.591, 0.945, 0.576]);
         assert_eq!(r.layers[0].hsl, [0.5, 0.5, 0.5]);
         assert_eq!(r.layers[1].hsl, [0.5, 0.5, 0.5]);
-        assert_eq!(r.layers[2].hsl, [0.591, 0.945, 0.576]);
         assert_eq!(r.layers[3].hsl, [0.5, 0.5, 0.5]);
-        // ... and only the blue layer's tiling was overridden.
-        assert_eq!(r.layers[3].uv_scale, [2.0, 3.0]);
         assert_eq!(r.layers[1].uv_scale, [1.0, 1.0]);
+        assert_eq!(r.layers[3].uv_scale, [1.0, 1.0]);
+        // The base layer's tiling is a real slot now, so it resolves like any
+        // other. `8D2566DE` is unset here, hence the template default.
+        assert_eq!(r.layers[0].uv_scale, [1.0, 1.0]);
+        // Only the three splat layers carry a blend pair and an invert.
+        assert!(r.layers.iter().all(|l| l.blend == [1.0, 0.33] && l.invert == 0.0));
         // Every triple is named, so every layer's HSL is measured.
         assert!(r.layers.iter().all(|l| l.hsl_source == "measured"));
         // Nothing is dropped: every declared constant reaches params.
@@ -986,20 +1071,21 @@ mod tests {
         let mut ser = steel_and_rust();
         ser.samplers.retain(|s| s.name_hash != 0xE4CF_0EAD);
         let r = derive_blend(&four_layer_template(), &ser, "x.materialgraph").expect("recipe");
-        assert!(!r.layers[3].own_texture);
-        assert_eq!(r.layers[3].texture_path, r.layers[0].texture_path);
+        assert!(!r.layers[2].own_texture);
+        assert_eq!(r.layers[2].texture_path, r.layers[0].texture_path);
     }
 
     #[test]
     fn a_three_layer_variant_yields_three_layers() {
-        // A variant that drops the blue layer drops its sampler, its tiling,
-        // its scale and `Blue_HSL_*` together.
+        // A variant that drops the blue layer drops its sampler, its tiling, its
+        // normal intensity and `Blue_HSL_*` together — and blue's sampler is
+        // `013DD88D`, per the shader.
         let mut t = four_layer_template();
-        t.samplers.retain(|s| s.name_hash != 0xE4CF_0EAD);
+        t.samplers.retain(|s| s.name_hash != 0x013D_D88D);
         t.constants.retain(|c| {
             !matches!(
                 c.name_hash,
-                0x4EE4_4C3D | 0x3E1E_E9AB | 0xD3DF_84B4 | 0x62D7_112C | 0xBBAB_D142
+                0x4EE4_4C3D | 0x3E1E_E9AB | 0xD3DF_84B4 | 0x4BAF_5B9E | 0xD1C7_B633
             )
         });
         let r = derive_blend(&t, &steel_and_rust(), "x.materialgraph").expect("recipe");

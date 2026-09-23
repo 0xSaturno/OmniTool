@@ -16,6 +16,8 @@
 //!   hsl [region]               HSL triple overrides vs which layers are bound
 //!   hslchan [region]           HSL deviation vs splat channel coverage
 //!   correlate <region>         layer slot x splat channel contingency
+//!   texinfo <substr>           header facts for every matching `.texture`:
+//!                              format, native size and **array slices**
 //!   sections <asset path>      DAT1 section list of any material-ish asset
 //!   hexdump <asset path> <tag> raw bytes of one section
 //!
@@ -62,6 +64,7 @@ fn main() {
         "hsl" => hsl(&idx, if arg == "gbl_rgb_blend" { "" } else { &arg }),
         "sections" => sections(&idx, &arg),
         "hexdump" => hexdump_mode(&idx, &arg, &arg2),
+        "texinfo" => texinfo(&idx, &arg),
         _ => eprintln!("unknown mode {mode}"),
     }
 }
@@ -133,6 +136,40 @@ fn sections(idx: &level::LevelIndex, path: &str) {
             s.size,
             section_name(s.tag).unwrap_or("?")
         );
+    }
+}
+
+/// Header facts about every `.texture` whose name matches — format, size and
+/// **array slices**. The layered graphs sample their colour slots as
+/// `Texture2DArray` at slices 0..3, so the slice count is what says whether a
+/// slot is a flat colour map or a packed `_mp` set, and the `_SRGB` suffix is
+/// what says whether the sampler hands the shader linear or encoded values.
+fn texinfo(idx: &level::LevelIndex, pat: &str) {
+    let list = matching(idx, pat, ".texture");
+    if list.is_empty() {
+        eprintln!("no .texture matches {pat}");
+        return;
+    }
+    println!(
+        "{:>5} {:>5} {:>4} {:>5} {:>4}  {:<22} {}",
+        "w", "h", "dim", "slice", "ctyp", "format", "path"
+    );
+    for (id, name) in list {
+        match texture_serve::texture_info(idx, id) {
+            Some(i) => {
+                let (w, h) = i.native();
+                println!(
+                    "{w:>5} {h:>5} {:>4} {:>5} {:>4}  {:<22} {name}",
+                    i.dimension,
+                    i.slices(),
+                    i.content_type,
+                    texture_serve::format_name(i.format),
+                );
+            }
+            None => {
+                println!("{:>5} {:>5} {:>4} {:>5} {:>4}  {:<22} {name}", "-", "-", "-", "-", "-", "?")
+            }
+        }
     }
 }
 

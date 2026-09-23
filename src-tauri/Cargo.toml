@@ -64,6 +64,10 @@ name = "blend_probe"
 path = "src/bin/blend_probe.rs"
 
 [[bin]]
+name = "shader_dump"
+path = "src/bin/shader_dump.rs"
+
+[[bin]]
 name = "instance_placement"
 path = "src/bin/instance_placement.rs"
 
