@@ -23,6 +23,75 @@
 //!   never touched here: a viewport filling a few hundred pixels has no use for
 //!   a 4K albedo, and the resident chain already starts at `sd_w x sd_h`.
 //!
+//! # Array slices
+//!
+//! The slice-major claim above is not a convention this module chose, it is
+//! arithmetic that the shipped bytes satisfy exactly. `texture_probe slices`
+//! recomputes, for every `.texture` the TOC names, the length of **one**
+//! resident mip chain (`sum over m of mip_level_size(sd_w >> m, sd_h >> m)`
+//! for `sd_mips` levels) and compares `slices * that` against the header's own
+//! `sd_len`: 12,502 of 12,502 parsed headers agree to the byte, 0 mismatches
+//! and 0 formats with an unknown block size, including all 561 assets with
+//! more than one slice (246 of them four-slice; the rest run 2, 3, 6, 12, 32,
+//! 64 and 128).
+//!
+//! Equal totals alone would not tell slice-major from mip-major, so the
+//! decisive evidence is **content**: `texture_probe blend` decodes each slice
+//! of a real four-slice colour map separately and gets four distinct,
+//! coherent, full-resolution images — an albedo, a red/green gloss-specular
+//! map, a magenta misc map whose green channel is a concrete height field with
+//! visible aggregate, and a textbook lavender tangent normal. Four fragments of
+//! one interleaved mip chain could not each be a whole 512x512 picture.
+//!
+//! What a colour slot of the `gbl_rgb_blend` family puts in its four slices,
+//! read off the shipped G-buffer pixel shader (`bin/shader_dump.rs`):
+//!
+//! | slice | content                                                        |
+//! |-------|----------------------------------------------------------------|
+//! | 0     | albedo RGB                                                     |
+//! | 1     | gloss / specular (`r` gloss via `sqrt`, `a` alternate gloss)    |
+//! | 2     | misc; **`g` is the height**, `sqrt`-decoded                     |
+//! | 3     | per-layer tangent normal, stored sRGB-encoded                   |
+//!
+//! How often that is true of a *bound* layer: **74 of 77** distinct blend
+//! colour layers across four art tiles on four different planets are four-slice
+//! arrays — Nefarious City `tile_e18_art` 23/24, Sargasso `tile_n17_art` 15/17,
+//! Savali `tile_c17_art` 18/18, Megalopolis `tile_m37_art` 18/18. The other
+//! pieces of the same materials are flat, which is why the array read has to
+//! stay conditional: of the 49 splat masks and 71 shared normal/misc maps those
+//! four zones bind and whose headers parse, **every one** has exactly one
+//! slice. It is not a blend-only trait either — 76 of the 653 textures their
+//! *plain* material slots bind are four-slice too.
+//!
+//! Slice 2's green really is a height field and not, say, a second mip.
+//! Measured at a 512 cap, the mean absolute difference between horizontally
+//! adjacent texels, as a fraction of the channel's own standard deviation, is
+//! 0.162 / 0.124 / 0.150 / 0.142 on those four zones. Shuffling the very same
+//! texels raises it to 0.731 / 0.835 / 0.880 / 0.557, and slice **0**'s green —
+//! an albedo, which is smooth but carries detail rather than relief — sits at
+//! 0.474 / 0.407 / 0.478 / 0.347. Slice 2's green is thus about 2.8x smoother
+//! than the albedo in the same asset on every planet sampled, which is what
+//! relief looks like and what noise or a misaligned mip does not. Written out
+//! as a greyscale image it is unmistakable: `concrete_001_c` slice 2 green is a
+//! concrete height map with individual aggregate stones standing proud,
+//! `sand_001_c`'s is a soft dune ripple.
+//!
+//! What it costs to serve. Over the four-slice colour layers of one busy art
+//! tile at a 512 cap, on all cores: slice 0 alone is 6.34 MB of PNG in 10.9 ms
+//! (23 layers, Nefarious City), and the `[0, 2, 3]` set a shading viewport
+//! actually wants is 21.85 MB in 32.2 ms — call it 3x the bytes and 3x the
+//! time, which is what three times the texels costs. The other three zones land
+//! at 12.20-18.40 MB and 26.5-27.6 ms. Ask for the slices **together**
+//! ([`texture_png_bytes_multi`]) rather than one at a time: see that function
+//! for the 2.4x difference in archive bytes read.
+//!
+//! [`texture_png_bytes_slice`] serves any one of them. The bytes handed over
+//! are always the texture's **stored** texels — no sRGB transfer function is
+//! applied on this side, for any slice — so the consumer is free to undo the
+//! sampler's decode the way the shipped shader does (`pow(|x|, 0.447761)`
+//! before the `*2-1` remap on slice 3). See the frontend note in
+//! `src/tools/level-editor/viewport/materials.ts`.
+//!
 //! BCn decoding is not reimplemented — [`crate::tools::texture_converter`]
 //! already does BC1-BC7 (including BC6H) and the raw formats, and this module
 //! calls straight into it.
@@ -82,8 +151,13 @@ pub struct TexInfo {
     /// Size of the first resident mip.
     pub sd_w: u32,
     pub sd_h: u32,
-    /// Array slices. A cube map stores 1 here and has six faces.
+    /// and has six faces; see [`TexInfo::slices`].
     pub surfaces: u32,
+    /// `content_type` below are sliced. Kept whole because the engine treats it
+    /// as one bitfield (`kIs1D`/`kIs2D`/`kIs2DArray`/`kIs3D`/`kIsCube`,
+    /// `kIsBaseMap`/`kIsNormalMap`/`kIsGlossMap`, `kIsIBL`, `kDisableStreaming`
+    /// …) and this module only claims to have measured two of its fields.
+    pub format_flags: u16,
     /// `1` 2D, `2` 3D/volume, `4` cube.
     pub dimension: u8,
     /// Content/usage tag bits; bit 1 marks a two-channel normal map, which
@@ -101,6 +175,32 @@ impl TexInfo {
     /// Cube faces count as extra slices; the header does not say so itself.
     pub fn slices(&self) -> u32 {
         self.surfaces.max(1) * if self.dimension == 4 { 6 } else { 1 }
+    }
+
+    /// Bytes one resident mip chain occupies: `sd_mips` levels starting at
+    /// `sd_w x sd_h`. `None` for a DXGI format whose block size is unknown.
+    ///
+    /// This is the **stride between array slices**, and the claim is checked
+    /// rather than assumed: `slices() * resident_chain_bytes() == sd_len` on
+    /// 12,266 of 12,266 shipped `.texture` headers (`texture_probe --slices`).
+    pub fn resident_chain_bytes(&self) -> Option<usize> {
+        let mut total = 0usize;
+        for m in 0..self.sd_mips.max(1) as u32 {
+            let w = (self.sd_w >> m).max(1);
+            let h = (self.sd_h >> m).max(1);
+            total += mip_level_size(w, h, self.format as u32)? as usize;
+        }
+        Some(total)
+    }
+
+    /// Where slice `slice` starts inside the resident blob.
+    ///
+    /// The computed chain length is preferred over `sd_len / slices` so a
+    /// header whose `sd_len` was rounded up to a page still lands on the right
+    /// texels; the division is the fallback for an unknown format.
+    pub fn slice_stride(&self) -> usize {
+        self.resident_chain_bytes()
+            .unwrap_or_else(|| self.sd_len as usize / self.slices().max(1) as usize)
     }
 
     /// The texture's native size — the first streamed mip when one exists.
@@ -130,6 +230,7 @@ impl TexInfo {
             sd_w: u16at(0x0C) as u32,
             sd_h: u16at(0x0E) as u32,
             surfaces: u16at(0x10) as u32,
+            format_flags: flags,
             dimension: ((flags >> 4) & 0x7) as u8,
             content_type: ((flags >> 7) & 0x7F) as u8,
             format: u16at(0x14),
@@ -357,6 +458,14 @@ fn mip_span(info: &TexInfo, level: u32) -> Option<(usize, usize)> {
     None
 }
 
+/// Byte span of resident mip `level` of array slice `slice`, relative to the
+/// resident blob. Slice-major, so it is slice 0's span shifted by
+/// `slice * slice_stride()`.
+fn slice_mip_span(info: &TexInfo, slice: u32, level: u32) -> Option<(usize, usize)> {
+    let (off, size) = mip_span(info, level)?;
+    Some((off + slice as usize * info.slice_stride(), size))
+}
+
 /// The smallest resident mip whose larger side is still at or above `cap`.
 ///
 /// Returns the base mip when the resident chain never reaches `cap` — that is
@@ -387,15 +496,39 @@ pub struct DecodeStats {
     pub width: u32,
     pub height: u32,
     pub mip: u32,
+    /// Which array slice was decoded.
+    pub slice: u32,
+    /// How many slices the texture has, so a caller can tell "asked for 3, got
+    /// 3" from "asked for 3 on a flat texture".
+    pub slices: u32,
     pub png_bytes: usize,
+    /// Bytes of the asset body this decode had to read. A later slice sits
+    /// further into the blob, so it costs more: see `texture_probe --blend`.
+    pub read_bytes: usize,
     /// Always true today — see the module docs on streamed mips.
     pub from_resident: bool,
 }
 
-/// Decode one texture to a PNG of the mip chosen by [`pick_mip`].
+/// Decode slice 0 of one texture to a PNG of the mip chosen by [`pick_mip`].
 pub fn decode_texture(
     index: &LevelIndex,
     id: u64,
+    max_size: u32,
+) -> Result<(Vec<u8>, DecodeStats)> {
+    decode_texture_slice(index, id, 0, max_size)
+}
+
+/// Decode one **array slice** of a texture to a PNG of the mip [`pick_mip`]
+/// chooses.
+///
+/// A `slice` past the texture's own slice count is an error rather than a
+/// silent clamp to 0: a caller asking for the height field of a colour map that
+/// turns out to be flat needs to know it got nothing, not a second copy of the
+/// albedo.
+pub fn decode_texture_slice(
+    index: &LevelIndex,
+    id: u64,
+    slice: u32,
     max_size: u32,
 ) -> Result<(Vec<u8>, DecodeStats)> {
     let cap = max_size.clamp(MIN_CAP, MAX_CAP);
@@ -404,55 +537,45 @@ pub fn decode_texture(
     if info.sd_len == 0 || info.sd_w == 0 || info.sd_h == 0 {
         return Err(ToolkitError::Parse("texture has no resident mips".into()));
     }
+    let slices = info.slices().max(1);
+    if slice >= slices {
+        return Err(ToolkitError::Parse(format!(
+            "slice {slice} requested, texture has {slices}"
+        )));
+    }
 
     let level = pick_mip(&info, cap);
-    let (mip_off, mip_size) = mip_span(&info, level)
+    let (mip_off, mip_size) = slice_mip_span(&info, slice, level)
         .ok_or_else(|| ToolkitError::Unsupported(format!("DXGI format {}", info.format)))?;
 
-    let slices = info.slices().max(1);
-    let slice_len = (info.sd_len / slices) as usize;
-    if mip_off + mip_size > slice_len {
+    if mip_off + mip_size > info.sd_len as usize {
         return Err(ToolkitError::Parse(format!(
-            "mip {level} span {mip_off}+{mip_size} past the {slice_len}-byte slice"
+            "slice {slice} mip {level} span {mip_off}+{mip_size} past the \
+             {}-byte resident blob",
+            info.sd_len
         )));
     }
 
-    // Read only as far as the mip we want. Slice 0 is the first slice, so this
-    // never reads a later face of a cube map.
+    // Read only as far as the mip we want — for slice N that is N strides in,
+    // so a later slice reads more of the asset. The TOC entry is narrowed, not
+    // followed, so a DSAR archive still decompresses only the 64 KB chunks the
+    // range touches.
     let want = (info.pixel_offset + mip_off + mip_size) as u32;
     let body = read_asset_prefix(index, id, want)?;
-    let start = info.pixel_offset + mip_off;
-    let end = start + mip_size;
-    if end > body.len() {
-        return Err(ToolkitError::Parse(format!(
-            "texture body is {} bytes, needed {end}",
-            body.len()
-        )));
-    }
+    let read_bytes = body.len();
 
     let w = (info.sd_w >> level).max(1) as usize;
     let h = (info.sd_h >> level).max(1) as usize;
-    let src = &body[start..end];
-    let mut rgba = match info.format {
-        FORMAT_R8G8_UNORM => decode_r8g8(src, w, h),
-        _ => decode_to_rgba(src, w, h, info.format as u32, info.content_type)
-            .map_err(ToolkitError::Parse)?,
-    };
-
-    if info.content_type == CONTENT_NORMAL && info.format != FORMAT_BC5_UNORM {
-        rebuild_normal_z(&mut rgba);
-    }
-
-    let mut png = Vec::with_capacity(w * h);
-    PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Adaptive)
-        .write_image(&rgba, w as u32, h as u32, ExtendedColorType::Rgba8)
-        .map_err(|e| ToolkitError::Parse(format!("PNG encode failed: {e}")))?;
+    let png = decode_one(&info, &body, slice, slices, level, w, h, mip_size)?;
 
     let stats = DecodeStats {
         width: w as u32,
         height: h as u32,
         mip: level,
+        slice,
+        slices,
         png_bytes: png.len(),
+        read_bytes,
         from_resident: true,
     };
     Ok((png, stats))
@@ -462,9 +585,12 @@ pub fn decode_texture(
 // PNG LRU
 // ---------------------------------------------------------------------------
 
+/// `(asset id, size cap, array slice)`.
+type PngKey = (u64, u32, u32);
+
 struct PngCache {
-    map: DashMap<(u64, u32), Arc<Vec<u8>>>,
-    order: Mutex<Vec<(u64, u32)>>,
+    map: DashMap<PngKey, Arc<Vec<u8>>>,
+    order: Mutex<Vec<PngKey>>,
     bytes: AtomicUsize,
 }
 
@@ -477,7 +603,7 @@ fn png_cache() -> &'static PngCache {
     })
 }
 
-fn cache_get(key: (u64, u32)) -> Option<Arc<Vec<u8>>> {
+fn cache_get(key: PngKey) -> Option<Arc<Vec<u8>>> {
     let hit = png_cache().map.get(&key).map(|v| Arc::clone(&v))?;
     let mut order = png_cache().order.lock().unwrap();
     if let Some(pos) = order.iter().position(|k| *k == key) {
@@ -487,7 +613,7 @@ fn cache_get(key: (u64, u32)) -> Option<Arc<Vec<u8>>> {
     Some(hit)
 }
 
-fn cache_put(key: (u64, u32), data: Arc<Vec<u8>>) {
+fn cache_put(key: PngKey, data: Arc<Vec<u8>>) {
     let cache = png_cache();
     let len = data.len();
     if cache.map.insert(key, data).is_none() {
@@ -511,27 +637,183 @@ pub fn png_cache_stats() -> (usize, usize) {
     (c.map.len(), c.bytes.load(Ordering::Relaxed))
 }
 
-/// PNG bytes for one texture at a size cap, decoded at most once per (id, cap).
-///
-/// Never fails: a texture that cannot be found or decoded yields an **empty**
-/// buffer, which the viewport reads as "keep the fallback colour for this
-/// slot". One unsupported format must not abort a zone's upload loop.
+/// Drop every decoded PNG. Only a harness measuring a cold decode wants this;
+/// the served path never calls it.
+pub fn png_cache_clear() {
+    let c = png_cache();
+    let mut order = c.order.lock().unwrap();
+    order.clear();
+    c.map.clear();
+    c.bytes.store(0, Ordering::Relaxed);
+}
+
+/// PNG bytes for slice 0 of one texture at a size cap.
 pub fn texture_png_bytes(index: &LevelIndex, id: u64, max_size: u32) -> Arc<Vec<u8>> {
+    texture_png_bytes_slice(index, id, 0, max_size)
+}
+
+/// PNG bytes for one **array slice** of a texture at a size cap, decoded at
+/// most once per `(id, cap, slice)`.
+///
+/// Never fails: a texture that cannot be found or decoded, or a slice the
+/// texture does not have, yields an **empty** buffer, which the viewport reads
+/// as "keep the fallback for this slot". One unsupported format, or one colour
+/// map that turns out to be flat, must not abort a zone's upload loop.
+pub fn texture_png_bytes_slice(
+    index: &LevelIndex,
+    id: u64,
+    slice: u32,
+    max_size: u32,
+) -> Arc<Vec<u8>> {
     let cap = max_size.clamp(MIN_CAP, MAX_CAP);
-    let key = (id, cap);
+    let key = (id, cap, slice);
     if let Some(hit) = cache_get(key) {
         return hit;
     }
-    let png = match decode_texture(index, id, cap) {
+    let png = match decode_texture_slice(index, id, slice, cap) {
         Ok((bytes, _)) => bytes,
         Err(e) => {
-            debug!("texture {id:016X} @{cap}: {e}");
+            debug!("texture {id:016X} slice {slice} @{cap}: {e}");
             Vec::new()
         }
     };
     let arc = Arc::new(png);
     cache_put(key, Arc::clone(&arc));
     arc
+}
+
+/// PNG bytes for **several** slices of one texture, from a single archive read.
+///
+/// [`texture_png_bytes_slice`] narrows its read to "everything up to the end of
+/// the slice I want", so slice 3 re-reads slices 0-2 on the way past. Asking
+/// for four slices one at a time therefore reads the prefix four times over:
+/// measured on the 23 four-slice colour layers of Nefarious City
+/// `tile_e18_art` at a 512 cap, 4.26 + 9.94 + 15.62 + 21.30 = **51.1 MB** of
+/// asset body for 21.3 MB of distinct bytes. This reads once and decodes each
+/// requested slice out of that one buffer.
+///
+/// Results come back in the order asked for, and every one is also put in the
+/// same LRU [`texture_png_bytes_slice`] reads, so a later single-slice request
+/// for any of them is a cache hit. A slice the texture does not have, or that
+/// will not decode, comes back empty — same contract as the single call.
+pub fn texture_png_bytes_multi(
+    index: &LevelIndex,
+    id: u64,
+    slices: &[u32],
+    max_size: u32,
+) -> Vec<Arc<Vec<u8>>> {
+    let cap = max_size.clamp(MIN_CAP, MAX_CAP);
+    let empty = || Arc::new(Vec::new());
+    if slices.is_empty() {
+        return Vec::new();
+    }
+
+    // Anything already decoded costs nothing; only miss on the rest.
+    let cached: Vec<Option<Arc<Vec<u8>>>> =
+        slices.iter().map(|&s| cache_get((id, cap, s))).collect();
+    if cached.iter().all(Option::is_some) {
+        return cached.into_iter().map(Option::unwrap).collect();
+    }
+
+    let Some(info) = texture_info(index, id) else {
+        return slices.iter().map(|_| empty()).collect();
+    };
+    let count = info.slices().max(1);
+    let level = pick_mip(&info, cap);
+    let Some((_, mip_size)) = mip_span(&info, level) else {
+        return slices.iter().map(|_| empty()).collect();
+    };
+
+    // One read, sized by the furthest slice actually wanted.
+    let furthest = slices.iter().copied().filter(|&s| s < count).max();
+    let Some(furthest) = furthest else {
+        return slices.iter().map(|_| empty()).collect();
+    };
+    let Some((last_off, _)) = slice_mip_span(&info, furthest, level) else {
+        return slices.iter().map(|_| empty()).collect();
+    };
+    let body = match read_asset_prefix(index, id, (info.pixel_offset + last_off + mip_size) as u32) {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("texture {id:016X} multi-slice @{cap}: {e}");
+            return slices.iter().map(|_| empty()).collect();
+        }
+    };
+
+    let w = (info.sd_w >> level).max(1) as usize;
+    let h = (info.sd_h >> level).max(1) as usize;
+    slices
+        .iter()
+        .zip(cached)
+        .map(|(&slice, hit)| {
+            if let Some(h) = hit {
+                return h;
+            }
+            let png = decode_one(&info, &body, slice, count, level, w, h, mip_size)
+                .unwrap_or_else(|e| {
+                    debug!("texture {id:016X} slice {slice} @{cap}: {e}");
+                    Vec::new()
+                });
+            let arc = Arc::new(png);
+            cache_put((id, cap, slice), Arc::clone(&arc));
+            arc
+        })
+        .collect()
+}
+
+/// The pixels-to-PNG half of [`decode_texture_slice`], against a body already
+/// in hand. Kept separate so [`texture_png_bytes_multi`] can reuse one read.
+#[allow(clippy::too_many_arguments)]
+fn decode_one(
+    info: &TexInfo,
+    body: &[u8],
+    slice: u32,
+    count: u32,
+    level: u32,
+    w: usize,
+    h: usize,
+    mip_size: usize,
+) -> Result<Vec<u8>> {
+    if slice >= count {
+        return Err(ToolkitError::Parse(format!(
+            "slice {slice} requested, texture has {count}"
+        )));
+    }
+    let (off, _) = slice_mip_span(info, slice, level)
+        .ok_or_else(|| ToolkitError::Unsupported(format!("DXGI format {}", info.format)))?;
+    let start = info.pixel_offset + off;
+    let end = start + mip_size;
+    if end > body.len() {
+        return Err(ToolkitError::Parse(format!(
+            "texture body is {} bytes, needed {end}",
+            body.len()
+        )));
+    }
+    let mut rgba = match info.format {
+        FORMAT_R8G8_UNORM => decode_r8g8(&body[start..end], w, h),
+        _ => decode_to_rgba(
+            &body[start..end],
+            w,
+            h,
+            info.format as u32,
+            info.content_type,
+        )
+        .map_err(ToolkitError::Parse)?,
+    };
+    if info.content_type == CONTENT_NORMAL && info.format != FORMAT_BC5_UNORM {
+        rebuild_normal_z(&mut rgba);
+    }
+    let mut png = Vec::with_capacity(w * h);
+    PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(&rgba, w as u32, h as u32, ExtendedColorType::Rgba8)
+        .map_err(|e| ToolkitError::Parse(format!("PNG encode failed: {e}")))?;
+    Ok(png)
+}
+
+/// How many array slices a texture has, or 0 when its header will not parse.
+/// Header-only, so a caller can skip a request it knows will come back empty.
+pub fn texture_slices(index: &LevelIndex, id: u64) -> u32 {
+    texture_info(index, id).map(|i| i.slices()).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -547,6 +829,7 @@ mod tests {
             sd_w,
             sd_h,
             surfaces: 1,
+            format_flags: 0x0010,
             dimension: 1,
             content_type: 0,
             format,
@@ -580,6 +863,39 @@ mod tests {
         let (o2, s2) = mip_span(&i, 2).unwrap();
         assert_eq!(o2, 512 * 512 + 256 * 256);
         assert_eq!(s2, 128 * 128);
+    }
+
+    #[test]
+    fn the_slice_stride_is_one_whole_mip_chain() {
+        // BC7, 4 mips at 512: 512^2 + 256^2 + 128^2 + 64^2 bytes.
+        let mut i = info(512, 512, 4, 98);
+        let chain = 512 * 512 + 256 * 256 + 128 * 128 + 64 * 64;
+        assert_eq!(i.resident_chain_bytes(), Some(chain));
+        assert_eq!(i.slice_stride(), chain);
+        // A four-slice array is four chains, and that is what the header says.
+        i.surfaces = 4;
+        i.sd_len = (chain * 4) as u32;
+        assert_eq!(i.slices(), 4);
+        assert_eq!(i.slice_stride() * i.slices() as usize, i.sd_len as usize);
+    }
+
+    #[test]
+    fn slice_spans_are_slice_major() {
+        let mut i = info(512, 512, 4, 98);
+        i.surfaces = 4;
+        let stride = i.slice_stride();
+        // Slice 0 is the plain mip chain.
+        assert_eq!(slice_mip_span(&i, 0, 0), Some((0, 512 * 512)));
+        assert_eq!(slice_mip_span(&i, 0, 1), Some((512 * 512, 256 * 256)));
+        // Every later slice is the same chain shifted by one stride.
+        for s in 1..4u32 {
+            let (off, size) = slice_mip_span(&i, s, 1).unwrap();
+            assert_eq!(off, s as usize * stride + 512 * 512);
+            assert_eq!(size, 256 * 256);
+        }
+        // Slice 3, mip 0 must still end inside the blob.
+        let (off, size) = slice_mip_span(&i, 3, 0).unwrap();
+        assert!(off + size <= stride * 4);
     }
 
     #[test]

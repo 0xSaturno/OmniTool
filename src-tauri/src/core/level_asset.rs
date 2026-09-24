@@ -153,7 +153,7 @@
 //! ```text
 //!   +0x00  u16 rot[3]          three half-float Euler angles (radians)
 //!   +0x06  u16 offset[3]       half-float metres, relative to the cluster centre
-//!   +0x0C  u16 scale[3]        half-float per-axis scale
+//!   +0x0C  u16 scale[3]        half-float per-axis scale, signed
 //!   +0x12  u16 custom[3]
 //!   +0x18  u16 mat_override_index
 //!   +0x1A  u8  mat_override_count
@@ -166,11 +166,22 @@
 //!
 //! The flags byte is two things at once. Bits 5, 6 and 7 are the instance's
 //! own: visible, z-bias, long range. Bits 0 to 4 are the engine's standard
-//! matrix-property bits, which every transform carries: bits 0-1 hold the axis
-//! index of the median scale, bit 2 says the matrix is mirrored (negative
-//! determinant), bit 3 is unused and bit 4 says the scale is uniform. The
-//! shipped level bears that out — across all 87,778 instances the low five bits
-//! take the values `0b10111`, i.e. bit 3 is never set.
+//! matrix-property bits, which every transform carries. Across all 87,778
+//! instances the low five bits take the values `0b10111`, i.e. bit 3 is never
+//! set. Matching 29,281 instances back to the zone entries they stand in for
+//! (`world_probe` section 5) settles what the rest mean:
+//!
+//! * **bit 2 is the mirror**, and it is exact: it is set on 5,640 of the 29,281
+//!   matched instances and on exactly the 5,640 whose authored zone matrix has
+//!   a negative determinant — which are also exactly the 5,640 that store a
+//!   negative scale triple.
+//! * **bit 4 is uniform scale**: it agrees with the decoded triple on 29,160 of
+//!   29,281.
+//! * **bits 0-1 are an axis index** — they take the values 0, 1 and 2 and never
+//!   3 — but what they rank is *not* established. The obvious reading, the
+//!   median scale axis, holds on only 5,481 of the 11,219 non-uniformly scaled
+//!   pairs, which is better than the 1-in-3 of chance and far from a rule.
+//!   Nothing needs them to draw an instance, so they stay a GUESS.
 //!
 //! The rotation / offset / scale triples have **two** encodings. Shipped data
 //! is the half-float form above. The first time the engine loads a container it
@@ -181,10 +192,45 @@
 //! half-float form; it still honours the flag in case a future build ships
 //! pre-optimised data.
 //!
-//! An instance's world position is `cluster.centre + offset`. Because the data
-//! lives in the *level*, moving or deleting a hibernating model inside its zone
-//! does not move the far-LOD copy: the editor would leave a ghost at distance
-//! until the level is rebuilt too.
+//! An instance's world position is `cluster.centre + offset`.
+//!
+//! ## The whole transform, measured
+//!
+//! Every hibernate record stands in for one model instance placed in a zone,
+//! and the record says which: **`parent_id` is the 64-bit zone instance uid
+//! folded to 32 bits by exclusive-or of its two halves**, which reproduces on
+//! 29,281 of 29,281 matched instances with no collision inside a zone. That
+//! fold is the only link back from a far-LOD record to the instance it copies,
+//! so [`fold_instance_uid`] is what an editor needs to find the ghost it is
+//! about to leave behind. Matching through it, and independently on (model
+//! asset, metre), agree on 99.8% of a 29,306-instance sample and let the rest of
+//! the encoding be read off the zone's own authored matrix:
+//!
+//! * **position**: `cluster.centre + offset` lands on the zone entry's own
+//!   translation to a median of 0.06 m, 0.50 m at the 99th percentile, 3.4 m at
+//!   worst — the spread of a half float over a 54 m cluster.
+//! * **rotation**: the three angles are Euler angles in **X, then Y, then Z**,
+//!   composed for row vectors: `basis = Rx(rx) · Ry(ry) · Rz(rz)`. Median
+//!   per-element error 0.0003 and 97.5% of pairs inside 0.02, against 0.10 or
+//!   worse for all five other orders. (The same matrix written for column
+//!   vectors is `Rz(-rz) · Ry(-ry) · Rx(-rx)`; the data cannot tell those two
+//!   apart, only the convention the caller uses can.)
+//! * **scale** multiplies row *r* of the basis by `scale[r]`, and its magnitude
+//!   matches the authored matrix's row lengths on 29,279 of 29,281 pairs.
+//! * **mirroring** needs no separate step: a mirrored instance stores all three
+//!   scale axes **negative**, which reflects the basis through the origin.
+//!   Exactly the 5,640 pairs whose authored matrix has a negative determinant do
+//!   that, `Rᵀ · B` rounds to `-I` on all 5,640 of them, and bit 2 is set on
+//!   exactly the same 5,640 — the bit reports the sign rather than carrying it.
+//!   A reader that takes the scale triple as absolute draws those models inside
+//!   out.
+//!
+//! [`HibernateObject::matrix`] assembles all four into the same row-major 4x4 a
+//! zone scene object carries.
+//!
+//! Because the data lives in the *level*, moving or deleting a hibernating model
+//! inside its zone does not move the far-LOD copy: the editor would leave a
+//! ghost at distance until the level is rebuilt too.
 //!
 //! # What the shipped file measures
 //!
@@ -217,19 +263,31 @@
 //! * All 860 link names reproduce their stored `name_hash` under the engine
 //!   CRC-32, and all 860 link actor uids carry the engine's "placed in a zone"
 //!   bit 63.
+//! * Hibernation is not an open-world-only mechanism: the 613 hibernating zones
+//!   are owned by regions of every loadable type — 368 by open units, 112 by
+//!   instance units, 94 by overlays, 72 by open containers.
 //! * 613 zones carry hibernate data: 87,778 model instances in 7,805 clusters,
 //!   no visual-effect instances at all, over 353 distinct models. Every
 //!   container is in the half-float form. 15.4% of scale axes decode to exactly
 //!   1.0, which only happens if the half-float reading is right.
+//! * A container holds at most 2,048 instances — eleven of the busiest zones sit
+//!   exactly on that number — so hibernation is a budgeted subset, not a copy of
+//!   the zone: over the 48 zones `world_probe` matches, the 29,306 hibernate
+//!   records stand in for 11.1% of the 263,208 models those zones place.
+//! * Clusters: mean radius 54 m, mean 11.2 instances, 1 to 40 per container.
+//!   `visible_count` equals `object_count` on all 7,805, and `draw_distance` is
+//!   only ever 0 (3,148 clusters) or 16,384 (4,657).
 //!
 //! The game-data table is `DDLStructInstBuilt`, 16 bytes a row: `{u32 name
 //! string offset, u32 name hash, u32 payload offset, u32 payload size}`. The
 //! offset is relative to the DAT1 block, which is the file base the engine
 //! passes; all 312 rows land inside `Level Region Game Struct Data`, back to
-//! back. Rows are read into [`LevelGameData`] and sliced by a region's
-//! `game_data_start/count` or a link's; the payloads stay opaque, because
-//! reading a field out of one needs that struct's DDL layout and the shipped
-//! game does not carry it.
+//! back, and all 312 reproduce `crc32(struct name) == name_hash`. Rows are read
+//! into [`LevelGameData`] and sliced by a region's `game_data_start/count` or a
+//! link's. The payloads are ordinary DDL objects and
+//! [`crate::core::region_data`] decodes them — including the field *names*,
+//! which the level carries in its own string pool, so no external schema is
+//! needed.
 //!
 //! Seven struct names appear across the 312 blocks:
 //! `PlanetRegionData` (24, on instance containers/units and open containers),
@@ -238,20 +296,43 @@
 //! `ClankPuzzleData` (1) and `PerfSpecRegionData` (1). All 860 named links
 //! declare zero game-data rows.
 //!
-//! # There is no per-region placement transform
+//! # There is no per-region placement transform, and it is provable
 //!
 //! Worth stating plainly, because the level editor has to decide whether two
-//! regions may share a viewport. `LevelRegionBuilt` is 36 bytes and every one
-//! is a known field, so a transform cannot hide there; the only spatial record
+//! regions may share a viewport.
+//!
+//! The direct proof is hibernation. A hibernate record is what the renderer
+//! draws while its zone is *unloaded*, so its position is a world position by
+//! definition — and it lands on the zone entry's own authored translation to a
+//! median of 0.06 m over 29,281 matched instances, in instance-region zones
+//! (`i29_nefcity_art_opening_vista_cine`, `Cordelion_B_Art_Exterior_Surface`,
+//! `NeoNefarious_Alley_Extension`) exactly as in open-world tiles. A zone's
+//! coordinates *are* world coordinates; the transform between them is identity.
+//!
+//! Everything else agrees. `LevelRegionBuilt` is 36 bytes and every one is a
+//! known field, so a transform cannot hide there. The only spatial record
 //! attached to a region is `Level Region Lod Built`, which exists solely for
 //! `kOpenUnit` (918 sets for 918 such regions) and is a streaming reference
-//! point, not a placement — an open unit's zones are already in world space.
-//! None of the seven game-data structs is a transform, and a scan of all 312
-//! payloads for a float triple in a plausible world envelope turns up 46
-//! candidates, every one inside an overlay's `CustomOverlayRegionData` or a
-//! `DimensionRegionData`, none on an instance region. So a region's zones carry
-//! whatever coordinates they were authored in and the level does not move them.
-//! `src/bin/instance_placement.rs` re-measures all of this on the shipped file.
+//! point, not a placement: it lands a median 49 m from its own unit's content
+//! centre, inside one step of its 128 m lattice. None of the seven game-data
+//! structs is a transform; the one spatial thing they do carry —
+//! `PlanetRegionData.Maps[].MapMin/MapMax`, the world rectangle a pause-menu map
+//! covers — is in the same coordinates as the region's own zones, and contains
+//! the region's content centre for 6 of the 10 maps that have one (the misses
+//! are crops of part of a planet, off by 150 to 980 m, not by a placement).
+//!
+//! What that means for the editor is *not* that instance regions are separate
+//! spaces. They share the world with everything else; two of them overlap
+//! because they are alternate versions of one place — `NefariousCity`,
+//! `NefariousCity_ActOne`, `NefariousCity_Slums`, `NefariousCity_DemoEnd` and
+//! `NefariousCity_Marketing` all sit on the same few hundred metres — and the
+//! game never loads two at once. The open-area tile grid
+//! `i29/openarea/nefarious_city` and the instance hub
+//! `i29/instance/nefariouscity` are 127 m apart at the content centre and their
+//! footprints overlap completely: the same city, authored twice. So the viewer
+//! may draw any one region in world space with no transform, but it must treat
+//! overlapping instance regions as mutually exclusive rather than additive.
+//! `src/bin/world_probe.rs` re-measures all of this on the shipped file.
 
 use std::collections::HashMap;
 
@@ -464,8 +545,11 @@ pub struct HibernateObject {
     pub position: [f32; 3],
     /// Offset from the cluster centre, in metres.
     pub offset: [f32; 3],
+    /// Per-axis scale, **signed**: a mirrored instance stores all three axes
+    /// negative, and that is the whole of its reflection.
     pub scale: [f32; 3],
-    /// Three Euler angles in radians, in the order the engine composes them.
+    /// Euler angles in radians, applied X then Y then Z — for row vectors,
+    /// `Rx · Ry · Rz`. See [`Self::matrix`].
     pub rotation: [f32; 3],
     pub mat_override_index: u16,
     pub mat_override_count: u8,
@@ -494,7 +578,11 @@ impl HibernateObject {
     }
 
     /// Bit 2 of the transform bits: the instance matrix has a negative
-    /// determinant, so the model is mirrored.
+    /// determinant, so the model is mirrored. The reflection itself is already
+    /// in the record — such an instance stores all three scale axes negative —
+    /// so this is a report, not an instruction: [`Self::matrix`] does not act on
+    /// it. Set on exactly the 5,640 of 29,281 matched instances whose authored
+    /// zone matrix has a negative determinant.
     pub fn mirrored(&self) -> bool {
         self.flags & (1 << 2) != 0
     }
@@ -516,6 +604,70 @@ impl HibernateObject {
         };
         ([c(24), c(16), c(8)], (self.rgba & 0xFF) as f32 / 255.0)
     }
+
+    /// The instance's transform as a row-major 4x4, the same layout and the same
+    /// world space a [`crate::core::zone::SceneObject`] matrix uses, so a viewer
+    /// can hand the two to one renderer.
+    ///
+    /// Rotation is `Rx · Ry · Rz` for row vectors, with row *r* scaled by
+    /// `scale[r]` — and because a mirrored instance stores a negative scale
+    /// triple, that single multiply carries the reflection too. Measured against
+    /// 29,281 authored zone matrices — see the module docs.
+    pub fn matrix(&self) -> [f32; 16] {
+        // Built from the three axis rotations rather than a hand-expanded
+        // product, so the composition order is the one thing to get right.
+        let axis = |a: usize, angle: f32| -> [[f32; 3]; 3] {
+            let (s, c) = angle.sin_cos();
+            match a {
+                0 => [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]],
+                1 => [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]],
+                _ => [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]],
+            }
+        };
+        let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| -> [[f32; 3]; 3] {
+            let mut o = [[0.0f32; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    o[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+                }
+            }
+            o
+        };
+        let basis = mul(
+            mul(axis(0, self.rotation[0]), axis(1, self.rotation[1])),
+            axis(2, self.rotation[2]),
+        );
+        // The mirror needs no special case: a mirrored instance stores a
+        // negative scale triple, and scaling the rows by it is the reflection.
+        // `mirrored()` only reports what that sign already says.
+        let mut m = [0.0f32; 16];
+        for r in 0..3 {
+            for c in 0..3 {
+                m[r * 4 + c] = basis[r][c] * self.scale[r];
+            }
+        }
+        m[12] = self.position[0];
+        m[13] = self.position[1];
+        m[14] = self.position[2];
+        m[15] = 1.0;
+        m
+    }
+
+    /// True when this record stands in for the zone instance with uid `uid`.
+    pub fn stands_in_for(&self, uid: u64) -> bool {
+        fold_instance_uid(uid) == self.parent_id
+    }
+}
+
+/// The 32-bit form of a zone instance uid that a hibernate record's `parent_id`
+/// holds: the low word exclusive-ored with the high word.
+///
+/// Verified on 29,281 matched instances across 48 shipped zones, with no
+/// collision inside any one zone. It is the only link from a far-LOD record back
+/// to the instance it copies, so an editor that moves or deletes a model uses
+/// this to find the ghost it would otherwise leave at distance.
+pub fn fold_instance_uid(uid: u64) -> u32 {
+    ((uid & 0xFFFF_FFFF) ^ (uid >> 32)) as u32
 }
 
 /// Everything one zone contributes to the level's hibernate data.
@@ -751,6 +903,50 @@ impl LevelAsset {
             out[i] = ok.then_some(depth);
         }
         out
+    }
+
+    /// The hibernate container of a zone row, if that zone has one. A zone owns
+    /// at most one — 613 containers over 613 distinct zone rows in the shipped
+    /// level.
+    pub fn hibernate_for_zone_index(&self, zone_index: i32) -> Option<&ZoneHibernate> {
+        self.hibernate_zones.iter().find(|h| h.zone_index == zone_index)
+    }
+
+    /// The hibernate container of a zone asset, matched on the id the container
+    /// itself records (which agrees with the descriptor's zone row on all 613).
+    pub fn hibernate_for_zone_asset(&self, asset_id: u64) -> Option<&ZoneHibernate> {
+        self.hibernate_zones
+            .iter()
+            .find(|h| h.zone_asset_id == asset_id)
+    }
+
+    /// The model path a hibernate instance draws, from
+    /// `Level Hibernate Model Names`. Its asset id is the CRC-64 of this path.
+    pub fn hibernate_model_name(&self, obj: &HibernateObject) -> &str {
+        if obj.asset_index < 0 {
+            return "";
+        }
+        self.hibernate_model_names
+            .get(obj.asset_index as usize)
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    }
+
+    /// The hibernate record standing in for a zone instance, looked up by that
+    /// instance's uid. `zone_index` narrows the search to the owning zone's own
+    /// container, which is where a far-LOD copy of it can be.
+    pub fn hibernate_object_for_uid(
+        &self,
+        zone_index: i32,
+        uid: u64,
+    ) -> Option<(&ZoneHibernate, &HibernateObject)> {
+        let h = self.hibernate_for_zone_index(zone_index)?;
+        let fold = fold_instance_uid(uid);
+        h.model_objects
+            .iter()
+            .chain(h.effect_objects.iter())
+            .find(|o| o.parent_id == fold)
+            .map(|o| (h, o))
     }
 
     /// Total hibernated instances across every zone, models and effects.

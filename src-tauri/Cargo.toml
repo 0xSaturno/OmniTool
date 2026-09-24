@@ -48,8 +48,16 @@ name = "name_source_check"
 path = "src/bin/name_source_check.rs"
 
 [[bin]]
+name = "light_probe"
+path = "src/bin/light_probe.rs"
+
+[[bin]]
 name = "zone_bounds"
 path = "src/bin/zone_bounds.rs"
+
+[[bin]]
+name = "entity_probe"
+path = "src/bin/entity_probe.rs"
 
 [[bin]]
 name = "missing_probe"
@@ -70,6 +78,10 @@ path = "src/bin/shader_dump.rs"
 [[bin]]
 name = "instance_placement"
 path = "src/bin/instance_placement.rs"
+
+[[bin]]
+name = "world_probe"
+path = "src/bin/world_probe.rs"
 
 [[bin]]
 name = "dag_check"
@@ -182,3 +194,20 @@ lto          = true
 codegen-units = 1
 panic        = "abort"
 strip        = true
+
+[[bin]]
+name = "prius_probe"
+path = "src/bin/prius_probe.rs"
+
+[[bin]]
+name = "script_probe"
+path = "src/bin/script_probe.rs"
+
+[[bin]]
+name = "integration_check"
+path = "src/bin/integration_check.rs"
+
+[[bin]]
+name = "gap_probe"
+path = "src/bin/gap_probe.rs"
+

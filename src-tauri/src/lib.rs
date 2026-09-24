@@ -1,8 +1,14 @@
+pub mod command_guard;
 pub mod core;
 pub mod tools;
 mod commands;
 pub mod commands_model_inspector;
 pub mod commands_level_editor;
+pub mod commands_level_entities;
+pub mod commands_level_lighting;
+pub mod commands_level_prius;
+pub mod commands_level_script;
+pub mod commands_level_world;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -91,6 +97,32 @@ pub fn run() {
             commands_level_editor::level_texture,
             commands_level_editor::level_save_zone,
             commands_level_editor::level_zone_stats,
+            // --- Level Editor: non-model zone entities (volumes, curves, VFX, nav) ---
+            commands_level_entities::level_zone_entities,
+            commands_level_entities::level_zone_paths,
+            commands_level_entities::level_nav_info,
+            commands_level_entities::level_nav_mesh,
+            commands_level_entities::level_nav_tiles,
+            // --- Level Editor: lighting ---
+            commands_level_lighting::level_zone_lighting,
+            commands_level_lighting::level_atmosphere_lighting,
+            commands_level_lighting::level_lighting_conditions,
+            // --- Level Editor: prius property sheets ---
+            commands_level_prius::prius_schema_status,
+            commands_level_prius::prius_load_schema,
+            commands_level_prius::prius_zone_summary,
+            commands_level_prius::prius_actor_sheet,
+            commands_level_prius::prius_script_sheet,
+            commands_level_prius::prius_plan_edit,
+            // --- Level Editor: script graph ---
+            commands_level_script::level_zone_script_graph,
+            commands_level_script::level_zone_script_dump,
+            commands_level_script::level_zone_script_node,
+            // --- Level Editor: world / region / hibernate ---
+            commands_level_world::world_open_level,
+            commands_level_world::world_region_data,
+            commands_level_world::world_zone_hibernate,
+            commands_level_world::world_hibernate_ghost,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

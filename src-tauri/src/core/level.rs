@@ -26,7 +26,8 @@ use crate::core::toc::{ArchiveCache, Toc, TocAsset};
 use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::built::TAG_BUILT;
 use crate::tools::model_converter::sections::geo::{
-    IndexesSection, VertexesSection, DEFAULT_UV_SCALE, TAG_INDEXES, TAG_VERTEXES,
+    IndexesSection, Uv1Section, VertexesSection, DEFAULT_UV_SCALE, TAG_INDEXES, TAG_UV1,
+    TAG_VERTEXES,
 };
 use crate::tools::model_converter::sections::look::{LookSection, TAG_LOOK};
 use crate::tools::model_converter::sections::meshes::{MeshDefinition, TAG_MESHES};
@@ -894,7 +895,17 @@ impl ModelBuilt {
 
 /// `"RCMS"` — magic of the packed mesh buffer handed to the viewport.
 pub const MESH_MAGIC: u32 = 0x534D_4352;
+
+/// Buffer version. **Deliberately still 1** after UV1 was added — see
+/// [`MeshOut::pack`] for why, and for what a reader has to do instead.
 pub const MESH_VERSION: u32 = 1;
+
+/// Bits of the RCMS header word at `+0x14`, which was `reserved = 0` before
+/// UV1 existed.
+pub mod mesh_flag {
+    /// A `f32 uv1[2 * vertexCount]` block follows the submesh table.
+    pub const HAS_UV1: u32 = 1 << 0;
+}
 
 #[derive(Debug, Default)]
 pub struct SubmeshOut {
@@ -909,6 +920,9 @@ pub struct MeshOut {
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
     pub uvs: Vec<f32>,
+    /// The second UV set, `2 * vertex_count` long, or **empty** when the model
+    /// carries none. See [`decode_model_mesh`].
+    pub uv1: Vec<f32>,
     pub indices: Vec<u32>,
     pub submeshes: Vec<SubmeshOut>,
     pub min: [f32; 3],
@@ -920,19 +934,46 @@ impl MeshOut {
         self.positions.len() / 3
     }
 
+    /// True when [`Self::pack`] will append a UV1 block.
+    pub fn has_uv1(&self) -> bool {
+        !self.uv1.is_empty() && self.uv1.len() == self.vertex_count() * 2
+    }
+
     /// The little-endian buffer documented in the IPC contract:
-    /// header, bounds, positions, normals, uvs, indices, submeshes.
+    /// header, bounds, positions, normals, uvs, indices, submeshes, **uv1**.
+    ///
+    /// # Why the version is still 1
+    ///
+    /// UV1 is appended **after** the submesh table, and announced by bit 0 of
+    /// the header word at `+0x14` that used to be a hard-coded `reserved = 0`.
+    /// Nothing before the new block moves, and the block is only present when
+    /// the bit is set, so every offset a version-1 reader computes is still
+    /// correct and it simply ignores trailing bytes — which the shipped
+    /// `decodeRcms` already does (it tests `byteLength < needed`, not `!=`).
+    ///
+    /// Bumping the version instead would have been the honest-looking choice
+    /// and the wrong one: `viewport/rcms.ts` rejects any buffer whose version
+    /// is not exactly 1, so the moment this backend started emitting version 2
+    /// every model in the viewport would decode to `null` until the frontend
+    /// landed a matching change. A flag bit in a field that was always zero
+    /// costs nothing and lets the two sides land in either order.
     pub fn pack(&self) -> Vec<u8> {
         let vc = self.vertex_count();
+        let uv1 = self.has_uv1();
         let mut out = Vec::with_capacity(
-            24 + 24 + vc * 32 + self.indices.len() * 4 + self.submeshes.len() * 16,
+            24 + 24
+                + vc * 32
+                + if uv1 { vc * 8 } else { 0 }
+                + self.indices.len() * 4
+                + self.submeshes.len() * 16,
         );
         out.extend_from_slice(&MESH_MAGIC.to_le_bytes());
         out.extend_from_slice(&MESH_VERSION.to_le_bytes());
         out.extend_from_slice(&(vc as u32).to_le_bytes());
         out.extend_from_slice(&(self.indices.len() as u32).to_le_bytes());
         out.extend_from_slice(&(self.submeshes.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        let flags = if uv1 { mesh_flag::HAS_UV1 } else { 0 };
+        out.extend_from_slice(&flags.to_le_bytes());
         for v in self.min.iter().chain(self.max.iter()) {
             out.extend_from_slice(&v.to_le_bytes());
         }
@@ -953,6 +994,11 @@ impl MeshOut {
             out.extend_from_slice(&s.index_count.to_le_bytes());
             out.extend_from_slice(&s.material_index.to_le_bytes());
             out.extend_from_slice(&s.flags.to_le_bytes());
+        }
+        if uv1 {
+            for v in &self.uv1 {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
         }
         out
     }
@@ -1024,6 +1070,28 @@ pub fn parse_model_asset(bytes: &[u8]) -> Result<ModelFile> {
 ///
 /// `tools::model_converter::gltf_writer` still reverses, deliberately: it is a
 /// shipped export path with its own users and is out of scope here.
+///
+/// # The second UV set
+///
+/// UV0 is interleaved in `Model Std Vert`; UV1 is a section of its own,
+/// `Model UV1 Vert` (`0x6B855EED`), holding `i16` pairs indexed by **absolute**
+/// vertex index and quantised at `(1 << n) / 16384` where `n` is the **high**
+/// nibble of `Built +0x30`.
+///
+/// That the high nibble is UV1's and not a spare is stated by the engine
+/// scale of UV0 in the low nibble and UV1 in the high one;
+/// for UV1 and divides `1 << (n & 0xf)` by the same fixed-point base; and the
+/// Re-measured here: over the 887 distinct models Nefarious City places, the
+/// two nibbles differ on 291 of the 738 that carry UV1, so the sets genuinely
+/// do not share a scale, and the decoded values stay finite with 21,117 of
+/// 10,261,052 texels outside +/-64 (0.21%, the largest `2270.8` on
+/// `nnc_arch_bldg_d_01`, whose UV1 nibble is 11).
+///
+/// It is emitted into [`MeshOut::uv1`] whenever the section exists, because the
+/// shipped `gbl_rgb_blend` pixel shader samples its four colour layers on
+/// `TEXCOORD1` while the splat mask and the shared normal sample `TEXCOORD0`;
+/// with one UV set the layers can only be right relative to each other, never
+/// relative to the mask.
 pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
     let dat1 = &model.dat1;
 
@@ -1036,8 +1104,26 @@ pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
         .as_ref()
         .map(|b| b.uv_scales().0)
         .unwrap_or(DEFAULT_UV_SCALE);
+    let uv1_scale = built
+        .as_ref()
+        .map(|b| b.uv_scales().1)
+        .unwrap_or(DEFAULT_UV_SCALE);
     // Zero unless the model sets `CenteredVerts`; see [`ModelBuilt::mesh_centre`].
     let offset = built.as_ref().map(ModelBuilt::vertex_offset).unwrap_or_default();
+
+    // The second UV set. It lives in its own section, as `i16` pairs indexed by
+    // ABSOLUTE vertex index — not per subset like the positions — and at its
+    // own quantum, the high nibble of `Built +0x30`. The section is read rather
+    // than the flag tested: measured over the 887 distinct models of Nefarious
+    // City, flag bit 17 (`VertHasUv1`) and the presence of `Model UV1 Vert`
+    // agree on all 886 that parse (738 with both, 148 with neither, 0 with one
+    // and not the other), so the flag is a faithful summary — but the section
+    // is what actually has to be indexed, and reading it directly cannot
+    // disagree with itself. The rows cover every vertex: 10,449,136 rows for
+    // the 10,448,188 vertices those models declare, 0 models short.
+    let uv1 = dat1
+        .get_section_data(TAG_UV1)
+        .and_then(|d| Uv1Section::parse(d).ok());
 
     let vert_data = dat1
         .get_section_data(TAG_VERTEXES)
@@ -1091,11 +1177,22 @@ pub fn decode_model_mesh(model: &ModelFile, lod: usize) -> Result<MeshOut> {
         }
 
         let vertex_base = out.vertex_count() as u32;
-        for v in &vertexes[vstart..vstart + vcount] {
+        for (i, v) in vertexes[vstart..vstart + vcount].iter().enumerate() {
             let p = [v.x + offset[0], v.y + offset[1], v.z + offset[2]];
             out.positions.extend_from_slice(&p);
             out.normals.extend_from_slice(&[v.nx, v.ny, v.nz]);
             out.uvs.extend_from_slice(&[v.u, v.v]);
+            if let Some(u1) = uv1.as_ref() {
+                // Absolute index, and 0,0 past the end rather than a panic: a
+                // short section must cost the model its second UV set, not its
+                // geometry.
+                let (u, v) = u1
+                    .uvs
+                    .get(vstart + i)
+                    .map(|&(u, v)| (u as f32 * uv1_scale, v as f32 * uv1_scale))
+                    .unwrap_or((0.0, 0.0));
+                out.uv1.extend_from_slice(&[u, v]);
+            }
             for (k, c) in p.iter().enumerate() {
                 if *c < out.min[k] {
                     out.min[k] = *c;
@@ -1329,6 +1426,13 @@ fn accumulate_normals(out: &mut MeshOut) {
 
 /// Roughly the geometry of a whole planet's distinct models; well under what a
 /// desktop can hold, and evicting from the front keeps a pan across tiles warm.
+///
+/// It is left at 192 MB now that [`MeshOut::pack`] emits UV1. Measured over the
+/// 887 distinct models Nefarious City places, LOD 0 of every one of them packs
+/// to 307.93 MB with UV1 against 266.88 MB without — +15.4%, or +41 MB for a
+/// whole planet — and 192 MB never held all of that to begin with. The budget
+/// is a working set, not a capacity target, and 15% fewer models resident is a
+/// cheaper trade than a fifth of the tiles rendering with the wrong UV set.
 const MESH_CACHE_BUDGET: usize = 192 * 1024 * 1024;
 
 struct MeshCache {
@@ -1474,5 +1578,71 @@ mod tests {
         assert_eq!(b.len(), 24 + 24);
         assert_eq!(u32::from_le_bytes(b[0..4].try_into().unwrap()), MESH_MAGIC);
         assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), 0);
+        // The word that used to be `reserved` is the flags word now, and an
+        // empty mesh has no UV1.
+        assert_eq!(u32::from_le_bytes(b[20..24].try_into().unwrap()), 0);
+    }
+
+    /// A two-vertex mesh, one triangle, one submesh — enough to check offsets.
+    fn tiny(uv1: bool) -> MeshOut {
+        MeshOut {
+            positions: vec![0.0; 3 * 3],
+            normals: vec![0.0; 3 * 3],
+            uvs: vec![0.25; 3 * 2],
+            uv1: if uv1 { vec![0.75; 3 * 2] } else { Vec::new() },
+            indices: vec![0, 1, 2],
+            submeshes: vec![SubmeshOut {
+                first_index: 0,
+                index_count: 3,
+                material_index: 7,
+                flags: 0,
+            }],
+            min: [0.0; 3],
+            max: [1.0; 3],
+        }
+    }
+
+    #[test]
+    fn uv1_is_announced_by_the_header_flag() {
+        let without = tiny(false).pack();
+        let with = tiny(true).pack();
+        assert_eq!(
+            u32::from_le_bytes(without[20..24].try_into().unwrap()),
+            0,
+            "a mesh with no UV1 must leave the flags word zero"
+        );
+        assert_eq!(
+            u32::from_le_bytes(with[20..24].try_into().unwrap()),
+            mesh_flag::HAS_UV1
+        );
+    }
+
+    #[test]
+    fn uv1_is_appended_so_every_older_offset_survives() {
+        let without = tiny(false).pack();
+        let with = tiny(true).pack();
+        // Byte-identical up to the end of the version-1 buffer except for the
+        // flags word at +0x14, which a version-1 reader never reads because it
+        // was documented as `reserved`. So an old reader sees exactly what it
+        // saw before, and every offset it computes is unchanged.
+        assert_eq!(&with[..20], &without[..20]);
+        assert_eq!(&with[24..without.len()], &without[24..]);
+        assert_eq!(with.len(), without.len() + 3 * 2 * 4);
+        // And the block really is the UVs we put in.
+        let tail: Vec<f32> = with[without.len()..]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(tail, vec![0.75; 6]);
+    }
+
+    #[test]
+    fn a_mis_sized_uv1_block_is_dropped_rather_than_emitted() {
+        let mut m = tiny(true);
+        m.uv1.pop(); // one float short of 2 per vertex
+        assert!(!m.has_uv1());
+        let b = m.pack();
+        assert_eq!(u32::from_le_bytes(b[20..24].try_into().unwrap()), 0);
+        assert_eq!(b.len(), tiny(false).pack().len());
     }
 }
