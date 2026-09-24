@@ -7,30 +7,52 @@
 import { invoke } from "@tauri-apps/api/core";
 import { parseZoneGeometryKey } from "./types";
 import type {
+  ActorSheetsDto,
+  AtmosphereLightingDto,
   LevelRegion,
   LevelZoneStats,
   MaterialLoader,
   MeshLoader,
   ModelMaterialsDto,
   ModelMaterialSlotDto,
+  PriusEditPlan,
+  PriusSchemaStatus,
+  PriusSheetDto,
+  ScriptGraphDto,
+  ScriptNodeDetailDto,
+  StagedPriusEdit,
   TextureLoader,
   TextureSource,
+  TuidTarget,
   ZoneEdit,
   ZoneEntry,
+  ZoneLightingDto,
+  ZonePriusSummary,
   ZoneSaveResult,
   ZoneScene,
 } from "./types";
 
 export type {
+  ActorSheetsDto,
+  AtmosphereLightingDto,
   LevelRegion,
   LevelZoneStats,
   MaterialLoader,
   MeshLoader,
   ModelMaterialsDto,
+  PriusEditPlan,
+  PriusSchemaStatus,
+  PriusSheetDto,
+  ScriptGraphDto,
+  ScriptNodeDetailDto,
+  StagedPriusEdit,
   TextureLoader,
   TextureSource,
+  TuidTarget,
   ZoneEdit,
   ZoneEntry,
+  ZoneLightingDto,
+  ZonePriusSummary,
   ZoneSaveResult,
   ZoneScene,
 };
@@ -244,3 +266,311 @@ export const KIND_LABELS: Record<string, string> = {
   geo: "Geo",
   other: "Other",
 };
+
+/* ------------------------------------------------------------------ */
+/* Decoded gameplay data: priuses, scripts, lights                     */
+/*                                                                     */
+/* All of these are READ-ONLY against the shipped archives. The one     */
+/* exception is `planPriusEdit`, which still writes nothing: it type-   */
+/* checks one field edit and hands back an equal-length byte patch for  */
+/* the zone session to splice in.                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The game directory the shell last built a mesh loader for.
+ *
+ * `LevelEditor.tsx` owns `gameDir` and does not thread it into `Inspector`,
+ * so the panels that need their own round trip read it from here. It is
+ * latched by `makeMeshLoader`, which the shell calls in a `useMemo` on the
+ * same value, so it is set before any zone can be selected.
+ */
+export function currentGameDir(): string | null {
+  return lastGameDir;
+}
+
+export async function priusSchemaStatus(): Promise<PriusSchemaStatus> {
+  return invoke<PriusSchemaStatus>("prius_schema_status");
+}
+
+export async function loadPriusSchema(path: string): Promise<PriusSchemaStatus> {
+  return invoke<PriusSchemaStatus>("prius_load_schema", { path });
+}
+
+export async function priusZoneSummary(
+  gameDir: string,
+  zonePath: string,
+): Promise<ZonePriusSummary> {
+  return invoke<ZonePriusSummary>("prius_zone_summary", { gameDir, zonePath });
+}
+
+/** Every component prius of one placed actor, decoded into named fields. */
+export async function priusActorSheet(
+  gameDir: string,
+  zonePath: string,
+  actorIndex: number,
+): Promise<ActorSheetsDto> {
+  return invoke<ActorSheetsDto>("prius_actor_sheet", { gameDir, zonePath, actorIndex });
+}
+
+/** The prius of one script action, by its `Zone Script Actions` row index. */
+export async function priusScriptSheet(
+  gameDir: string,
+  zonePath: string,
+  actionIndex: number,
+): Promise<PriusSheetDto> {
+  return invoke<PriusSheetDto>("prius_script_sheet", { gameDir, zonePath, actionIndex });
+}
+
+/**
+ * Ask the backend whether one field may take one value, and for the bytes.
+ *
+ * Pass `number` for anything numeric or boolean and `text` for a select member
+ * or a free string — never both. A refusal comes back as a RESOLVED plan with
+ * `ok: false` and a human `error`, not as a throw; only a broken zone path or
+ * a missing archive throws.
+ */
+export async function planPriusEdit(args: {
+  gameDir: string;
+  zonePath: string;
+  row: number;
+  fieldPath: string;
+  number?: number;
+  text?: string;
+  scriptAction?: boolean;
+}): Promise<PriusEditPlan> {
+  return invoke<PriusEditPlan>("prius_plan_edit", {
+    gameDir: args.gameDir,
+    zonePath: args.zonePath,
+    row: args.row,
+    fieldPath: args.fieldPath,
+    number: args.number,
+    text: args.text,
+    scriptAction: args.scriptAction ?? false,
+  });
+}
+
+/**
+ * One zone's script graph.
+ *
+ * `subgraph` restricts the node list to one connected component and
+ * `nodeLimit` caps it — the largest shipped graph is 14 707 nodes in
+ * `i29_molonoth_gp.zone`, so the caller picks a component before paying for
+ * it. The subgraph index always comes back in full.
+ *
+ * NOTE: when either narrowing trims the node list the returned `edges` array
+ * is filtered too, which invalidates the `inEdges`/`outEdges` indices the
+ * nodes carry. Use {@link zoneScriptNode} for a node's actual edges.
+ */
+export async function zoneScriptGraph(
+  gameDir: string,
+  zonePath: string,
+  subgraph?: number,
+  nodeLimit?: number,
+): Promise<ScriptGraphDto> {
+  return invoke<ScriptGraphDto>("level_zone_script_graph", {
+    gameDir,
+    zonePath,
+    subgraph,
+    nodeLimit,
+  });
+}
+
+/** One node with its edges resolved, its bound variables and its prius blob. */
+export async function zoneScriptNode(
+  gameDir: string,
+  zonePath: string,
+  nodeIndex: number,
+): Promise<ScriptNodeDetailDto> {
+  return invoke<ScriptNodeDetailDto>("level_zone_script_node", { gameDir, zonePath, nodeIndex });
+}
+
+export async function zoneScriptDump(
+  gameDir: string,
+  zonePath: string,
+  subgraph?: number,
+): Promise<string> {
+  return invoke<string>("level_zone_script_dump", { gameDir, zonePath, subgraph });
+}
+
+export async function zoneLighting(
+  gameDir: string,
+  zonePath: string,
+  condition?: number,
+): Promise<ZoneLightingDto> {
+  return invoke<ZoneLightingDto>("level_zone_lighting", { gameDir, zonePath, condition });
+}
+
+export async function atmosphereLighting(
+  gameDir: string,
+  atmosphere: string,
+): Promise<AtmosphereLightingDto> {
+  return invoke<AtmosphereLightingDto>("level_atmosphere_lighting", { gameDir, atmosphere });
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-zone caches for the inspector                                   */
+/*                                                                     */
+/* The inspector re-fetches on every selection change, and a selection  */
+/* change is one click. These keep the cost at one round trip per zone  */
+/* rather than one per click. Each is capped so that a bulk load of a    */
+/* whole planet cannot grow them without bound.                        */
+/* ------------------------------------------------------------------ */
+
+function cappedCache<T>(limit: number) {
+  const map = new Map<string, Promise<T>>();
+  return (key: string, make: () => Promise<T>): Promise<T> => {
+    const hit = map.get(key);
+    if (hit) return hit;
+    const p = make();
+    map.set(key, p);
+    // Drop the oldest insertion once over the cap. Map preserves insert order.
+    while (map.size > limit) {
+      const oldest = map.keys().next();
+      if (oldest.done) break;
+      map.delete(oldest.value);
+    }
+    // A rejected fetch must not be remembered, or the panel can never retry.
+    p.catch(() => map.delete(key));
+    return p;
+  };
+}
+
+const lightingCache = cappedCache<ZoneLightingDto>(8);
+const tuidCache = cappedCache<Map<string, TuidTarget>>(8);
+
+/** {@link zoneLighting}, memoised per (game dir, zone, condition). */
+export function zoneLightingCached(
+  gameDir: string,
+  zonePath: string,
+  condition = 0,
+): Promise<ZoneLightingDto> {
+  return lightingCache(`${gameDir}|${zonePath}|${condition}`, () =>
+    zoneLighting(gameDir, zonePath, condition),
+  );
+}
+
+/** A u64 tuid, however it arrived (decimal string, `0x…`, number), as decimal. */
+export function normaliseTuid(v: string | number): string {
+  try {
+    const s = typeof v === "number" ? BigInt(Math.trunc(v)) : BigInt(v);
+    return (s < 0n ? s + (1n << 64n) : s).toString();
+  } catch {
+    return String(v);
+  }
+}
+
+/**
+ * `tuid -> the actor or scene object it names`, for one zone.
+ *
+ * Built once per zone from `level_load_zone` and then thrown away except for
+ * the compact map, so a prius sheet can turn a `tuid` leaf into a link instead
+ * of a 16-digit number. Actors win over scene objects when both carry the uid,
+ * because an actor row is the thing a designer means.
+ */
+export function zoneTuidIndex(gameDir: string, zonePath: string): Promise<Map<string, TuidTarget>> {
+  return tuidCache(`${gameDir}|${zonePath}`, async () => {
+    const scene = await loadZone(gameDir, zonePath);
+    const out = new Map<string, TuidTarget>();
+    for (const o of scene.objects) {
+      const key = normaliseTuid(o.instanceId);
+      if (key === "0") continue;
+      out.set(key, { kind: "object", name: o.name, offset: o.offset, kindName: o.kindName });
+    }
+    for (const a of scene.actors) {
+      const key = normaliseTuid(a.instanceId);
+      if (key === "0") continue;
+      out.set(key, {
+        kind: "actor",
+        name: a.name || a.assetPath || a.assetId,
+        actorIndex: a.index,
+        offset: a.sceneOffset,
+      });
+    }
+    return out;
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Staged prius edits                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Prius edits the user has made and the backend has approved, waiting to be
+ * written.
+ *
+ * WHY THEY WAIT. `level_save_zone` takes `ZoneEditDto { offset, matrix, scale }`
+ * — it can only rewrite a scene object's transform. A prius patch is a
+ * different shape: an equal-length byte range inside `Zone Actor Prius Data`
+ * or `Zone Script Priuses`. Until `level_save_zone` accepts that shape (the
+ * exact patch is in this change's handoff), staging them here is the honest
+ * thing to do: the panel shows them as pending and says, in the UI, that the
+ * save path does not carry them yet, rather than dropping them silently or
+ * pretending they were written.
+ *
+ * The store is deliberately module-level rather than React state: the shell
+ * owns the transform edit reducer and this change does not touch the shell.
+ */
+const stagedPriusEdits = new Map<string, StagedPriusEdit>();
+const stagedListeners = new Set<() => void>();
+let stagedSnapshot: StagedPriusEdit[] = [];
+
+function priusEditKey(e: {
+  zonePath: string;
+  row: number;
+  scriptAction: boolean;
+  fieldPath: string;
+}) {
+  return `${e.zonePath}|${e.scriptAction ? "s" : "a"}${e.row}|${e.fieldPath}`;
+}
+
+function bumpStaged() {
+  stagedSnapshot = [...stagedPriusEdits.values()];
+  for (const fn of stagedListeners) fn();
+}
+
+export function subscribeStagedPriusEdits(fn: () => void): () => void {
+  stagedListeners.add(fn);
+  return () => stagedListeners.delete(fn);
+}
+
+/** Stable-identity snapshot, safe for `useSyncExternalStore`. */
+export function stagedPriusEditList(): StagedPriusEdit[] {
+  return stagedSnapshot;
+}
+
+export function stagePriusEdit(edit: StagedPriusEdit): void {
+  // Re-editing a field back to the bytes it shipped with is not an edit.
+  const key = priusEditKey(edit);
+  const same =
+    edit.bytes.length === edit.oldBytes.length &&
+    edit.bytes.every((b, i) => b === edit.oldBytes[i]);
+  if (same) stagedPriusEdits.delete(key);
+  else stagedPriusEdits.set(key, edit);
+  bumpStaged();
+}
+
+export function unstagePriusEdit(e: {
+  zonePath: string;
+  row: number;
+  scriptAction: boolean;
+  fieldPath: string;
+}): void {
+  if (stagedPriusEdits.delete(priusEditKey(e))) bumpStaged();
+}
+
+export function clearStagedPriusEdits(zonePath?: string): void {
+  if (!zonePath) {
+    if (stagedPriusEdits.size === 0) return;
+    stagedPriusEdits.clear();
+  } else {
+    let hit = false;
+    for (const [k, v] of stagedPriusEdits) {
+      if (v.zonePath === zonePath) {
+        stagedPriusEdits.delete(k);
+        hit = true;
+      }
+    }
+    if (!hit) return;
+  }
+  bumpStaged();
+}

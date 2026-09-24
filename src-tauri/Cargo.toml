@@ -80,6 +80,10 @@ name = "instance_placement"
 path = "src/bin/instance_placement.rs"
 
 [[bin]]
+name = "nav_probe"
+path = "src/bin/nav_probe.rs"
+
+[[bin]]
 name = "world_probe"
 path = "src/bin/world_probe.rs"
 
@@ -211,3 +215,10 @@ path = "src/bin/integration_check.rs"
 name = "gap_probe"
 path = "src/bin/gap_probe.rs"
 
+[[bin]]
+name = "conduit_probe"
+path = "src/bin/conduit_probe.rs"
+
+[[bin]]
+name = "refs_probe"
+path = "src/bin/refs_probe.rs"

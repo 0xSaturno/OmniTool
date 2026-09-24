@@ -576,3 +576,474 @@ export interface TextureSource {
   materials: MaterialLoader;
   texture: TextureLoader;
 }
+
+// ---------------------------------------------------------------------------
+// Prius property sheets — commands_level_prius.rs
+// ---------------------------------------------------------------------------
+//
+// CASING WARNING. `PriusSheet`/`ActorSheets`/`EditPlan` are `rename_all =
+// "camelCase"`, but `PriusView` and `FieldView` inside `core/prius.rs` are NOT:
+// they serialise their fields verbatim, so a field view arrives with
+// `name_source`, `schema_type`, `edit_note`, `encoding_type` and a `type` key.
+// The shapes below mirror the wire exactly rather than prettifying it, so that
+// a rename on the Rust side shows up as a type error here instead of as a
+// silently undefined value at runtime.
+
+/**
+ * What the backend will let an editor do with one leaf, under the
+ * equal-length in-place rule. `prius_plan_edit` enforces the same thing again;
+ * this only decides what the UI offers.
+ */
+export type PriusEdit =
+  | "scalar"
+  | "select_same_len"
+  | "string_same_len"
+  | "reference"
+  | "not_editable";
+
+/** `core::prius::type_label` — the DDL type as a word. */
+export type PriusTypeName =
+  | "u8" | "u16" | "u32" | "u64"
+  | "i8" | "i16" | "i32" | "i64"
+  | "f32" | "f64"
+  | "string" | "select" | "bitfield" | "struct" | "unknown"
+  | "bool" | "file" | "tuid" | "json" | "empty-array" | "asset-id"
+  | "invalid";
+
+/** One decoded leaf or struct of a prius blob. `core::prius::FieldView`. */
+export interface PriusFieldView {
+  name: string;
+  label: string | null;
+  /** `"pool"` (the zone's own string pool, crc32-checked), `"schema"`, `"hash"`. */
+  name_source: "pool" | "schema" | "hash";
+  /** `crc32(name)` as `0x…`. */
+  hash: string;
+  /** The type the BLOB stores. This is what bounds an edit. */
+  type: PriusTypeName;
+  /**
+   * The type the SCHEMA declares, present only when it differs. The builder
+   * erases `select`/`bitfield`/`file` into a plain `string` and narrows floats
+   * into the smallest lossless integer, so this is the only way to know a text
+   * field is really a dropdown or a path — label with this, read with `type`.
+   */
+  schema_type?: PriusTypeName;
+  /** Inclusive range an in-place edit must stay inside, from the wire width. */
+  min?: number;
+  max?: number;
+  /** True when the slot only holds whole numbers (a u8 cannot take 20.5). */
+  integral: boolean;
+  encoding_type: number;
+  count: number;
+  /** JSON value: number, string, bool, array, object. 64-bit ints are strings. */
+  value: unknown;
+  text: string;
+  edit: PriusEdit;
+  edit_note: string | null;
+  /** Byte span of the first value inside the blob. */
+  offset: number | null;
+  width: number | null;
+  /** Legal members when the schema knows this is a select/bitfield. */
+  options?: string[];
+  default?: unknown;
+  children: PriusFieldView[];
+}
+
+/** `core::prius::PriusView`. Not camelCase on the wire — see the warning above. */
+export interface PriusViewDto {
+  component: string;
+  type_name: string | null;
+  type_hash: string;
+  uid: string;
+  size: number;
+  named_fields: number;
+  total_fields: number;
+  fields: PriusFieldView[];
+}
+
+export interface PriusSheetDto {
+  /** Row index in `Zone Actor Priuses` — the handle `prius_plan_edit` wants. */
+  row: number;
+  blobOffset: number;
+  blobSize: number;
+  view: PriusViewDto;
+}
+
+export interface ActorSheetsDto {
+  actorIndex: number;
+  actorName: string;
+  actorAsset: string;
+  uid: string;
+  flags: number;
+  flagNames: string[];
+  isTemplate: boolean;
+  startsActive: boolean;
+  sheets: PriusSheetDto[];
+  failures: string[];
+}
+
+export interface PriusSchemaStatus {
+  loaded: boolean;
+  source: string;
+  types: number;
+  enums: number;
+  names: number;
+  searched: string[];
+}
+
+export interface PriusComponentCount {
+  component: string;
+  count: number;
+  nameHash: string;
+  typeName: string | null;
+  typeUid: string;
+  typeUidMatchesName: boolean;
+}
+
+export interface ZonePriusSummary {
+  zonePath: string;
+  actorCount: number;
+  actorsWithPriuses: number;
+  rows: number;
+  poolBytes: number;
+  scriptPriusBytes: number;
+  components: PriusComponentCount[];
+  schema: PriusSchemaStatus;
+}
+
+/**
+ * The answer to "may I write this value here?".
+ *
+ * `ok: false` always carries a human `error` naming the slot width and the
+ * reason; it is safe to show verbatim and the UI must, rather than dropping
+ * the edit. `ok: true` carries an EQUAL-LENGTH byte patch — `bytes.length ===
+ * oldBytes.length` always — addressed at `sectionOffset` inside `sectionTag`.
+ */
+export interface PriusEditPlan {
+  ok: boolean;
+  error: string | null;
+  sectionTag: string | null;
+  sectionOffset: number | null;
+  bytes: number[] | null;
+  oldBytes: number[] | null;
+  oldText: string | null;
+  newText: string | null;
+  edit: PriusEdit | null;
+}
+
+/** One planned, not-yet-written prius patch, staged by the inspector. */
+export interface StagedPriusEdit {
+  zonePath: string;
+  /** Prius row, or the script-action index when `scriptAction` is true. */
+  row: number;
+  scriptAction: boolean;
+  component: string;
+  fieldPath: string;
+  sectionTag: string;
+  sectionOffset: number;
+  bytes: number[];
+  oldBytes: number[];
+  oldText: string;
+  newText: string;
+}
+
+// ---------------------------------------------------------------------------
+// Script graphs — commands_level_script.rs
+// ---------------------------------------------------------------------------
+
+export interface ScriptEdgeDto {
+  fromNode: number;
+  fromPlugHash: number;
+  fromPlug: string | null;
+  toNode: number;
+  toPlugHash: number;
+  toPlug: string | null;
+  /** True when `toNode` is out of range for this zone's action table. */
+  dangling: boolean;
+}
+
+export type ScriptVarType =
+  | "none" | "bool" | "float" | "vec" | "string" | "actors"
+  | { unknown: number };
+
+export type ScriptVarValue =
+  | { kind: "none" }
+  | { kind: "bool"; value: boolean }
+  | { kind: "float"; value: number }
+  | { kind: "vec"; value: [number, number, number] }
+  | { kind: "string"; value: string | null }
+  | {
+      kind: "actors";
+      // NB: `rename_all` on a serde enum renames VARIANTS, not their fields,
+      // so these four stay snake_case on the wire.
+      actor_index: number | null;
+      group_index: number | null;
+      uid: string;
+      target_name: string | null;
+    }
+  | { kind: "unknown"; raw: string };
+
+export interface ScriptVarDto {
+  index: number;
+  ty: ScriptVarType;
+  globalName: string | null;
+  /** u64 as a decimal string. */
+  tuid: string;
+  value: ScriptVarValue;
+  /** `(node index, plug name hash)` of every plug that reads it. */
+  readers: [number, number][];
+  writers: [number, number][];
+}
+
+export interface ScriptVarBindingDto {
+  plugName: string | null;
+  plugNameHash: string;
+  varIndex: number;
+  /** `"in"` = the node reads the variable, `"out"` = it writes it. */
+  direction: string;
+  authoredDirection: string | null;
+}
+
+export interface ScriptNodeDto {
+  index: number;
+  /** Hex, no `0x`. */
+  uid: string;
+  graphUid: string;
+  typeName: string | null;
+  typeNameHash: string;
+  priusType: string | null;
+  priusOffset: number;
+  priusSize: number;
+  subgraph: number;
+  inPlugCount: number;
+  /**
+   * Indices into the graph's FULL edge array. `level_zone_script_graph`
+   * filters `edges` when a subgraph or a node limit trims the node list, so
+   * these are only safe to index with when nothing was filtered. Use
+   * `level_zone_script_node`, whose edges arrive already resolved.
+   */
+  inEdges: number[];
+  outEdges: number[];
+  vars: ScriptVarBindingDto[];
+  declaredInputs: string[];
+  declaredOutputs: string[];
+  declaredVars: string[];
+}
+
+export interface ScriptStatsDto {
+  nodes: number;
+  edges: number;
+  danglingEdges: number;
+  varRows: number;
+  varBindings: number;
+  subgraphs: number;
+  inCountMatch: number;
+  inCountMismatch: number;
+  typeNamesResolved: number;
+  outPlugNamesResolved: number;
+  inPlugNamesResolved: number;
+  varPlugNamesResolved: number;
+  directionAgree: number;
+  directionDisagree: number;
+}
+
+export interface ScriptSubgraphEntry {
+  id: number;
+  nodeCount: number;
+  rootCount: number;
+  label: string;
+}
+
+export interface ScriptGraphDto {
+  zonePath: string;
+  stats: ScriptStatsDto;
+  subgraphs: ScriptSubgraphEntry[];
+  nodes: ScriptNodeDto[];
+  edges: ScriptEdgeDto[];
+  vars: ScriptVarDto[];
+  truncated: boolean;
+}
+
+export interface ScriptNodeDetailDto {
+  node: ScriptNodeDto;
+  inEdges: ScriptEdgeDto[];
+  outEdges: ScriptEdgeDto[];
+  /** Parallel to `node.vars`; null when the binding points off the var table. */
+  vars: (ScriptVarDto | null)[];
+  priusHex: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Lighting — commands_level_lighting.rs
+// ---------------------------------------------------------------------------
+
+export interface ZoneLightDto {
+  offset: number;
+  entrySize: number;
+  /** u64 as a decimal string — compare against `SceneObjectDto.instanceId`. */
+  tuid: string;
+  volumeLink: string;
+  lightType: number;
+  lightTypeName: string;
+  flags: number;
+  flagNames: string[];
+  specType: number;
+  specTypeName: string;
+  shadowCastType: number;
+  shadowCastTypeName: string;
+  shadowRes: number;
+  shadowResName: string;
+  castsShadows: boolean;
+  active: boolean;
+  bulbIsRectangle: boolean;
+  volumeIsEllipsoid: boolean;
+  lightingConditions: number;
+  lightingConditionNames: string[];
+  platformMask: number;
+  shadowPlatformMask: number;
+  position: Vec3;
+  direction: Vec3;
+  right: Vec3;
+  up: Vec3;
+  transformScale: Vec3;
+  headerExtents: Vec3;
+  /** Half-extents of a volume light's box/ellipsoid, metres. */
+  extents: Vec3;
+  /** Colour premultiplied by intensity, LINEAR space. */
+  linearRgb: Vec3;
+  luminance: number;
+  effectiveRadius: number;
+  /** True when `effectiveRadius` was derived from the colour, not authored. */
+  radiusIsDerived: boolean;
+  nearFadeClipDist: number;
+  nearFadeStartDist: number;
+  volumetricFogIntensity: number;
+  goboCustomData: [number, number];
+  fadeOutDist: number;
+  attenuationRadius: number;
+  cutOffDist: number;
+  cutOnDist: number;
+  specIntensity: number;
+  specFadeOutDist: number;
+  shadowFadeOutDist: number;
+  shadowCutOnDist: number;
+  saturation: number;
+  falloffDistNeg: Vec3;
+  falloffDistPos: Vec3;
+  innerConeRadians: number;
+  outerConeRadians: number;
+  innerConeDegrees: number;
+  outerConeDegrees: number;
+  bulbRadius: number;
+  bulbLength: number;
+  bulbPushForward: number;
+  assetOffset: number;
+  /** Omitted when empty — the inline gobo / projected-material / IES path. */
+  assetPath?: string;
+}
+
+export interface LightingAssetRef {
+  condition: string;
+  assetId: string;
+  path: string;
+  suffix: string;
+}
+
+export interface EnvProbeRowDto {
+  index: number;
+  position: Vec3;
+  extents: Vec3;
+  volumeShape: number;
+  flags: number;
+  diffuseContribution: boolean;
+  weight: number;
+  assetIndex: number;
+  drawListIndex: number;
+  tuid: string;
+}
+
+export interface ZoneLightingDto {
+  zonePath: string;
+  lights: ZoneLightDto[];
+  /** Indexed by engine light type id: point, spot, pyramid, shaft, modulate, lightgridmod. */
+  typeCounts: [number, number, number, number, number, number];
+  shadowCasters: number;
+  conditionDependentLights: number;
+  atmospheres: LightingAssetRef[];
+  levelLights: LightingAssetRef[];
+  lightBins: LightingAssetRef[];
+  envProbeTextures: LightingAssetRef[];
+  envProbes: EnvProbeRowDto[];
+  envProbeTextureCount: number;
+  lightGridPositions: number;
+  condition: number;
+  conditionName: string;
+  notes: string[];
+}
+
+/** The light types, indexed by the engine's type id. */
+export const LIGHT_TYPE_NAMES = [
+  "point",
+  "spot",
+  "pyramid",
+  "shaft",
+  "modulate",
+  "lightgridmod",
+] as const;
+
+/**
+ * One zone's tuid -> what it points at, built from the zone's own scene.
+ *
+ * A prius `tuid` field is the level's own wiring: measured over the shipped
+ * build, 0 of 17 117 non-zero tuids is a TOC asset id, 15 477 are the uid of an
+ * actor in the SAME zone and 13 749 a scene object in the same zone. So the
+ * only index worth keeping is per-zone and tiny.
+ */
+export interface TuidTarget {
+  kind: "actor" | "object";
+  name: string;
+  /** Actor row index, for `prius_actor_sheet`. */
+  actorIndex?: number;
+  /** Scene-object byte offset, for selecting it. */
+  offset?: number;
+  kindName?: string;
+}
+
+/** `level_atmosphere_lighting` — the part of an `.atmosphere` a viewer can act on. */
+export interface AtmosphereLightingDto {
+  path: string;
+  assetId: string;
+  /** Stored linear, normalised so one channel is 1.0. */
+  keyLightColor: Vec3;
+  keyLightIntensity: number;
+  /** `keyLightColor` rescaled to `keyLightIntensity` luminance — what the engine uses. */
+  keyLightLinear: Vec3;
+  keyLightAzimuthDeg: number;
+  keyLightElevationDeg: number;
+  /** The direction sunlight TRAVELS, Y up. */
+  keyLightDirection: Vec3;
+  sunDiskDirection: Vec3;
+  sunDiskOffsetAzimuthDeg: number;
+  sunDiskOffsetElevationDeg: number;
+  shadowDrawDist: number;
+  csmLodCount: number;
+  timeOfDay: number;
+  sunDiameter: number;
+  keylightMaterialScale: number;
+  casterRangeLower: number;
+  casterRangeUpper: number;
+  farLodCaching: boolean;
+  farLodTransitionDist: number;
+  farLodPerfModeOpts: boolean;
+  strings: string[];
+  headerSize: number;
+  notes: string[];
+}
+
+/** `level_lighting_conditions`. */
+export interface LightingConditionDto {
+  index: number;
+  name: string;
+  itemName: string;
+  nameHash: string;
+  bit: number;
+}

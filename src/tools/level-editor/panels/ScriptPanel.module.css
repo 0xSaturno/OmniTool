@@ -1,0 +1,331 @@
+/* Script graph browser. Lives inside the inspector column, so every list is
+   capped or windowed and nothing here relies on a wide viewport. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+
+.status,
+.statusError {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 0.4rem 0.1rem;
+}
+
+.statusError {
+  color: var(--error);
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.5rem;
+  font-size: 0.63rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.warn { color: var(--warning); }
+
+.note {
+  font-size: 0.63rem;
+  color: var(--warning);
+  border-left: 2px solid var(--warning);
+  padding-left: 0.3rem;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.select {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 0.68rem;
+  padding: 0.18rem 0.25rem;
+  outline: none;
+  width: 100%;
+}
+
+.select:focus { border-color: var(--accent); }
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  color: var(--text-muted);
+}
+
+.searchBox:focus-within { border-color: var(--accent); }
+
+.search {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 0.68rem;
+  padding: 0.18rem 0;
+}
+
+.listHead {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.dim { color: var(--text-muted); }
+
+/* ---- windowed node list ---- */
+
+.nodeList {
+  height: 15rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-base);
+  contain: strict;
+}
+
+.nodeRow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.68rem;
+  padding: 0 0.35rem;
+  text-align: left;
+}
+
+.nodeRow:hover { background: var(--bg-hover); }
+
+.nodeRowOn {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.nodeRowOn:hover { background: var(--accent-muted); }
+
+.nodeIndex {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  width: 2.6rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.nodeType {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unresolved { color: var(--text-muted); font-family: var(--font-mono); }
+
+.plugCounts {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.arrow { color: var(--text-muted); }
+
+/* ---- detail ---- */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-base);
+  padding: 0.4rem 0.45rem;
+}
+
+.detailHead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.detailIndex {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}
+
+.detailType {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.kvGrid {
+  display: grid;
+  grid-template-columns: 4.4rem minmax(0, 1fr);
+  gap: 0.1rem 0.4rem;
+  font-size: 0.66rem;
+}
+
+.k { color: var(--text-secondary); }
+
+.v {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.edgeBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.3rem;
+}
+
+.edgeTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.none { font-size: 0.65rem; color: var(--text-muted); font-style: italic; }
+
+.edgeRow {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.65rem;
+  min-width: 0;
+}
+
+.plug {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 6rem;
+}
+
+.nodeLink {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.65rem;
+  padding: 0.05rem 0.15rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 3px;
+}
+
+.nodeLink:hover:not(:disabled) { background: var(--accent-muted); }
+
+.dangling { color: var(--error); cursor: default; }
+
+.more {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.plugChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.plugChipIn,
+.plugChipOut {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  border-radius: 3px;
+  padding: 0 0.25rem;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+}
+
+.plugChipOut { border-style: dotted; }
+
+.varRow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-size: 0.64rem;
+  min-width: 0;
+}
+
+.dirIn { color: var(--accent); font-family: var(--font-mono); font-size: 0.58rem; width: 1.6rem; flex-shrink: 0; }
+.dirOut { color: var(--success); font-family: var(--font-mono); font-size: 0.58rem; width: 1.6rem; flex-shrink: 0; }
+
+.varName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.varType {
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  color: var(--accent);
+  background: var(--accent-muted);
+  border-radius: 3px;
+  padding: 0 0.2rem;
+  flex-shrink: 0;
+}
+
+.varValue {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-secondary);
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
