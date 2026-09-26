@@ -1,6 +1,6 @@
 pub mod core;
 pub mod tools;
-mod commands;
+pub mod commands;
 pub mod commands_arena;
 pub mod commands_arena_graph;
 pub mod commands_model_inspector;

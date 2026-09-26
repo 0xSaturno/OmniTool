@@ -66,8 +66,9 @@ use crate::core::dat1::Dat1;
 use crate::core::error::ToolkitError;
 use crate::core::filesystem;
 use crate::core::material::{
-    MaterialConstant, MaterialFile, MaterialHeaderSection, MaterialSampler, MaterialSerialized,
-    TAG_MATERIAL_FUR, TAG_MATERIAL_HEADER, TAG_MATERIAL_SERIALIZED,
+    flags as material_flags, MaterialConstant, MaterialFile, MaterialFurInfo, MaterialHeaderSection,
+    MaterialSampler, MaterialSerialized, MaterialWaterInfo, NO_PATH, TAG_MATERIAL_FUR,
+    TAG_MATERIAL_HEADER, TAG_MATERIAL_SERIALIZED, TAG_MATERIAL_WATER,
 };
 use crate::core::material_graph::MaterialTemplate;
 use crate::core::material_names;
@@ -743,13 +744,15 @@ pub async fn gltf_material_slots(gltf_path: String, src_model_path: String) -> R
     material_slot_plan(&model, &gltf, &gltf_import_options(&gltf_path)?)
 }
 
-/// `materials` (slot name -> `.material` path) overrides the saved options; with `remember` they are saved.
+/// `materials` (slot name -> `.material` path) and `strip_hair` override the saved options; with
+/// `remember` they are saved.
 #[tauri::command]
 pub async fn gltf_to_model(
     gltf_path: String,
     src_model_path: String,
     out_path: Option<String>,
     materials: Option<std::collections::BTreeMap<String, String>>,
+    strip_hair: Option<bool>,
     remember: Option<bool>,
 ) -> Result<String, ToolkitError> {
     let start = Instant::now();
@@ -757,14 +760,19 @@ pub async fn gltf_to_model(
     let gltf = parse_gltf(&gltf_path)?;
     eprintln!("[gltf_to_model] parsed gltf ({} meshes, {} bones)", gltf.meshes.len(), gltf.bones.len());
     let mut options = gltf_import_options(&gltf_path)?;
-    if let Some(materials) = materials.filter(|m| !m.is_empty()) {
+    let materials = materials.filter(|m| !m.is_empty());
+    let changed = materials.is_some() || strip_hair.is_some_and(|s| options.strip_hair != Some(s));
+    if let Some(materials) = materials {
         options.materials.extend(materials);
-        if remember.unwrap_or(false) {
-            let sidecar = gltf_sidecar(&gltf_path);
-            let text = serde_json::to_string_pretty(&options).map_err(|e| ToolkitError::Parse(e.to_string()))?;
-            std::fs::write(&sidecar, text)?;
-            eprintln!("[gltf_to_model] saved material paths to {sidecar}");
-        }
+    }
+    if strip_hair.is_some() {
+        options.strip_hair = strip_hair;
+    }
+    if changed && remember.unwrap_or(false) {
+        let sidecar = gltf_sidecar(&gltf_path);
+        let text = serde_json::to_string_pretty(&options).map_err(|e| ToolkitError::Parse(e.to_string()))?;
+        std::fs::write(&sidecar, text)?;
+        eprintln!("[gltf_to_model] saved import options to {sidecar}");
     }
 
     eprintln!("[gltf_to_model] loading source model from {}", src_model_path);
@@ -792,6 +800,9 @@ pub async fn gltf_to_model(
     }
     if !report.kept.is_empty() {
         eprintln!("[gltf_to_model] kept subsets missing from the glTF: {:?}", report.kept);
+    }
+    if report.hair_removed > 0 {
+        eprintln!("[gltf_to_model] removed {} hair groups", report.hair_removed);
     }
     if !report.new_slots.is_empty() {
         eprintln!("[gltf_to_model] new material slots: {}", report.new_slots.join(", "));
@@ -4350,6 +4361,29 @@ pub struct MaterialSamplerView {
     pub default_path: Option<String>,
     pub in_template: bool,
     pub overridden: bool,
+    /// False when the template locks the slot: the game ignores overrides of it.
+    pub user_exposed: bool,
+    pub sampler_type: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialVariationView {
+    pub name_hash: u32,
+    pub name: String,
+    pub value: u32,
+}
+
+/// Fur info with its map paths resolved; `maps` is base, normal, gloss, control.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct MaterialFurDoc {
+    pub info: MaterialFurInfo,
+    pub maps: Vec<Option<String>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct MaterialWaterDoc {
+    pub info: MaterialWaterInfo,
+    pub flow_map: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -4373,8 +4407,30 @@ pub struct MaterialDocument {
     pub audio_material_name: Option<String>,
     pub samplers: Vec<MaterialSamplerView>,
     pub constants: Vec<MaterialConstantView>,
-    pub has_fur_section: bool,
+    /// Slots and shaders come from the material's own compiled template copy.
+    pub embedded_template: bool,
+    pub variations: Vec<MaterialVariationView>,
+    pub fur: Option<MaterialFurDoc>,
+    pub water: Option<MaterialWaterDoc>,
+    pub av_materials: Vec<MaterialNameOption>,
     pub section_tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialNameOption {
+    pub name_hash: u32,
+    pub name: String,
+}
+
+fn path_at(dat1: &Dat1, offset: u32) -> Option<String> {
+    (offset != NO_PATH).then(|| dat1.get_string(offset)).flatten()
+}
+
+fn path_offset(dat1: &mut Dat1, path: &Option<String>) -> u32 {
+    match path.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => dat1.intern_string(p),
+        _ => NO_PATH,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -4435,8 +4491,16 @@ pub async fn read_material(
     };
 
     let template_path = material.template_path();
+    let embedded_template = material.has_embedded_template();
     let mut template_note = None;
     let template = match &template_path {
+        _ if embedded_template => match MaterialTemplate::from_dat1(&material.dat1) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                template_note = Some(format!("embedded template unreadable: {e}"));
+                None
+            }
+        },
         Some(p) => match load_material_template(
             p,
             toc_path.as_deref(),
@@ -4450,11 +4514,16 @@ pub async fn read_material(
                 None
             }
         },
+        None if header.flags & (material_flags::FUR | material_flags::WATER) != 0 => {
+            template_note = Some("built-in fur/water material: no template".into());
+            None
+        }
         None => {
             template_note = Some("no .materialgraph reference in this material".into());
             None
         }
     };
+    let sampler_type = |ts: &crate::core::material_graph::TemplateSampler| material_names::resolve(ts.type_hash);
 
     let mut samplers: Vec<MaterialSamplerView> = serialized
         .samplers
@@ -4471,6 +4540,8 @@ pub async fn read_material(
                 default_path: slot.map(|t| t.default_path.clone()),
                 in_template: slot.is_some(),
                 overridden: true,
+                user_exposed: slot.map_or(true, |t| t.user_exposed),
+                sampler_type: slot.and_then(sampler_type),
             }
         })
         .collect();
@@ -4504,6 +4575,8 @@ pub async fn read_material(
                     default_path: Some(ts.default_path.clone()),
                     in_template: true,
                     overridden: false,
+                    user_exposed: ts.user_exposed,
+                    sampler_type: sampler_type(ts),
                 });
             }
         }
@@ -4542,7 +4615,36 @@ pub async fn read_material(
         header,
         samplers,
         constants,
-        has_fur_section: material.dat1.get_section_data(TAG_MATERIAL_FUR).is_some(),
+        embedded_template,
+        variations: serialized
+            .variations
+            .iter()
+            .map(|v| MaterialVariationView {
+                name_hash: v.name_hash,
+                name: material_names::label(v.name_hash),
+                value: v.value,
+            })
+            .collect(),
+        fur: match material.dat1.get_section_data(TAG_MATERIAL_FUR) {
+            Some(sec) => {
+                let info = MaterialFurInfo::parse(sec)?;
+                let maps = info.map_offsets.iter().map(|&o| path_at(&material.dat1, o)).collect();
+                Some(MaterialFurDoc { info, maps })
+            }
+            None => None,
+        },
+        water: match material.dat1.get_section_data(TAG_MATERIAL_WATER) {
+            Some(sec) => {
+                let info = MaterialWaterInfo::parse(sec)?;
+                let flow_map = path_at(&material.dat1, info.flow_map_offset);
+                Some(MaterialWaterDoc { info, flow_map })
+            }
+            None => None,
+        },
+        av_materials: material_names::AV_MATERIALS
+            .iter()
+            .map(|n| MaterialNameOption { name_hash: crate::core::crc32::hash(n), name: n.to_string() })
+            .collect(),
         section_tags: material
             .dat1
             .sections
@@ -4558,21 +4660,50 @@ pub async fn save_material(
     header: MaterialHeaderSection,
     samplers: Vec<MaterialSamplerEdit>,
     constants: Vec<MaterialConstantEdit>,
+    fur: Option<MaterialFurDoc>,
+    water: Option<MaterialWaterDoc>,
     out_path: Option<String>,
 ) -> Result<String, ToolkitError> {
     let data = std::fs::read(&material_path)?;
     let mut material = MaterialFile::parse(&data)?;
 
+    if header.flags & material_flags::RUNTIME_MASK != 0 {
+        return Err(ToolkitError::Unsupported("flag bits 25-31 are runtime-only and must stay clear".into()));
+    }
+    // The Fur and Water bits select a built-in material whose settings live in their own section.
+    for (bit, tag, what) in [
+        (material_flags::FUR, TAG_MATERIAL_FUR, "Fur"),
+        (material_flags::WATER, TAG_MATERIAL_WATER, "Water"),
+    ] {
+        if (header.flags & bit != 0) != material.dat1.get_section_data(tag).is_some() {
+            return Err(ToolkitError::Unsupported(format!(
+                "the {what} flag can't be changed: it must match the material's {what} Info section"
+            )));
+        }
+    }
     material
         .dat1
         .set_section_data(TAG_MATERIAL_HEADER, header.build())?;
 
-    // The aux table isn't editable and isn't shown, but it must survive a save.
-    let aux = material
+    if let Some(mut f) = fur {
+        if f.maps.len() != 4 {
+            return Err(ToolkitError::Parse("fur info needs exactly 4 map paths".into()));
+        }
+        let offsets: Vec<u32> = f.maps.iter().map(|p| path_offset(&mut material.dat1, p)).collect();
+        f.info.map_offsets.copy_from_slice(&offsets[..4]);
+        material.dat1.set_section_data(TAG_MATERIAL_FUR, f.info.build())?;
+    }
+    if let Some(mut w) = water {
+        w.info.flow_map_offset = path_offset(&mut material.dat1, &w.flow_map);
+        material.dat1.set_section_data(TAG_MATERIAL_WATER, w.info.build())?;
+    }
+
+    // Variations are compiled into the embedded template, so they're kept as they are.
+    let variations = material
         .dat1
         .get_section_data(TAG_MATERIAL_SERIALIZED)
         .and_then(|sec| MaterialSerialized::parse(sec).ok())
-        .map(|s| s.aux)
+        .map(|s| s.variations)
         .unwrap_or_default();
 
     let serialized = MaterialSerialized {
@@ -4584,7 +4715,7 @@ pub async fn save_material(
             .into_iter()
             .map(|s| MaterialSampler { name_hash: s.name_hash, path: s.path })
             .collect(),
-        aux,
+        variations,
     };
 
     if material

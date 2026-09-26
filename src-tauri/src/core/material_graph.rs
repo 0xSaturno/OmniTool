@@ -29,6 +29,9 @@ fn rd_u16(b: &[u8], off: usize) -> Result<u16> {
 pub struct TemplateSampler {
     pub name_hash: u32,
     pub slot_index: u16,
+    /// Materials can only override exposed samplers; the engine ignores overrides of the rest.
+    pub user_exposed: bool,
+    /// `crc32` of `sampler1D`, `sampler2D`, `sampler3D` or `samplerCUBE`.
     pub type_hash: u32,
     pub default_path: String,
 }
@@ -60,6 +63,7 @@ impl MaterialTemplate {
                 }
                 let string_off = rd_u32(sec, base)?;
                 samplers.push(TemplateSampler {
+                    user_exposed: rd_u16(sec, base + 4)? != 0,
                     slot_index: rd_u16(sec, base + 6)?,
                     name_hash: rd_u32(sec, base + 8)?,
                     type_hash: rd_u32(sec, base + 12)?,

@@ -1,0 +1,922 @@
+# Material slot names bundled with OmniTool. Each entry is a name whose crc32 matches a slot
+# hash in shipped materials or material graphs; the comment gives the hash, kind and use count.
+# source=graph: string came from the graph declaring the slot.
+# source=local/wide/guess: harvested or brute-forced, then filtered for slot-kind agreement.
+# source=verified: matched against every unnamed slot hash in the shipped corpus.
+# Add more in material_names.txt next to the executable (same format).
+
+_1_additional_moire_noise_Texture # 0x42949DEC sampler uses=10 source=graph
+_1_BaseMap2D_Texture # 0x1ED692E6 sampler uses=2 source=graph
+_1_cutout_lines_breakup_noise_2_Texture # 0x4E4C45D8 sampler uses=10 source=graph
+_1_cutout_lines_noise_1_Texture # 0x3AB8DB6C sampler uses=10 source=graph
+_1_dimensional_sky_Texture # 0xFD53112E sampler uses=3 source=graph
+_1_flicker_displacement_1D_Texture # 0xEEDA4C6A sampler uses=10 source=graph
+_1_flicker_displacement_fine_noise_Texture # 0x82E66524 sampler uses=10 source=graph
+_1_GlossMap2D_Texture # 0xB1121060 sampler uses=1 source=graph
+_1_larger_star_noise_cutout_Texture # 0x0E26F35F sampler uses=3 source=graph
+_1_larger_star_noise_Texture # 0xEC528810 sampler uses=3 source=graph
+_1_line_cutout_1D_a_Texture # 0xDFBFC12C sampler uses=10 source=graph
+_1_moire_noise_flow_Texture # 0xB446DC23 sampler uses=10 source=graph
+_1_scan_line_1D_a_Texture # 0x018B787B sampler uses=10 source=graph
+_1_scan_line_1D_b_Texture # 0x380644BE sampler uses=10 source=graph
+_1_star_noise_flow_Texture # 0x4271B0A6 sampler uses=3 source=graph
+_1_star_subtle_noise_cutout_Texture # 0x3D2E3499 sampler uses=3 source=graph
+_1_star_subtle_noise_Texture # 0x608B1738 sampler uses=3 source=graph
+_2_cracks_flow_2_Texture # 0x79821029 sampler uses=1 source=graph
+_2_detail_cracks_2_Texture # 0x356C8C21 sampler uses=1 source=graph
+_2_shard_mask_3_Texture # 0x856EB2B7 sampler uses=1 source=graph
+_3_cutout_lines_breakup_noise_1_Texture # 0xB7A18498 sampler uses=1 source=graph
+_3_cutout_lines_breakup_noise_2_Texture # 0x8E2CB85D sampler uses=1 source=graph
+_3_cutout_lines_noise_1_Texture # 0x42791D7C sampler uses=1 source=graph
+_3_line_cutout_1D_b_Texture # 0xF378B686 sampler uses=1 source=graph
+_3_moire_line_noise_Texture # 0x68D9CFC8 sampler uses=1 source=graph
+_3_scan_line_1D_a_Texture # 0xD8B0B474 sampler uses=1 source=graph
+additional_moire_noise_Texture # 0x26878A35 sampler uses=28 source=graph
+Age # 0x8B65397B constant uses=1 source=graph
+Alert_Color # 0xC011C1DD constant uses=1 source=wide
+alpha_scale # 0x339695D7 constant uses=1 source=wide
+alpha_slider # 0xEF782F74 constant uses=2 source=wide
+Alpha_Texture # 0xE58B0F2F sampler uses=1 source=graph
+alpha_transition # 0xD8DF4726 constant uses=11 source=wide
+Animate # 0xE14927ED constant uses=2 source=wide
+Animation_Speed # 0xEE47681F constant uses=2 source=wide
+AnimationMask2D_Texture # 0xD8E22E54 sampler uses=1 source=graph
+Atmosphere_Color # 0x76BABDB0 constant uses=1 source=wide
+background # 0x2803E9B9 constant uses=4 source=wide
+BarFill # 0xB420704C constant uses=2 source=wide
+Base2D_Texture # 0xFCABA3B6 sampler uses=1 source=wide
+Base_BaseMap2D_Texture # 0x41F48BF5 sampler uses=7 source=graph
+Base_Color # 0xC18AA806 constant uses=79 source=wide
+base_GlossMap2D_Texture # 0x37167F3F sampler uses=2 source=graph
+Base_MaterialPackage2D_Texture # 0x9E34A894 sampler uses=32 source=graph
+Base_MiscMap2D_Texture # 0x0CA76CD9 sampler uses=7 source=graph
+base_MiscMap2D_Texture # 0x8438FE1A sampler uses=2 source=graph
+Base_Screen_A_B_Texture # 0x8CB42B7B sampler uses=2 source=graph
+Base_Screen_A_R_Texture # 0x2074690A sampler uses=3 source=graph
+Base_Screen_B_G_Texture # 0x5FC10835 sampler uses=3 source=graph
+Base_Screen_B_R_1_Texture # 0x5029C2FA sampler uses=3 source=graph
+Base_Screen_B_R_2_Texture # 0x69A4FE3F sampler uses=1 source=graph
+Base_Screen_B_R_Texture # 0xB9960F0B sampler uses=3 source=graph
+Base_Texture # 0xBA53B50A sampler uses=14 source=wide
+BaseColor # 0xEE2C460A constant uses=1 source=graph
+BaseMap1D_1_Texture # 0x77C81920 sampler uses=15 source=graph
+BaseMap1D_2_Texture # 0x4E4525E5 sampler uses=8 source=graph
+BaseMap1D_3_Texture # 0x593E31A6 sampler uses=4 source=graph
+BaseMap1D_4_Texture # 0x3D5F5C6F sampler uses=2 source=graph
+BaseMap1D_Texture # 0x40ED6C83 sampler uses=45 source=graph
+BaseMap2D_10_Texture # 0xA967E43F sampler uses=18 source=graph
+BaseMap2D_1_Texture # 0x0056CBD0 sampler uses=461 source=graph
+BaseMap2D_2_Texture # 0x39DBF715 sampler uses=333 source=graph
+BaseMap2D_3_Texture # 0x2EA0E356 sampler uses=286 source=graph
+BaseMap2D_4_Texture # 0x4AC18E9F sampler uses=174 source=graph
+BaseMap2D_5_Texture # 0x5DBA9ADC sampler uses=125 source=graph
+BaseMap2D_6_Texture # 0x6437A619 sampler uses=90 source=graph
+BaseMap2D_7_Texture # 0x734CB25A sampler uses=65 source=graph
+BaseMap2D_8_Texture # 0xACF57D8B sampler uses=42 source=graph
+BaseMap2D_9_Texture # 0xBB8E69C8 sampler uses=26 source=graph
+BaseMap2D_A_Texture # 0xF0F50805 sampler uses=3 source=graph
+BaseMap2D_B_Texture # 0xC97834C0 sampler uses=3 source=graph
+BaseMap2D_SpecificMip_1_Texture # 0xE3F26D44 sampler uses=47 source=graph
+BaseMap2D_SpecificMip_2_Texture # 0xDA7F5181 sampler uses=37 source=graph
+BaseMap2D_SpecificMip_3_Texture # 0xCD0445C2 sampler uses=34 source=graph
+BaseMap2D_SpecificMip_4_Texture # 0xA965280B sampler uses=34 source=graph
+BaseMap2D_SpecificMip_5_Texture # 0xBE1E3C48 sampler uses=23 source=graph
+BaseMap2D_SpecificMip_7_Texture # 0x90E814CE sampler uses=14 source=graph
+BaseMap2D_SpecificMip_8_Texture # 0x4F51DB1F sampler uses=11 source=graph
+BaseMap2D_SpecificMip_Texture # 0xD1F4EBFB sampler uses=52 source=graph
+BaseMap2D_Texture # 0xABDAD780 sampler uses=800 source=graph
+BaseMap3D_1_Texture # 0x9BF387BF sampler uses=18 source=graph
+BaseMap3D_Texture # 0x4418BCBE sampler uses=28 source=graph
+BaseMapCube_Texture # 0xE4EE8B65 sampler uses=57 source=graph
+Blend_Color # 0x15391F76 constant uses=1 source=wide
+Blue_MaterialPackage2D_Texture # 0x013DD88D sampler uses=19 source=graph
+Breakup_Map_Texture # 0x076587EF sampler uses=13 source=graph
+Brightness # 0x024088DA constant uses=2 source=wide
+brightness # 0x4D1D8B0A constant uses=1 source=wide
+Checkbox # 0xE47AB59D constant uses=2 source=wide
+Clouds_Color # 0x32CDD3AA constant uses=1 source=wide
+CloudShadowMap2D_Texture # 0x0772A607 sampler uses=1 source=graph
+Color # 0x7F058428 constant uses=99 source=graph
+color_swap # 0xCC2FE3CC constant uses=2 source=wide
+Columns # 0xAD24A38F constant uses=1 source=wide
+Constant_Color # 0x09EE7A78 constant uses=1 source=wide
+Countdown # 0xB5961C5A constant uses=2 source=wide
+Crack_Threshold # 0xB4BB4619 constant uses=6 source=wide
+CrackMiscMap2D_Texture # 0xE4EC7D82 sampler uses=5 source=graph
+CrackNormalMap2D_1_Texture # 0xA9FD006E sampler uses=4 source=graph
+cracks_flow_1_Texture # 0x4948FA2A sampler uses=6 source=graph
+cracks_flow_2_Texture # 0x70C5C6EF sampler uses=6 source=graph
+Cube_Color # 0x6F75E1F0 constant uses=35 source=wide
+Custom_Texture # 0x18DAAC87 sampler uses=1 source=wide
+cutout_lines_breakup_noise_1_Texture # 0x9D42E4E5 sampler uses=28 source=graph
+cutout_lines_breakup_noise_2_Texture # 0xA4CFD820 sampler uses=28 source=graph
+cutout_lines_noise_1_Texture # 0x82686024 sampler uses=28 source=graph
+Damage # 0x2FB01A0B constant uses=2 source=wide
+DamageCutout2D_Texture # 0x6CEB3409 sampler uses=1 source=graph
+DamageMask2D_Texture # 0x16241519 sampler uses=1 source=graph
+DamageMiscMap2D_Texture # 0xF62CDBC1 sampler uses=25 source=graph
+Dark_Color # 0x5001A382 constant uses=4 source=wide
+detail_cracks_1_Texture # 0xFEF1BE8A sampler uses=6 source=graph
+detail_cracks_2_Texture # 0xC77C824F sampler uses=6 source=graph
+detail_normal_Texture # 0x109A739B sampler uses=1 source=graph
+Detail_Texture # 0x784C459F sampler uses=6 source=graph
+DetailBaseMap2D_Texture # 0x7A6C3992 sampler uses=1 source=graph
+DetailGloss2D_R_Texture # 0xCD6533F0 sampler uses=3 source=graph
+DetailNormal_Texture # 0xE1810F7D sampler uses=1 source=graph
+DetailNormalMap2D_Texture # 0x45A52060 sampler uses=44 source=graph
+DetailStitch_GlossMap2D_Texture # 0x4C4A337D sampler uses=1 source=graph
+Diffuse # 0xAF4BB549 constant uses=2 source=graph
+Diffuse_Color # 0xF22C3373 constant uses=7 source=graph
+Diffuse_Texture # 0x8FC641D3 sampler uses=1 source=graph
+diffuse_Texture # 0x07037F4D sampler uses=3 source=wide
+DiffuseColor # 0x4BAAD667 constant uses=969 source=wide
+DigitMap2D_1_Texture # 0xCD3CE586 sampler uses=1 source=graph
+DigitMap2D_2_Texture # 0xF4B1D943 sampler uses=1 source=graph
+DigitMap2D_3_Texture # 0xE3CACD00 sampler uses=1 source=graph
+dimensional_sky_Texture # 0x3AAEA913 sampler uses=16 source=graph
+Dirt_Color # 0x7A4FEDBD constant uses=11 source=wide
+Dirtiness # 0x8D42F83B constant uses=1 source=wide
+Displacement # 0x0B3A5E1E constant uses=2 source=graph
+dissolved # 0x10A35186 constant uses=1 source=wide
+distort_map_Texture # 0xEAC63281 sampler uses=1 source=graph
+Distracted_Color # 0x2DE73457 constant uses=1 source=wide
+Edge_Color # 0x9130C9E1 constant uses=5 source=wide
+edge_transition # 0x849D377E constant uses=2 source=wide
+Edges_Texture # 0xD33B2348 sampler uses=1 source=wide
+Emissive # 0x06F19114 constant uses=146 source=graph
+Emissive_Color # 0xD21B698F constant uses=12 source=graph
+emissive_mask_Texture # 0xC7FB024E sampler uses=3 source=graph
+emissive_Texture # 0xAB4E0CC2 sampler uses=1 source=wide
+Emissive_Value # 0xA93A7952 constant uses=1 source=graph
+EmissiveColor1D_Texture # 0xAF150DE0 sampler uses=31 source=graph
+EmissiveMask2D_Texture # 0x37B64DFA sampler uses=3 source=graph
+Enabled # 0x5113D8BC constant uses=1 source=wide
+Energy_Color # 0xDC206A26 constant uses=12 source=wide
+Expression1Map2D_2_Texture # 0x40C30316 sampler uses=2 source=graph
+Expression1Map2D_3_Texture # 0x57B81755 sampler uses=2 source=graph
+Expression1Map2D_Texture # 0x86376679 sampler uses=1 source=graph
+Expression2Map2D_2_Texture # 0x690BB7E4 sampler uses=2 source=graph
+Expression2Map2D_3_Texture # 0x7E70A3A7 sampler uses=2 source=graph
+eye_mask_Texture # 0x17605ABC sampler uses=1 source=graph
+flicker_displacement_1D_Texture # 0x11B1350D sampler uses=28 source=graph
+Flowmap2D_1_Texture # 0x719EDD96 sampler uses=16 source=graph
+Flowmap2D_2_Texture # 0x4813E153 sampler uses=12 source=graph
+Flowmap2D_Texture # 0xE4AD3789 sampler uses=17 source=graph
+Foam_Color # 0x0DD2ABDF constant uses=4 source=wide
+FoamTile01_1_Texture # 0x8F40266F sampler uses=2 source=graph
+FoamTile01_Texture # 0x048C8807 sampler uses=3 source=graph
+FoamTile02_Texture # 0x3D01B4C2 sampler uses=3 source=graph
+frame_grow # 0xBC97017B constant uses=2 source=wide
+Frequency # 0xA482271F constant uses=3 source=wide
+Fresnel_Mult # 0x5B641134 constant uses=28 source=wide
+FrostMaterialPackage2D_Texture # 0x96D689F6 sampler uses=1 source=graph
+Glass_Color # 0x7C456482 constant uses=1 source=wide
+GlitchBlocksMap2D_Texture # 0xAC2AEB19 sampler uses=8 source=graph
+GlitchVMap2D_Texture # 0x237491F3 sampler uses=2 source=graph
+Gloss # 0x0B065E94 constant uses=16 source=graph
+gloss # 0xCAC77190 constant uses=4 source=wide
+Gloss_Color # 0xB487BF10 constant uses=3 source=wide
+Glossiness # 0x24F4CA4C constant uses=1653 source=wide
+glossiness # 0x6BA9C99C constant uses=7 source=wide
+GlossMap2D_1_Texture # 0x93CA35AB sampler uses=8 source=graph
+GlossMap2D_3_Texture # 0xBD3C1D2D sampler uses=2 source=graph
+GlossMap2D_4_Texture # 0xD95D70E4 sampler uses=1 source=graph
+GlossMap2D_A_Texture # 0x6369F67E sampler uses=1 source=graph
+GlossMap2D_C_Texture # 0x4D9FDEF8 sampler uses=1 source=graph
+GlossMap2D_Texture # 0x1576D848 sampler uses=321 source=graph
+GlossMap2D_Texture_1_Texture # 0x508F8CA5 sampler uses=1 source=graph
+GlossMapSwitch_Texture # 0x6376D191 sampler uses=37 source=graph
+glow # 0x7ADEDE9B constant uses=2 source=graph
+GPRealWorldTimer # 0x5F354BC7 constant uses=10 source=wide
+Gradient_Color # 0x998C26AA constant uses=1 source=wide
+GradientMap2D_Texture # 0x8E92C9DF sampler uses=2 source=graph
+GraphMask2D_2_Texture # 0x1E3B1538 sampler uses=1 source=graph
+Green_BaseMap2D_Texture # 0x8929BC84 sampler uses=4 source=graph
+green_BaseMap2D_Texture # 0x8BCCB01C sampler uses=1 source=graph
+Green_MaterialPackage2D_Texture # 0xE4CF0EAD sampler uses=23 source=graph
+green_sand_BaseMap2D_Texture # 0xC9E9E4AC sampler uses=1 source=graph
+green_sand_GlossMap2D_Texture # 0x27CC8798 sampler uses=1 source=graph
+Health # 0xF0A26D74 constant uses=174 source=wide
+health_alpha # 0x509CF1D8 constant uses=2 source=wide
+Heat_Color # 0x7473C8EF constant uses=6 source=wide
+HueSatLum_Palette_Texture # 0xD6E8EBCC sampler uses=11 source=graph
+Idle_Color # 0xD6663539 constant uses=5 source=wide
+Intensity # 0x6B4F279E constant uses=4 source=wide
+intensity # 0xE9BEA53D constant uses=5 source=wide
+larger_star_noise_cutout_Texture # 0xDD0F6CDD sampler uses=16 source=graph
+Lava_Color # 0x63ECB2C2 constant uses=2 source=wide
+Layer_001_n_Texture # 0x2D4D0E45 sampler uses=1 source=graph
+Layer_001_Texture # 0x3869C048 sampler uses=4 source=graph
+Layer_002_Texture # 0x01E4FC8D sampler uses=4 source=graph
+Layer_1_normal_Texture # 0x9ACC2B82 sampler uses=2 source=graph
+Layer_2_normal_Texture # 0xB3049F70 sampler uses=2 source=graph
+Layer_3_normal_Texture # 0x1D6C0EE1 sampler uses=2 source=graph
+Layer_4_normal_Texture # 0xE095F694 sampler uses=2 source=graph
+Layer_Base_MaterialPackage2D_Texture # 0x4BB6FA1B sampler uses=4 source=graph
+Light_Color # 0x2E2142FB constant uses=6 source=wide
+line_cutout_1D_a_Texture # 0x87107085 sampler uses=28 source=graph
+line_cutout_1D_b_Texture # 0xBE9D4C40 sampler uses=28 source=graph
+MacroSplatMap2D_Texture # 0x3BF0B0B5 sampler uses=2 source=graph
+magboot # 0x3649AE85 constant uses=2 source=wide
+MagbootPlayerPosition # 0xA2C653BF constant uses=1 source=wide
+Manual_Color # 0x26DCC4CE constant uses=1 source=wide
+map_base_Texture # 0xB7DF80D9 sampler uses=1 source=graph
+Map_FOW_1_Texture # 0x22873448 sampler uses=1 source=wide
+Map_FOW_2_Texture # 0x1B0A088D sampler uses=1 source=graph
+Map_FOW_3_Texture # 0x0C711CCE sampler uses=1 source=wide
+Map_FOW_4_Texture # 0x68107107 sampler uses=1 source=graph
+Map_Resolution # 0xF5A9B8F0 constant uses=1 source=wide
+Mask_Texture # 0x0005F1E9 sampler uses=13 source=graph
+mask_Texture # 0x18342A11 sampler uses=3 source=graph
+MaskMap2D_Texture # 0xA6C3B1D5 sampler uses=63 source=graph
+meleePosition # 0xDBD11830 constant uses=1 source=wide
+MetaballMap2D_2_Texture # 0xD2EC7281 sampler uses=1 source=graph
+Middle_GlossMap2D_Texture # 0xCBEAD5C7 sampler uses=1 source=graph
+Middle_MiscMap2D_Texture # 0xC11A7A41 sampler uses=1 source=graph
+Middle_NormalMap2D_Texture # 0x073A4CC6 sampler uses=1 source=graph
+Middle_Sparkle_Mask_Texture # 0xA8EBE10F sampler uses=1 source=graph
+MiscMap2D_Texture # 0xE68930AC sampler uses=243 source=graph
+MiscMap2DTile_Texture # 0x6ECB3570 sampler uses=1 source=graph
+moire_line_noise_Texture # 0x253C350E sampler uses=28 source=graph
+moire_noise_flow_Texture # 0xECE96D8A sampler uses=28 source=graph
+noise_emissive_mult_Texture # 0x11B0F118 sampler uses=2 source=graph
+Noise_Map_01_Texture # 0x606D3860 sampler uses=17 source=graph
+NoiseMap2D_Texture # 0x730E851F sampler uses=23 source=graph
+NoiseScale # 0xD5F05EAB constant uses=2 source=wide
+Normal_Texture # 0x66D48EF1 sampler uses=1 source=graph
+NormalMap2D_1_Texture # 0x67D6383E sampler uses=60 source=graph
+NormalMap2D_2_Texture # 0x5E5B04FB sampler uses=41 source=graph
+NormalMap2D_Texture # 0x7AE34E7A sampler uses=433 source=graph
+NPC_Skidd_World_Position # 0x289563DF constant uses=1 source=wide
+ObjectNormalMap2D_Texture # 0x61D0637F sampler uses=29 source=graph
+ObjectSplatGrungeMap2D_Texture # 0xF23D5A96 sampler uses=1 source=graph
+ObjectSplatMap2D_Texture # 0x205DECC3 sampler uses=29 source=graph
+Offset # 0x677284B7 constant uses=3 source=graph
+offset # 0x60DE8181 constant uses=41 source=wide
+offset_u # 0xA56BBE4A constant uses=2 source=wide
+offset_v # 0x3C62EFF0 constant uses=2 source=wide
+Opacity # 0x42170E5E constant uses=1 source=graph
+Origin # 0xE0891879 constant uses=2 source=wide
+Paint_Color # 0x97B78616 constant uses=1 source=wide
+Paint_Texture # 0x2C47FCA9 sampler uses=1 source=wide
+paint_Texture # 0x9F39B75C sampler uses=1 source=wide
+Palette_Texture # 0x1C12D5A6 sampler uses=2 source=wide
+ParallaxCrackMiscMap2D_Texture # 0xDECDF7D2 sampler uses=4 source=graph
+phase_dash # 0xFF823DC7 constant uses=3 source=wide
+PhotoModeLuminance # 0x80F9A4B4 constant uses=1 source=wide
+pixel_noise_1_Texture # 0xC1597FC9 sampler uses=4 source=graph
+pixel_noise_2_Texture # 0xF8D4430C sampler uses=4 source=graph
+pixel_noise_normal_Texture # 0x0A9044E7 sampler uses=4 source=graph
+PixelMap2D_Texture # 0x63356774 sampler uses=17 source=graph
+Planet_Texture_1_Texture # 0xC2EDBE37 sampler uses=2 source=graph
+Planet_Texture_3_Texture # 0xEC1B96B1 sampler uses=1 source=graph
+Planet_Texture_Texture # 0x270F86D4 sampler uses=4 source=graph
+PlayerDistance # 0xA200174B constant uses=4 source=wide
+PlayerMaxRange # 0xCE8AAD64 constant uses=4 source=wide
+PlayerPosition # 0xF8BE693F constant uses=26 source=wide
+PlayerPosition_1 # 0x004D4ADF constant uses=1 source=wide
+Portal_Direction # 0xEEBB5AEB constant uses=5 source=wide
+Portal_Position # 0xD8DB3B36 constant uses=13 source=wide
+Portal_Texture # 0x1E461D53 sampler uses=1 source=wide
+portal_Texture # 0xD322658B sampler uses=8 source=wide
+power # 0x7318E265 constant uses=1 source=wide
+Primary_Texture # 0x85A9A057 sampler uses=5 source=wide
+PrimaryColor1D_Texture # 0xA4C74AB4 sampler uses=31 source=graph
+Random_Color # 0x5016F9F7 constant uses=1 source=wide
+Red_BaseMap2D_Texture # 0xF5A61162 sampler uses=7 source=graph
+red_BaseMap2D_Texture # 0x626E34BA sampler uses=2 source=graph
+red_GlossMap2D_Texture # 0xD3B3B519 sampler uses=2 source=graph
+Red_GrungeMap2D_Texture # 0xE2110BC8 sampler uses=3 source=graph
+Red_MaterialPackage2D_Texture # 0x54C83B26 sampler uses=29 source=graph
+Red_MiscMap2D_Texture # 0xB8F5F64E sampler uses=7 source=graph
+red_MiscMap2D_Texture # 0x2F3DD396 sampler uses=2 source=graph
+Reflectance # 0x36810AAD constant uses=10 source=wide
+Reflection # 0xEBF9478B constant uses=2 source=wide
+Resolution # 0x26E551B3 constant uses=41 source=wide
+Reveal # 0xA0283A2D constant uses=4 source=wide
+scale # 0x34D4C641 constant uses=6 source=wide
+scaleform_Texture # 0xC09F31FB sampler uses=13 source=wide
+scan_line_1D_a_Texture # 0x2B9BF100 sampler uses=28 source=graph
+scan_line_1D_b_Texture # 0x1216CDC5 sampler uses=28 source=graph
+Screen_A_Blue_Texture # 0x6E769109 sampler uses=1 source=graph
+Screen_A_Green_Texture # 0xBA667DCB sampler uses=1 source=graph
+Screen_A_Red_Texture # 0x32150D3A sampler uses=1 source=graph
+Screen_B_Green_Texture # 0xAB1B17B2 sampler uses=1 source=graph
+Screen_B_Red_Texture # 0x8FDF61F4 sampler uses=1 source=graph
+Screen_Color # 0x191E7F29 constant uses=5 source=wide
+SecondaryColor1D_Texture # 0x5BF2E91B sampler uses=31 source=graph
+Select_Color # 0xCD0DCE36 constant uses=1 source=wide
+Seq02_Heat_Texture # 0x622E7FD5 sampler uses=4 source=graph
+Seq03_Heat_Texture # 0xFF219EA3 sampler uses=4 source=graph
+sequence_map_1D_Texture # 0x0A2038A8 sampler uses=3 source=graph
+shard_mask_1_Texture # 0x5A02773D sampler uses=6 source=graph
+shard_mask_2_Texture # 0x638F4BF8 sampler uses=6 source=graph
+shard_mask_3_Texture # 0x74F45FBB sampler uses=6 source=graph
+shard_mask_4_Texture # 0x10953272 sampler uses=6 source=graph
+Slice # 0x24FDB464 constant uses=2 source=wide
+SnowHeightMap2D_Texture # 0x5C8746B7 sampler uses=1 source=graph
+softness # 0xB3708330 constant uses=4 source=wide
+speakerColor # 0x021A9DA6 constant uses=1 source=wide
+Spec_Color # 0x6B591974 constant uses=13 source=wide
+SpecColor1D_Texture # 0xF9B7E7DA sampler uses=27 source=graph
+SpecReflectance # 0x33206202 constant uses=3 source=wide
+Specular # 0x08FE9F29 constant uses=2 source=wide
+Specular_Color # 0x8732FEC1 constant uses=3 source=wide
+Speed # 0x16753237 constant uses=18 source=wide
+speed # 0xD7B41D33 constant uses=37 source=wide
+Spinning_Emissive_Scroll_Speed # 0x9EE0D4A9 constant uses=1 source=wide
+SplatMap2D_Texture # 0x12D59296 sampler uses=3 source=graph
+SplatMask2D_Texture # 0x14BFD594 sampler uses=11 source=wide
+star_noise_flow_Texture # 0x858C089B sampler uses=16 source=graph
+star_subtle_noise_cutout_Texture # 0xEE07AB1B sampler uses=16 source=graph
+Start_Color # 0x5F1E2CC7 constant uses=1 source=wide
+Static_Color # 0xDF89B637 constant uses=3 source=wide
+StatsMap2D_1_Texture # 0x1EBD3D9A sampler uses=2 source=graph
+StatsMap2D_3_Texture # 0x304B151C sampler uses=2 source=graph
+StatsMap2D_4_Texture # 0x542A78D5 sampler uses=2 source=graph
+StatsMap2D_5_Texture # 0x43516C96 sampler uses=2 source=graph
+Steps # 0x2D71C6B3 constant uses=11 source=wide
+StrandsMap2D_Texture # 0xA24F508F sampler uses=2 source=graph
+StreamingVideo_Texture # 0xE4F21355 sampler uses=2 source=wide
+success # 0xA1578516 constant uses=1 source=wide
+targeted # 0x032322FD constant uses=4 source=wide
+Targeted_Color # 0xF3C59A20 constant uses=4 source=wide
+techFrameAlpha # 0x2FA80203 constant uses=1 source=wide
+Thickness # 0xECE213A3 constant uses=3 source=wide
+Thruster_Color # 0xAC74B599 constant uses=1 source=wide
+tile_2_Texture # 0x2C9038CB sampler uses=2 source=graph
+tile_zr42_light_grid # 0xFEA730F0 constant uses=1 source=wide
+Tint_Color # 0x76F54831 constant uses=22 source=wide
+Top_Color # 0xB0755195 constant uses=7 source=wide
+TopiaryDeathTValue # 0x2ECCDD0F constant uses=2 source=wide
+TopiaryHitPoint # 0x761BA030 constant uses=9 source=wide
+TopiaryTValue # 0x9240600B constant uses=20 source=wide
+Transmittance # 0x6E91413E constant uses=3 source=wide
+tutorial_tint # 0xDDC8C559 constant uses=1 source=wide
+TValue # 0x059D203E constant uses=46 source=wide
+U_Tile # 0x99EFF28A constant uses=2 source=wide
+uv_scale # 0xDAE11211 constant uses=2 source=wide
+UVD_Map01_Texture # 0x007EE963 sampler uses=16 source=graph
+UVD_Map_1_Texture # 0x2092B69E sampler uses=12 source=graph
+UVD_Map_2_Texture # 0x191F8A5B sampler uses=7 source=graph
+UVD_Map_3_Texture # 0x0E649E18 sampler uses=9 source=graph
+UVD_Map_4_Texture # 0x6A05F3D1 sampler uses=4 source=graph
+UVs_breakup_1_Texture # 0x8C7EA65E sampler uses=1 source=graph
+UVs_breakup_2_Texture # 0xB5F39A9B sampler uses=1 source=graph
+UVs_World_Cube_1_Texture # 0x87C675E4 sampler uses=5 source=graph
+UVs_World_Cube_2_Texture # 0xBE4B4921 sampler uses=4 source=graph
+UVs_World_Cube_3_Texture # 0xA9305D62 sampler uses=2 source=graph
+UVs_World_Cube_Texture # 0x641CFAC2 sampler uses=14 source=graph
+Value # 0x042494F5 constant uses=11 source=wide
+VarianceMap2D_Texture # 0xED04073F sampler uses=13 source=graph
+veins_pulse_1_Texture # 0x0C4DF7AE sampler uses=1 source=graph
+veins_pulse_Texture # 0xEB145AEA sampler uses=1 source=graph
+version # 0x714B8967 constant uses=1 source=wide
+Vibration_Source_Object_Pos # 0x11EF973F constant uses=2 source=wide
+Vibration_T # 0x18A7A041 constant uses=2 source=wide
+Vignette_Color # 0xB1381388 constant uses=40 source=wide
+Vignette_Texture # 0x43E01A79 sampler uses=10 source=wide
+Visibility # 0x8AB81D39 constant uses=17 source=wide
+visibility # 0xC5E51EE9 constant uses=4 source=wide
+Volume # 0x87E283B9 constant uses=4 source=wide
+Water_Color # 0xDDB91FDF constant uses=2 source=graph
+WaterColor # 0xB1FAFD5B constant uses=5 source=wide
+WaveMap1_3_Texture # 0x0D86F9E5 sampler uses=2 source=graph
+WaveMap1_6_Texture # 0x4711BCAA sampler uses=2 source=graph
+Weapon_Need_Ammo # 0x55C28F9E constant uses=11 source=wide
+Weapon_Number # 0x93B0D7D0 constant uses=20 source=wide
+Weathering_MaterialPackage2D_Texture # 0xB529D2A2 sampler uses=2 source=graph
+White # 0x5B9C0165 constant uses=4 source=wide
+WindScale # 0x9CDB1947 constant uses=1 source=wide
+WorldSpaceHitPoint # 0x79DDBC77 constant uses=16 source=wide
+Spec_Reflectance # 0xFEAF9A36 constant uses=1065 arity=3 source=guess
+Ambient_Occlusion # 0x851E709E constant uses=468 arity=1 source=guess
+EmissiveColor # 0x13759912 constant uses=379 arity=3 source=guess
+MetallicLineReflectance # 0x6760CC36 constant uses=318 arity=1 source=guess
+DetailNormal_Scale # 0xE9EB42A0 constant uses=190 arity=1 source=guess
+Damage_Emissive_Color # 0xE14A7223 constant uses=168 arity=3 source=guess
+Diffuse_Light_Wrap # 0x10BBEACC constant uses=146 arity=1 source=guess
+Specular_Reflectance # 0x62835AF9 constant uses=144 arity=3 source=guess
+Opacity_Min_Max # 0x45446341 constant uses=111 arity=2 source=guess
+Diffuse_Brightness # 0x74979B4A constant uses=98 arity=1 source=guess
+Diffuse_Map_Texture # 0x1F55D93E sampler uses=95 arity=0 source=guess
+Glass_Alpha # 0xCAF31501 constant uses=95 arity=1 source=guess
+Light_Transmittance # 0xD0803B2B constant uses=89 arity=1 source=guess
+Alpha_Map_Texture # 0x415169E5 sampler uses=88 arity=0 source=guess
+Color_Dark # 0x1DAF77B8 constant uses=86 arity=3 source=guess
+Color_Light # 0x56CB709A constant uses=85 arity=3 source=guess
+Detail_Normal_Scale # 0xF36FA77A constant uses=80 arity=1 source=guess
+Flow_Map_Texture # 0x1C62CE06 sampler uses=75 arity=0 source=guess
+Enable_Screen_Tint # 0x13B3B3E1 constant uses=73 arity=1 source=guess
+Opacity_Fresnel_Exponent # 0x157CB196 constant uses=72 arity=1 source=guess
+FresnelExponent # 0xE787CA0F constant uses=71 arity=1 source=guess
+Heat_Map_Texture # 0x3CC3168C sampler uses=71 arity=0 source=guess
+Light_Wrap # 0x666CF95C constant uses=68 arity=1 source=guess
+Displacement_Strength # 0xA57CA088 constant uses=66 arity=1 source=guess
+FresnelColor # 0x25F6620B constant uses=63 arity=3 source=guess
+Visibility_Mult # 0x1B446913 constant uses=58 arity=1 source=guess
+Line_Thickness # 0x0EB504DA constant uses=56 arity=1 source=guess
+emissive_mult # 0x7EAB0EE6 constant uses=55 arity=1 source=guess
+Color_Base_Light # 0xBC37A1FF constant uses=51 arity=3 source=guess
+Luminance_Dark # 0x9C0DD254 constant uses=45 arity=1 source=guess
+Luminance_Light # 0xFFF67C6C constant uses=44 arity=1 source=guess
+Pixel_Opacity # 0x6B50EAD6 constant uses=43 arity=1 source=guess
+Noise_Intensity # 0x9F58FFB1 constant uses=41 arity=1 source=guess
+portal_visibility # 0x8712B5EA constant uses=41 arity=1 source=guess
+Eye_Displacement_Texture # 0xA2E2AFEF sampler uses=39 arity=0 source=guess
+Palette_Size # 0x7495EF1F constant uses=39 arity=1 source=guess
+Emissive_Mult # 0x6DE7EA2D constant uses=39 arity=1 source=guess
+parallax_depth # 0x5DB5EFC7 constant uses=37 arity=1 source=guess
+emissive_amount # 0x77AF2D2B constant uses=37 arity=1 source=guess
+Depth_Power # 0x00C9F71F constant uses=34 arity=1 source=guess
+Parallax_Scale # 0x47F581F6 constant uses=33 arity=1 source=guess
+RandomBlendGrime_Value # 0x8F701003 constant uses=33 arity=2 source=guess
+mask_power # 0x23FEED4B constant uses=32 arity=1 source=guess
+Depth_Multiplier # 0x6C0DDE43 constant uses=32 arity=1 source=guess
+cutout_displacement_scale # 0xBFE0511B constant uses=32 arity=1 source=guess
+Fresnel_Exponent # 0x7760E49F constant uses=31 arity=1 source=guess
+Wind_Intensity # 0x611CE8A6 constant uses=30 arity=1 source=guess
+Wind_Noise_Tiling # 0x9A45EEDA constant uses=29 arity=1 source=guess
+Noise_Mult # 0x217240F9 constant uses=28 arity=1 source=guess
+Alpha_Mult # 0x74488793 constant uses=28 arity=1 source=guess
+Distortion_Strength # 0xD5252E52 constant uses=27 arity=1 source=guess
+Screen_Tint_Color # 0x39267097 constant uses=26 arity=3 source=guess
+AlphaPower # 0xC706BDE5 constant uses=25 arity=1 source=guess
+EmissiveMult # 0x620ADC13 constant uses=25 arity=1 source=guess
+EmissiveMask # 0x3977D4D4 constant uses=23 arity=1 source=guess
+Width_Min # 0x8C831855 constant uses=22 arity=1 source=guess
+warpsaturationtime_Value # 0x3FE7F389 constant uses=22 arity=3 source=guess
+FresnelPower # 0xE82A2B42 constant uses=22 arity=1 source=guess
+Width_Max # 0xB08E270C constant uses=22 arity=1 source=guess
+displacement_noise_Texture # 0xAF41B976 sampler uses=22 arity=0 source=guess
+border_gamma_detail # 0x7E7A83AE constant uses=21 arity=1 source=guess
+Gloss_Intensity # 0x73ED1C50 constant uses=21 arity=1 source=guess
+Depth_Mult # 0xB9B35DFE constant uses=21 arity=1 source=guess
+Enable_Vignette # 0xA23FADAA constant uses=21 arity=1 source=guess
+Ice_Distortion_Wet # 0x0FE74A17 constant uses=20 arity=1 source=guess
+Distortion_Strength_Start # 0x465BA7FA constant uses=20 arity=1 source=guess
+Map01_Texture # 0x390F30F0 sampler uses=20 arity=0 source=guess
+Distortion_Strength_End # 0x1903E9C8 constant uses=20 arity=1 source=guess
+distortion_cutout_shading # 0xF83CFDBB constant uses=20 arity=1 source=guess
+DepthFadeFactor # 0x6D6EC44A constant uses=19 arity=1 source=guess
+Emissive_Strength # 0xE150A722 constant uses=19 arity=1 source=guess
+Length_Min # 0xA20B3835 constant uses=19 arity=1 source=guess
+Length_Max # 0x9E06076C constant uses=19 arity=1 source=guess
+Emissive_Power # 0x1FC720C6 constant uses=19 arity=1 source=guess
+Diffuse_Mult # 0x3538A558 constant uses=19 arity=1 source=guess
+SlotOverlayEmission_Amount # 0xD7CCF04A constant uses=18 arity=2 source=guess
+CenterFade # 0xD9D6BBA2 constant uses=18 arity=1 source=guess
+a03grindrail_Amount # 0x5B07EAA2 constant uses=18 arity=2 source=guess
+Smoke_Fill # 0x9EDBFC4A constant uses=18 arity=1 source=guess
+Glow_Power # 0xC06564DF constant uses=17 arity=1 source=guess
+Sparkle_Gloss # 0x180D1055 constant uses=17 arity=1 source=guess
+Random_Mask_Threshold # 0xD03A6CF5 constant uses=17 arity=1 source=guess
+Glow_Softness # 0x38D4CA09 constant uses=16 arity=1 source=guess
+Index_Wear_Mip # 0xDE1E5E5A constant uses=16 arity=1 source=guess
+Alpha_Breakup_Amount # 0x712936BE constant uses=16 arity=1 source=guess
+Screen_State # 0xDCDBE53B constant uses=16 arity=1 source=guess
+Wave_Diffuse_Intensity # 0x43C71635 constant uses=16 arity=1 source=guess
+Dust_Blend_Opacity # 0x32BE2B10 constant uses=16 arity=1 source=guess
+Overlay_Opacity_Threshold # 0x3C07D5F9 constant uses=16 arity=2 source=guess
+AgeMult # 0x5000871D constant uses=15 arity=1 source=guess
+base_uv_scale # 0x1F7AC7AF constant uses=15 arity=2 source=guess
+Dust_Blend_Threshold # 0x4C7973FF constant uses=15 arity=1 source=guess
+AmbientOcclusionMap_Strength # 0xBA5585F5 constant uses=15 arity=1 source=guess
+Heat_Mult # 0xB911ED88 constant uses=15 arity=1 source=guess
+GlossVariation # 0xD8A192D8 constant uses=15 arity=1 source=guess
+anim_sim # 0xAD217E4A constant uses=15 arity=1 source=guess
+Red_Gloss # 0xB53D56B6 constant uses=14 arity=1 source=guess
+Glow_Radius # 0x29AF021F constant uses=14 arity=1 source=guess
+LightTransmittance # 0x79186CFD constant uses=14 arity=1 source=guess
+Color_Blend # 0x964C5D45 constant uses=14 arity=3 source=guess
+BumpAngleRadius_Amount # 0x658B56D4 constant uses=13 arity=1 source=guess
+Heat_Intensity # 0x17E2827D constant uses=13 arity=1 source=guess
+Enable_Noise # 0x1FE0BC01 constant uses=13 arity=1 source=guess
+Parallax_Mask_Speed # 0xDF2A8F7B constant uses=13 arity=1 source=guess
+Color_Intensity # 0xF0A64F9B constant uses=13 arity=1 source=guess
+Glossiness_Factor # 0x2FF73DE0 constant uses=13 arity=1 source=guess
+StandI20 # 0x40D7A747 constant uses=13 arity=1 source=guess
+Red_Spec_Reflectance # 0x5C90764E constant uses=12 arity=1 source=guess
+Lines_Intensity # 0x1709455A constant uses=12 arity=1 source=guess
+Smoke_Mult # 0x4F8AB909 constant uses=12 arity=1 source=guess
+Base_Spec_Reflectance # 0x05B4D6B2 constant uses=12 arity=1 source=guess
+Base_Color_Emissive # 0x312FE2E2 constant uses=12 arity=3 source=guess
+shadow_saturation_blend # 0x9A56F2D9 constant uses=12 arity=2 source=guess
+Dirt_Intensity # 0xDC2B95A7 constant uses=12 arity=1 source=guess
+Base_Gloss # 0xB58972BA constant uses=12 arity=1 source=guess
+DepthFade # 0xE3CACB27 constant uses=11 arity=1 source=guess
+color_brightness # 0x2AD3ED90 constant uses=11 arity=1 source=guess
+Cube_Mult # 0xBE9D89DD constant uses=11 arity=1 source=guess
+Fresnel_Strength # 0xAAC47D17 constant uses=11 arity=1 source=guess
+Detail_Normal_Intensity # 0x85B05BEA constant uses=11 arity=1 source=guess
+FrameSpecularBias_Value # 0xF9162320 constant uses=11 arity=1 source=guess
+Flow_Strength_Start # 0xC706B1E2 constant uses=11 arity=1 source=guess
+Mask_Paint_Texture # 0x93BB7340 sampler uses=11 arity=0 source=guess
+ThicknessWindOverlay_Scale # 0x76938C6D constant uses=11 arity=1 source=guess
+energy_type # 0x030ECD12 constant uses=11 arity=1 source=guess
+Normal_Scale # 0xA3AED15A constant uses=11 arity=1 source=guess
+Dust_Luminance # 0x692CE6F5 constant uses=10 arity=1 source=guess
+Dust_Saturation # 0x3F7F6BCF constant uses=10 arity=1 source=guess
+Heat_Fill # 0x6840A8CB constant uses=10 arity=1 source=guess
+Glossiness_Min # 0xF430A9AD constant uses=10 arity=1 source=guess
+Vignette_Debug # 0xBBCB1CC6 constant uses=10 arity=1 source=guess
+Grunge_Tiling # 0xA35023FF constant uses=10 arity=2 source=guess
+alpha_mult # 0x9B272B7D constant uses=10 arity=1 source=guess
+Scale_Min # 0x05823E71 constant uses=10 arity=1 source=guess
+ParallaxScale # 0xBD638EAC constant uses=10 arity=1 source=guess
+displacement_scale # 0xA7C635EE constant uses=10 arity=1 source=guess
+Planet_Normal_Scale # 0x8C4D100A constant uses=10 arity=1 source=guess
+Green_Gloss # 0xD0109BCB constant uses=10 arity=1 source=guess
+Damage_Mask_Tile # 0xA7878169 constant uses=10 arity=2 source=guess
+Top_Ambient_Occlusion # 0x8060256C constant uses=10 arity=1 source=guess
+Spec_Reflectance_Factor # 0x6D4B1D55 constant uses=10 arity=1 source=guess
+Distortion_Intensity_Start # 0xE226ACE8 constant uses=9 arity=1 source=guess
+Color_Dirt # 0x9EB42BF5 constant uses=9 arity=3 source=guess
+center_color # 0x02146D84 constant uses=9 arity=3 source=guess
+end_color # 0x17C51243 constant uses=9 arity=3 source=guess
+Base_Intensity # 0x8A375A18 constant uses=9 arity=1 source=guess
+Base_Ambient_Occlusion # 0x6F302CEB constant uses=9 arity=1 source=guess
+Heat_Breakup_Speed # 0xF3E5C3D8 constant uses=9 arity=1 source=guess
+Damage_Dust_Color # 0x1B296639 constant uses=9 arity=3 source=guess
+start_color # 0x18438C14 constant uses=9 arity=3 source=guess
+Flow_Detail_Strength # 0x9D0B0C49 constant uses=8 arity=1 source=guess
+Blue_Gloss # 0x82A99C6A constant uses=8 arity=1 source=guess
+Intensity_Dark # 0x8E55E3A4 constant uses=8 arity=3 source=guess
+Emissive_Power_Max # 0xABCC19C9 constant uses=8 arity=1 source=guess
+Parallax_Depth # 0x5110B81B constant uses=8 arity=1 source=guess
+Emissive_Power_Min # 0x97C12690 constant uses=8 arity=1 source=guess
+color_light # 0x1196D049 constant uses=8 arity=3 source=guess
+Fresnel # 0x0495CAA7 constant uses=8 arity=1 source=guess
+Mask_Edge_Power # 0xE56FCE43 constant uses=8 arity=1 source=guess
+opacity_mult # 0x1BFE09E2 constant uses=8 arity=1 source=guess
+Noise_Tiling # 0x0E3D9137 constant uses=8 arity=1 source=guess
+Stickers_S03 # 0xDCFD2FC3 constant uses=8 arity=1 source=guess
+Mid_Shadow_Color # 0x304EF9B6 constant uses=8 arity=3 source=guess
+Intensity_Light # 0x4259D641 constant uses=8 arity=3 source=guess
+Mask_Intensity # 0x8ED5C5E8 constant uses=8 arity=1 source=guess
+DamageSecondaryCutoff_Scale # 0xBA5112A4 constant uses=8 arity=1 source=guess
+Color_Glass # 0x251A9332 constant uses=8 arity=3 source=guess
+Color_Power # 0x965B2DCD constant uses=8 arity=1 source=guess
+color_dark # 0xF2C0DB56 constant uses=8 arity=3 source=guess
+Distortion_Intensity # 0x36DEA1EE constant uses=8 arity=1 source=guess
+Noise_Mask_Radius # 0xC50AD2B6 constant uses=8 arity=1 source=guess
+Displacement_Speed # 0xD82179A8 constant uses=7 arity=1 source=guess
+Fresnel_Brightness # 0x2D74AC8F constant uses=7 arity=1 source=guess
+Green_Ambient_Occlusion # 0xA7ED1B9A constant uses=7 arity=1 source=guess
+enableglossinesslines_Amount # 0x3A6FEFE5 constant uses=7 arity=1 source=guess
+Displacement_Scale # 0x3B41A2DA constant uses=7 arity=1 source=guess
+Speed_Start # 0xE396642B constant uses=7 arity=1 source=guess
+Grunge_Rotation # 0x365C791C constant uses=7 arity=1 source=guess
+Fresnel_Exponent_End # 0xB4CAB501 constant uses=7 arity=1 source=guess
+Dust_Hue # 0x7641D15C constant uses=7 arity=1 source=guess
+spec_mult # 0x6B8035C6 constant uses=7 arity=1 source=guess
+SpecularReflectance # 0x16E604C6 constant uses=7 arity=3 source=guess
+depth_mult # 0x56DCF110 constant uses=7 arity=1 source=guess
+Stats_Index # 0xBAF33426 constant uses=7 arity=1 source=guess
+Center_Alpha # 0x6D52E8FB constant uses=7 arity=1 source=guess
+Death_Breakup_Amount # 0x1A236E77 constant uses=7 arity=1 source=guess
+Fresnel_Exponent_Start # 0x3EBE7BEB constant uses=7 arity=1 source=guess
+ModeEdgeAmount_Value # 0x04DC518F constant uses=7 arity=1 source=guess
+Grime # 0x9FD88804 constant uses=7 arity=1 source=guess
+Red_Ambient_Occlusion # 0xDB62B67C constant uses=7 arity=1 source=guess
+Sparkle_Spec # 0x97484096 constant uses=7 arity=3 source=guess
+Displacement_Strength_Base # 0xB9E7ED97 constant uses=7 arity=1 source=guess
+Parallax_Bias_Min # 0x513654F3 constant uses=7 arity=1 source=guess
+Color_Heat # 0xBC972CBB constant uses=7 arity=3 source=guess
+emissionthresholdtiling_Amount # 0xDD9F6BA3 constant uses=7 arity=1 source=guess
+Speed_End # 0xB8117AB3 constant uses=7 arity=1 source=guess
+DiffuseTint # 0xDF1298AD constant uses=7 arity=3 source=guess
+rock_tile # 0x047ED7A6 constant uses=7 arity=1 source=guess
+Lines_Fade_Glossiness # 0xE9D9BF9F constant uses=6 arity=1 source=guess
+Color_Alpha_Min # 0x6AC55D83 constant uses=6 arity=1 source=guess
+end_fade # 0x67E0BEC2 constant uses=6 arity=1 source=guess
+OffsetBorderStrength # 0x9E7B6CA1 constant uses=6 arity=1 source=guess
+CracksScaleBump_Strength # 0x9E7FE3F1 constant uses=6 arity=1 source=guess
+NoiseTiling # 0xD2E79521 constant uses=6 arity=1 source=guess
+Custom_Map_Texture # 0x721C5982 sampler uses=6 arity=0 source=guess
+Timer_Scale # 0xDDFFA06D constant uses=6 arity=1 source=guess
+Noise_Tile # 0x73EF220A constant uses=6 arity=2 source=guess
+Scale_Max # 0x398F0128 constant uses=6 arity=1 source=guess
+Emissive_Min # 0x3277FA10 constant uses=6 arity=1 source=guess
+base_dark # 0x8D136EA4 constant uses=6 arity=3 source=guess
+parallax_scale # 0x4B50D62A constant uses=6 arity=1 source=guess
+Normal_Intensity # 0xCC7457CD constant uses=6 arity=1 source=guess
+Green_Spec_Reflectance # 0x0FD22780 constant uses=6 arity=1 source=guess
+SecondaryDistortion # 0x6AA27358 constant uses=6 arity=1 source=guess
+base_light # 0x425A90CC constant uses=6 arity=3 source=guess
+cutoffemissionpackage2d # 0x9ECECDCF constant uses=6 arity=1 source=guess
+DepthPower # 0x0AFD6788 constant uses=6 arity=1 source=guess
+PrimaryDistortion # 0xE1475157 constant uses=6 arity=1 source=guess
+EmissivePower # 0xDEA9D05B constant uses=6 arity=1 source=guess
+Color_Alpha_Max # 0x56C862DA constant uses=6 arity=1 source=guess
+Fade_Far_Local # 0xDD820E96 constant uses=6 arity=1 source=guess
+Center_Fill # 0xF50A7362 constant uses=6 arity=1 source=guess
+NormalMapScale # 0x45BBE43A constant uses=6 arity=1 source=guess
+Light_Mult # 0xEE44E276 constant uses=6 arity=1 source=guess
+Displacement_Strength_Detail # 0xA98713DA constant uses=6 arity=1 source=guess
+Parallax_Intensity # 0x595D7D3E constant uses=6 arity=1 source=guess
+Emissive_Max # 0x0E7AC549 constant uses=6 arity=1 source=guess
+Parallax_Bias_Max # 0x6D3B6BAA constant uses=6 arity=1 source=guess
+DepthMultiplier # 0x6BE66121 constant uses=6 arity=1 source=guess
+Parallax_Near_Color # 0xCC593C20 constant uses=6 arity=3 source=guess
+Breakup_Fill # 0x502F55B5 constant uses=6 arity=1 source=guess
+diffuse_map_Texture # 0xBF4D20FD sampler uses=5 arity=0 source=guess
+damagedirtdetail_Sampler # 0x6A5EDC7B sampler uses=5 arity=0 source=guess
+base_color # 0x4F1684D2 constant uses=5 arity=3 source=guess
+Shadow_Openarea_Value # 0x89B1798D constant uses=5 arity=1 source=guess
+ColorDark # 0xA47D61BC constant uses=5 arity=3 source=guess
+ColorLight # 0x511F6695 constant uses=5 arity=3 source=guess
+DepthSize # 0x5E5F02ED constant uses=5 arity=1 source=guess
+Mask_Radius # 0x5F1E442A constant uses=5 arity=1 source=guess
+Mask_Mult # 0x750D9B94 constant uses=5 arity=1 source=guess
+Emissive_Amount # 0xF8C61683 constant uses=5 arity=1 source=guess
+Targeted_Intensity # 0x97B7994E constant uses=5 arity=1 source=guess
+ColorSpeed # 0x3523C494 constant uses=5 arity=1 source=guess
+FresnelMult # 0xE2BB33B9 constant uses=5 arity=1 source=guess
+Cube_Intensity # 0xF43BD6B1 constant uses=5 arity=1 source=guess
+Color_Spec # 0xC6DDDD7D constant uses=5 arity=3 source=guess
+bump_factor_roughness # 0x17E7D743 constant uses=5 arity=1 source=guess
+specular_color # 0x8B97A91D constant uses=5 arity=3 source=guess
+GlassNormal_Texture # 0xAA6AC32C sampler uses=5 arity=0 source=guess
+Depth_Fade_Depth # 0x314B4DEF constant uses=5 arity=4 source=guess
+Lines_Mult # 0x8DD9A825 constant uses=5 arity=1 source=guess
+transition_slider # 0x617D41FB constant uses=5 arity=1 source=guess
+EmissiveSpeed # 0x7A052F0D constant uses=5 arity=1 source=guess
+Color_Overlay # 0x1AAD6A99 constant uses=5 arity=3 source=guess
+Enable_Palette_Mask # 0xD1280D9B constant uses=5 arity=1 source=guess
+CombatLight # 0xE1E802AE constant uses=5 arity=1 source=guess
+IdleColor # 0xB50F3A94 constant uses=5 arity=3 source=guess
+Kelvin_Min # 0xF35357AE constant arity=1 graphs=78 from=basic_normal_gloss_emissive.materialgraph source=local
+Kelvin_Max # 0xCF5E68F7 constant arity=1 graphs=78 from=basic_normal_gloss_emissive.materialgraph source=local
+Kelvin_Brightness # 0xC63B280D constant arity=1 graphs=78 from=basic_normal_gloss_emissive.materialgraph source=local
+Emissive_Intensity # 0x66EFA55B constant arity=1 graphs=23 from=cordelion_orange_blink.materialgraph source=local
+CubeMapMult # 0x6F51CA73 constant arity=1 graphs=18 from=neo_nefarious_swarmer_beam_outer.materialgraph source=local
+Spec # 0xF09ED78E constant arity=1 graphs=11 from=hero_solid_color_fresnel.materialgraph source=local
+Heat_Ramp_Texture # 0xB9C817EF sampler arity=0 graphs=9 from=cine_blizar_drill_beam_impact_trail.materialgraph source=local
+Rain_Spec # 0x710B98CE constant arity=1 graphs=8 from=enm_faction_palette_cine_rain.materialgraph source=local
+Rain_Intensity # 0x298BE4AD constant arity=1 graphs=8 from=enm_faction_palette_cine_rain.materialgraph source=local
+Rain_Speed # 0x6028E6E8 constant arity=1 graphs=8 from=enm_faction_palette_cine_rain.materialgraph source=local
+Rain_Gloss # 0x7D5B8A4B constant arity=1 graphs=8 from=enm_faction_palette_cine_rain.materialgraph source=local
+Arc_Intensity # 0x277ABBC4 constant arity=1 graphs=6 from=lightning_rod_electrical_arc_mesh.materialgraph source=local
+Glossiness_Max # 0xC83D96F4 constant arity=1 graphs=5 from=convergence_shards_small_01.materialgraph source=local
+normal_map_Texture # 0xF565721E sampler arity=0 graphs=4 from=convergence_shards_small_01.materialgraph source=local
+alpha_map_Texture # 0xE96ED4C8 sampler arity=0 graphs=4 from=convergence_shards_small_01.materialgraph source=local
+OffsetMaskAngle_Value # 0x25293F9B constant arity=1 graphs=4 from=gbl_smoke_sim_puff_no_heat.materialgraph source=local
+Anisotropic_Angle # 0x3884FF28 constant arity=1 graphs=4 from=basic_normal_gloss_anisotropic_holo.materialgraph source=local
+Enable_Gold # 0xB99351BE constant arity=1 graphs=4 from=wpn_basic_gold.materialgraph source=local
+Noise_Speed # 0x3A995CF7 constant arity=1 graphs=4 from=acid_geyser_spray.materialgraph source=local
+Global_Cube_Mult # 0x2398042B constant arity=1 graphs=3 from=convergence_shards_small_01.materialgraph source=local
+emissive_map_Texture # 0xC6778E12 sampler arity=0 graphs=3 from=convergence_shards_small_01.materialgraph source=local
+GlowTexture_Texture # 0xFCA1A9D0 sampler arity=0 graphs=3 from=fx_decal_bullet_impact.materialgraph source=local
+Brightness_Max # 0x71AC9F63 constant arity=1 graphs=3 from=finale_explosive_platform_tell_comp.materialgraph source=local
+Planet_Contrast # 0x2A99BD07 constant arity=1 graphs=3 from=planet_card_savali_2.materialgraph source=local
+Planet_Hue # 0x657655F4 constant arity=1 graphs=3 from=planet_card_savali_2.materialgraph source=local
+Planet_Saturation # 0x9FB73CEF constant arity=1 graphs=3 from=planet_card_savali_2.materialgraph source=local
+depth_fade # 0x389BD747 constant arity=1 graphs=3 from=nef_heavy_shockwave_disp.materialgraph source=local
+Speed_Scale # 0x90A91420 constant arity=1 graphs=3 from=cloud_quad_test.materialgraph source=local
+Arc_Thickness # 0xA0D78FF9 constant arity=1 graphs=3 from=electricweb_arc.materialgraph source=local
+NoiseIntensity # 0x8599DE61 constant arity=1 graphs=3 from=enm_sandshark_spawner_death_post.materialgraph source=local
+Intensity_Max # 0x04088F67 constant arity=1 graphs=3 from=cine_sargasso_centipede_tractor_beam.materialgraph source=local
+Interdimensional_Space_Mult # 0xA73A07CD constant arity=1 graphs=3 from=zurkies_arena_hero_portal_01.materialgraph source=local
+Texture_Mask_Texture # 0xB8ED6B7B sampler arity=0 graphs=3 from=hero_level_up_01_ground_quad.materialgraph source=local
+Texture_Reveal_Texture # 0xFAA4B586 sampler arity=0 graphs=3 from=hero_level_up_01_ground_quad.materialgraph source=local
+smash_button # 0xC2A212BC constant arity=1 graphs=3 from=gbl_prop_smash_button_glow_02.materialgraph source=local
+alphatilingclip_Sampler # 0x76C1E4EC constant arity=1 graphs=3 from=fx_warmonger_explosion_scorch_with_heat_01.materialgraph source=local
+Color_Scorch # 0x3A537A70 constant arity=3 graphs=3 from=fx_warmonger_explosion_scorch_with_heat_01.materialgraph source=local
+Flowmap_Texture # 0x62F24631 sampler arity=0 graphs=3 from=elec_quad_loop.materialgraph source=local
+Alpha_rgb_power_Texture # 0x5D088ADB constant arity=1 graphs=2 from=gbl_rgb_blend_dimensional.materialgraph source=local
+Ripple_Normal_Intensity # 0xDD3B1B53 constant arity=1 graphs=2 from=enm_wasp_goo_splat.materialgraph source=local
+Edge_Fade # 0x41E9C812 constant arity=1 graphs=2 from=gbl_camera_pane_post.materialgraph source=local
+Edge_Width # 0x7B7CC427 constant arity=1 graphs=2 from=gbl_camera_pane_post.materialgraph source=local
+Planet_Intensity # 0xAB869E09 constant arity=1 graphs=2 from=planet_card_savali_2.materialgraph source=local
+Planet_Rotation # 0xA0A81FFE constant arity=1 graphs=2 from=planet_card_savali_2.materialgraph source=local
+Shadow_Displacement # 0x63FA2C00 constant arity=1 graphs=2 from=hero_rivet_eyeshadow_holo.materialgraph source=local
+Glossiness_Glass # 0x0F8F88C5 constant arity=1 graphs=2 from=uwb_arch_glass_vert_01.materialgraph source=local
+Layer_001_Scale # 0x12757047 constant arity=1 graphs=2 from=sar_gnd_terrain_01.materialgraph source=local
+MinAlpha # 0x2F1E511C constant arity=1 graphs=2 from=drunk_status_post.materialgraph source=local
+Max_Intensity # 0x4B917EBC constant arity=1 graphs=2 from=dimensional_damage_sky_cracks_01.materialgraph source=local
+Color_Speed # 0x32F7D29B constant arity=1 graphs=2 from=jn_water_displacement.materialgraph source=local
+Weathering_Blend_Offset # 0x5D9467BA constant arity=1 graphs=2 from=sar_rock_blend_weathering.materialgraph source=local
+Emissive_Scale # 0x580B04E2 constant arity=1 graphs=2 from=fx_decal_explosion_scorchmark_01.materialgraph source=local
+Strength_Rotation_Refraction_Sampler # 0x04070242 constant arity=1 graphs=2 from=enm_finale_mech_topiary_pose_01.materialgraph source=local
+height_mult # 0x000F4850 constant arity=1 graphs=2 from=proj_burst_pistol_tracer_wiggle.materialgraph source=local
+Burn_Gloss # 0x8A0835A3 constant arity=1 graphs=2 from=meg_float_hex_01.materialgraph source=local
+Wrinkle_Index # 0x21F8912B constant arity=1 graphs=2 from=meg_float_hex_01.materialgraph source=local
+Burn_Spec # 0x40E32D5A constant arity=1 graphs=2 from=meg_float_hex_01.materialgraph source=local
+Enable_Burn # 0xAB6851EB constant arity=1 graphs=2 from=meg_float_hex_01.materialgraph source=local
+Hex_Tiling # 0x5B33F040 constant arity=1 graphs=2 from=meg_float_hex_01.materialgraph source=local
+clemming_color # 0x03C684C0 constant arity=3 graphs=2 from=basic_normal_gloss_emissive_clemming.materialgraph source=local
+stars_Texture # 0x5578AC94 sampler arity=0 graphs=2 from=rk_sky_dome_flat.materialgraph source=local
+Color_Base # 0xC6673422 constant arity=3 graphs=2 from=gbl_audio_waveform_01_ui.materialgraph source=local
+Alpha_Threshold_Amount # 0xB8BA8431 constant arity=1 graphs=2 from=lava_bubble_emissive.materialgraph source=local
+Max_Displacement # 0x3AE1D57E constant arity=1 graphs=2 from=sar_shrub_moss_ws_01.materialgraph source=local
+Glow # 0xDAEC71A5 constant arity=1 graphs=2 from=topiary_cheap_wind_hue_variation.materialgraph source=local
+ColorMult # 0x9B1317B0 constant arity=3 graphs=2 from=gbl_rain_on_screen.materialgraph source=local
+DiffuseValue # 0x308BC6BA constant arity=1 graphs=1 from=amb_insect_sargasso_01_eye_glow.materialgraph source=local
+Alpha_Fresnel_Exponent # 0x66DF5298 constant arity=1 graphs=1 from=pok_uniq_water.materialgraph source=local
+Depth_Max # 0xE1FDF42A constant arity=1 graphs=1 from=test_alpha_depth_mask.materialgraph source=local
+Depth_Min # 0xDDF0CB73 constant arity=1 graphs=1 from=test_alpha_depth_mask.materialgraph source=local
+Paint_Tile # 0x4CC964F3 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Paint_Mask_Texture # 0xCC5DBC4E sampler arity=0 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+AmbientOcclusion_Strength # 0xADD6DFA8 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Dirt_Gloss # 0x0E4C3701 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Paint_Mask_Tile # 0x4CC204EB constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Mask_Color_Mixer_Texture # 0xA4D6C07D sampler arity=0 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Dirt_Tile # 0x0C21EF73 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Mask_Procedural_Dirt_Texture # 0x3614E2C0 sampler arity=0 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Dirt_Mult # 0x5EBC8D80 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Paint_Mask_Mult # 0x1E5F6618 constant arity=1 graphs=1 from=gbl_arch_env_master_01.materialgraph source=local
+Kit_Emblem_Emissive # 0x8BB07F29 constant arity=1 graphs=1 from=hero_kit_emblem.materialgraph source=local
+Base_Displacement # 0x2ACDC778 constant arity=1 graphs=1 from=gbl_portal_zip_target.materialgraph source=local
+Damage_Overlay_Texture # 0xB08771DC sampler arity=0 graphs=1 from=crate_chunks_damage.materialgraph source=local
+edge_glow # 0xC303B93A constant arity=1 graphs=1 from=hero_ship_shockwave_post.materialgraph source=local
+ColorAmount # 0xFF259A81 constant arity=1 graphs=1 from=test_portal_graph_v2.materialgraph source=local
+ColorGlow # 0x557D6D52 constant arity=3 graphs=1 from=test_portal_graph_v2.materialgraph source=local
+NoiseExponent # 0x29841622 constant arity=1 graphs=1 from=gbl_map_01.materialgraph source=local
+NoiseStrength # 0xF4208FAA constant arity=1 graphs=1 from=gbl_map_01.materialgraph source=local
+Clouds_Intensity # 0x4EA20170 constant arity=1 graphs=1 from=planet_card_savali_2.materialgraph source=local
+Clouds_Speed # 0x5BBD65B5 constant arity=1 graphs=1 from=planet_card_savali_2.materialgraph source=local
+materialgraph_specular_sphere_Texture # 0xBE1CF07C sampler arity=0 graphs=1 from=gdgt_electricweb_arc_sphere_v2.materialgraph source=local
+Specular_Tint # 0x4B4DAB19 constant arity=3 graphs=1 from=wpn_thumper_glove_glass.materialgraph source=local
+Displacement_Normal # 0x7F83FC1D constant arity=3 graphs=1 from=proj_iciclebomb.materialgraph source=local
+Emissive_Head # 0xEE06D746 constant arity=1 graphs=1 from=enm_nefarious_mech_head_emissive.materialgraph source=local
+rotation_speed # 0x33EF5F30 constant arity=1 graphs=1 from=debris_chunk_simple.materialgraph source=local
+Texture_color # 0x919149AA constant arity=3 graphs=1 from=hero_solid_color_fresnel.materialgraph source=local
+Texture_brightness # 0x77A693BD constant arity=1 graphs=1 from=hero_solid_color_fresnel.materialgraph source=local
+glass_color # 0x3B18C451 constant arity=1 graphs=1 from=meg_prop_confetti_cannon_01_glass.materialgraph source=local
+Emissive_mult # 0xCDD54513 constant arity=1 graphs=1 from=rk_glass.materialgraph source=local
+Alpha_Fresnel # 0x6292ABC2 constant arity=1 graphs=1 from=rk_glass.materialgraph source=local
+Mask_Brushstrokes_Texture # 0x9532A5A8 sampler arity=0 graphs=1 from=sasquatch_band_performance_mushroom_vertexanim.materialgraph source=local
+paint_Scale # 0x9B3B64AC constant arity=1 graphs=1 from=sasquatch_band_performance_mushroom_vertexanim.materialgraph source=local
+edge_mask_intensity # 0x972DDBAF constant arity=1 graphs=1 from=sasquatch_band_performance_mushroom_vertexanim.materialgraph source=local
+Brushstroke_Spec_Texture # 0xE7C6076D sampler arity=0 graphs=1 from=sasquatch_band_performance_mushroom_vertexanim.materialgraph source=local
+Layer_002_Scale # 0x239D6ADA constant arity=1 graphs=1 from=sar_gnd_terrain_01.materialgraph source=local
+Wind_Noise_Scale # 0xC5BDEE0C constant arity=1 graphs=1 from=meg_cut_grass_wind_01.materialgraph source=local
+highlight_color # 0xA7A45FC1 constant arity=3 graphs=1 from=wpn_trajectory_arc.materialgraph source=local
+glow_color # 0x83250142 constant arity=3 graphs=1 from=enm_nefarious_melee_crater_decal.materialgraph source=local
+CentipedeAlphaTextures_Strength # 0xE8F73162 constant arity=1 graphs=1 from=test_enm_centipede_flashing_lf_color_change.materialgraph source=local
+EmissiveBrightness # 0xD61BEB44 constant arity=1 graphs=1 from=test_discoball_gobo.materialgraph source=local
+Aniso_Angle # 0xED7427BE constant arity=1 graphs=1 from=hero_armor_palette_aniso.materialgraph source=local
+Heated_Gloss # 0x2B7015B3 constant arity=1 graphs=1 from=mol_grindrail_blend_01.materialgraph source=local
+dot_color # 0xABCA9A50 constant arity=3 graphs=1 from=wpn_sniper_simple_dot.materialgraph source=local
+veins_mask_Texture # 0x9193EE0C sampler arity=0 graphs=1 from=enm_arachnodroid_blocker.materialgraph source=local
+GridOpacity # 0xD8452413 constant arity=1 graphs=1 from=wpn_magshield_warp.materialgraph source=local
+Emissive_Decals # 0x65D08FC4 constant arity=1 graphs=1 from=enm_neo_nefarious_sniper_dome_decals_emissive.materialgraph source=local
+Smoke_Tile # 0x1D17DBFA constant arity=1 graphs=1 from=enm_transport_soft_light_cone.materialgraph source=local
+AmountTertiary # 0x158D4807 constant arity=1 graphs=1 from=wpn_magshield_blast_warp.materialgraph source=local
+AmountPrimary # 0x7FF62F30 constant arity=1 graphs=1 from=wpn_magshield_blast_warp.materialgraph source=local
+AmountSecondary # 0x031B3158 constant arity=1 graphs=1 from=wpn_magshield_blast_warp.materialgraph source=local
+wave_intensity # 0xBF108572 constant arity=1 graphs=1 from=fx_fan_wind_trail.materialgraph source=local
+Scorch_Map_Texture # 0xB8FF3075 sampler arity=0 graphs=1 from=decal_fire_scorch_01.materialgraph source=local
+Fresnel_Color # 0xB64642B4 constant arity=3 graphs=1 from=gbl_camera_pane_hologram_cine.materialgraph source=local
+Beam_Texture_Texture # 0x4B5E693E sampler arity=0 graphs=1 from=fx_energy_arc_02.materialgraph source=local
+Flow_Strength # 0x83FCAE42 constant arity=1 graphs=1 from=blz_gbl_lava_01_flow.materialgraph source=local
+Gloss_Lava # 0x8969CD0E constant arity=1 graphs=1 from=blz_gbl_lava_01_flow.materialgraph source=local
+Alpha_Mask_Texture # 0xE4A54316 sampler arity=0 graphs=1 from=test_gbl_fx_particle_simple.materialgraph source=local
+Damage_Mask_Offset # 0xFD35B437 constant arity=2 graphs=1 from=enm_boss_damage.materialgraph source=local
+Sparkle_Texture_Texture # 0x2A20DA89 sampler arity=0 graphs=1 from=sav_gnd_blend_sand_hsl.materialgraph source=local
+Sparkle_Mask_Texture # 0x6A41C7AA sampler arity=0 graphs=1 from=sav_gnd_blend_sand_hsl.materialgraph source=local
+Complete_Animation # 0x5BA43C57 constant arity=1 graphs=1 from=npc_infobot_screen.materialgraph source=local
+Screen_Animation # 0x0365EF73 constant arity=1 graphs=1 from=npc_infobot_screen.materialgraph source=local
+Base_Layer_Texture # 0x830696CA sampler arity=0 graphs=1 from=gbl_arch_color_spec_blend_01.materialgraph source=local
+Spec_Intensity # 0x138B7A02 constant arity=1 graphs=1 from=gbl_arch_color_spec_blend_01.materialgraph source=local
+glow_control # 0xEEF147D1 constant arity=1 graphs=1 from=burst_pistol_glow_control.materialgraph source=local
+SpecColor # 0x37D16B64 constant arity=3 graphs=1 from=gbl_wall_run_circuit_surface_01.materialgraph source=local
+Opacity_Max # 0x7509533E constant arity=1 graphs=1 from=jn_storefront_glass.materialgraph source=local
+Opacity_Min # 0x49046C67 constant arity=1 graphs=1 from=jn_storefront_glass.materialgraph source=local
+Alpha_Min # 0xF12C3586 constant arity=1 graphs=1 from=blz_prop_tube_01.materialgraph source=local
+Bubbles_Speed # 0x35204C46 constant arity=1 graphs=1 from=blz_prop_tube_01.materialgraph source=local
+Bubbles_Alpha_Mult # 0xEFC40279 constant arity=1 graphs=1 from=blz_prop_tube_01.materialgraph source=local
+Alpha_Max # 0xCD210ADF constant arity=1 graphs=1 from=blz_prop_tube_01.materialgraph source=local
+power_level # 0x68272203 constant arity=1 graphs=1 from=hud_enm_health_bar_power_level.materialgraph source=local
+Pattern_Texture # 0x8598F413 sampler arity=0 graphs=1 from=hero_level_up_01_cylinder.materialgraph source=local
+Hex_Intensity # 0x55B8F6D0 constant arity=1 graphs=1 from=test_enm_centipede_flashing.materialgraph source=local
+mult # 0xB4B0A479 constant arity=1 graphs=1 from=gbl_anamorphic_flare_square_soft.materialgraph source=local
+size_mult # 0x4FBB10FC constant arity=1 graphs=1 from=gbl_displacement_singularity.materialgraph source=local
+voronoi_offset_clip_Scale # 0x53EB4725 constant arity=1 graphs=1 from=interdimensional_sphere_01.materialgraph source=local
+Shards_Glow_Mult # 0x50121E4A constant arity=1 graphs=1 from=interdimensional_sphere_01.materialgraph source=local
+refractionthorny_Value # 0xD62B7398 constant arity=1 graphs=1 from=convergence_ribbon_structure_01.materialgraph source=local
+Displacement_Tile # 0x73B069C3 constant arity=1 graphs=1 from=wasp_blob_projectile_displacement.materialgraph source=local
+snow_brightness # 0xA47177EF constant arity=1 graphs=1 from=world_space_uv_scrolling_sss.materialgraph source=local
+amplitude_power # 0x78E35BD9 constant arity=1 graphs=1 from=world_space_uv_scrolling_sss.materialgraph source=local
+Color_End # 0x6AE91FD2 constant arity=3 graphs=1 from=proj_icicleblast_decal.materialgraph source=local
+Color_Start # 0xA2A879E2 constant arity=3 graphs=1 from=proj_icicleblast_decal.materialgraph source=local
+Min_Emissive # 0x275E108B constant arity=1 graphs=1 from=hero_ratchet_android_heart.materialgraph source=local
+Heart_Min # 0x89243683 constant arity=1 graphs=1 from=hero_ratchet_android_heart.materialgraph source=local
+Heart_Max # 0xB52909DA constant arity=1 graphs=1 from=hero_ratchet_android_heart.materialgraph source=local
+Pattern_Tile # 0xC31E0113 constant arity=2 graphs=1 from=playerhudrtt_additive.materialgraph source=local
+spec_color # 0xE5C535A0 constant arity=3 graphs=1 from=test_enm_neo_nefarious_trooper_glass_dome.materialgraph source=local
+Puddle_Mask_Threshold # 0xC749F24B constant arity=1 graphs=1 from=jt_puddle_decal_01.materialgraph source=local
+JellyPlasmaPower # 0xC578A8BF constant arity=1 graphs=1 from=npc_mrfunguy_jelly_displacement.materialgraph source=local
+Distortion_Mult # 0x1DDF86B9 constant arity=1 graphs=1 from=hero_melee_punch_distortion_trail.materialgraph source=local
+Color_Mult # 0x22C101B4 constant arity=1 graphs=1 from=hero_melee_punch_distortion_trail.materialgraph source=local
+Glow_Exponent # 0x83CEEE4F constant arity=1 graphs=1 from=gbl_uniq_planet_01.materialgraph source=local
+Glow_Intensity # 0xB630897C constant arity=1 graphs=1 from=gbl_uniq_planet_01.materialgraph source=local
+Algae_Color # 0xDD7A48E9 constant arity=3 graphs=1 from=jt_sar_gnd_acid_01.materialgraph source=local
+WorldSheen_Scale # 0x4DE1DB2F constant arity=1 graphs=1 from=enemy_hit_react_comp_01.materialgraph source=local
+DetailScale # 0x0A2BC3CF constant arity=1 graphs=1 from=amb_char_scales_normal_gloss_detail.materialgraph source=local
+Offset_Multiplier_Threshold_Texture # 0xB5DE4A6C constant arity=1 graphs=1 from=amb_char_scales_normal_gloss_detail.materialgraph source=local
+ScalesTiling # 0xFE23715E constant arity=1 graphs=1 from=amb_char_scales_normal_gloss_detail.materialgraph source=local
+Emissive_Mouth # 0x2A887DF1 constant arity=1 graphs=1 from=enm_nefarious_mech_mouth_emissive.materialgraph source=local
+Color_Tint # 0x28DA2137 constant arity=3 graphs=1 from=gbl_bullet_decal_parrallax.materialgraph source=local
+Parallax # 0xEE0F9FF8 constant arity=1 graphs=1 from=gbl_bullet_decal_parrallax.materialgraph source=local
+AlphaMult # 0xA1511385 constant arity=1 graphs=1 from=gbl_rain_on_screen.materialgraph source=local
+Fresnel_Thickness # 0xB7BAC19F constant arity=1 graphs=1 from=basic_normal_coloredgloss_emissive_fresnel.materialgraph source=local
+Fresnel_Alpha_Exponent # 0x1FCE8894 constant arity=1 graphs=1 from=ardolis_laser_net.materialgraph source=local
+DinoWispVisualeffect_Scale # 0xA2661FB0 constant arity=1 graphs=1 from=npc_dinosaur_detail_variation_dimensional.materialgraph source=local
+Emissive_Chest # 0x4F0992D1 constant arity=1 graphs=1 from=enm_nefarious_mech_chest_glass_emissive.materialgraph source=local
+normal_scale # 0x7A5E25A6 constant arity=1 graphs=1 from=centipede_aoe_sphere.materialgraph source=local
+Sky_Texture_Blend # 0xCB25E593 constant arity=1 graphs=1 from=gbl_sky_transition_matgraph.materialgraph source=local
+planet_normal_Texture # 0x6AA05360 sampler arity=0 graphs=1 from=test_gbl_gbl_ratchet_planet_surface_01.materialgraph source=local
+fresnel_thickness # 0x1BE871C6 constant arity=1 graphs=1 from=basic_normal_gloss_fizzie.materialgraph source=local
+MeltThreshold # 0xE3CD98A9 constant arity=1 graphs=1 from=basic_normal_gloss_fizzie.materialgraph source=local
+flow_map_Texture # 0x8DC13AAC sampler arity=0 graphs=1 from=nnc_gnd_rooftop_hot_oil_01.materialgraph source=local
+Cables_Emissive # 0x24ECC72E constant arity=1 graphs=1 from=enm_mech_heart_trim_cables_emissive.materialgraph source=local
+Grunge_Opacity_Threshold # 0x1B78ABAC constant arity=2 graphs=1 from=sar_arch_foundation.materialgraph source=local
+Opacity_Mult # 0xA3FD7D24 constant arity=1 graphs=1 from=fx_hero_speed_trail_default.materialgraph source=local
+emissive_brightness # 0x809A6BA3 constant arity=1 graphs=1 from=enm_spitter_tracer_core_mesh.materialgraph source=local
+light_width # 0x8330EFEE constant arity=1 graphs=1 from=gbl_light_gobo_projectile.materialgraph source=local
+DepthFadeMult # 0x0D6DD9F5 constant arity=1 graphs=1 from=hero_ship_ui_projection_light_cone_01_no_depth.materialgraph source=local
+SpecularReflectance_Texture # 0x3B8AFAE4 sampler arity=0 graphs=1 from=glass_pile_decal.materialgraph source=local
+Haze_Color # 0xC9E723E4 constant arity=3 graphs=1 from=planet_card_blizar_big_planet_haze.materialgraph source=local
+Haze_Strength # 0x1B4F9A40 constant arity=1 graphs=1 from=planet_card_blizar_big_planet_haze.materialgraph source=local
+emissive_intensity # 0xB9589FC8 constant arity=1 graphs=1 from=jn_rk_glass_parallax.materialgraph source=local
+Palette_Index # 0x729D58F4 constant arity=1 graphs=1 from=npc_civ_subsurface_detail_palette_cine.materialgraph source=local
+Opacity_Base # 0x475B48B2 constant arity=1 graphs=1 from=test_glass_01.materialgraph source=local
+particle_noise_mask_Texture # 0xB7B2BD48 sampler arity=0 graphs=1 from=proj_kit_warbot_projectile_shot_energy.materialgraph source=local
+particle_noise_Texture # 0xFB68D829 sampler arity=0 graphs=1 from=proj_kit_warbot_projectile_shot_energy.materialgraph source=local
+rotate_speed # 0xDAC5A766 constant arity=1 graphs=1 from=gbl_asymmetric_ui_target_elements_rotate.materialgraph source=local
+Rotation_Angle # 0x30EDB313 constant arity=1 graphs=1 from=explosion_crater_01.materialgraph source=local
+Edge_Mask_Texture # 0xB52733FE sampler arity=0 graphs=1 from=gbl_portalzip_rift_01.materialgraph source=local
+base_gloss # 0x3B155E6E constant arity=1 graphs=1 from=mia_hpz_arch_walkable_ws_01.materialgraph source=local
+base_normal_Texture # 0x3740460B sampler arity=0 graphs=1 from=mia_hpz_arch_walkable_ws_01.materialgraph source=local
+End_Fade # 0x3EA473AA constant arity=1 graphs=1 from=test_gbl_sf_smoketrail_01_unlit.materialgraph source=local
+OffscreenRender_Texture # 0xD5A9E0DC sampler arity=0 graphs=1 from=gbl_arch_animated_screen_offscreen_render_01.materialgraph source=local
+distortion_scale # 0x79E73FAA constant arity=1 graphs=1 from=mis_zrd_gigglegas_screen.materialgraph source=local
+broken_mask_Texture # 0xCED32D48 sampler arity=0 graphs=1 from=wpn_dimensionator_a_broken.materialgraph source=local
+Gloss_Falloff # 0xE813D19D constant arity=1 graphs=1 from=basic_normal_gloss_non_metal_tessellated.materialgraph source=local
+Diffuse_Intensity # 0x601D27DE constant arity=1 graphs=1 from=meg_uniq_waterfall_01.materialgraph source=local
+OpacityMult # 0x19794A64 constant arity=1 graphs=1 from=mis_zurkon_arena_bounce_back.materialgraph source=local
+TransparencyNoiseTiling # 0x7654C698 constant arity=1 graphs=1 from=fx_decal_blood_splatter.materialgraph source=local
+power_color # 0x949BA6F9 constant arity=3 graphs=1 from=neo_nefarious_melee_impact_mesh.materialgraph source=local
+Distress_Tiling # 0xAC0CA862 constant arity=1 graphs=1 from=cloth_distressed.materialgraph source=local
+Normal_Tile # 0x4EE35581 constant arity=1 graphs=1 from=gbl_amb_debris_paper_animated.materialgraph source=local
+NoiseAmount # 0xF74B14ED constant arity=1 graphs=1 from=gbl_amb_debris_paper_animated.materialgraph source=local
+Fade_Max # 0xAFC59B8A constant arity=1 graphs=1 from=gbl_amb_debris_paper_animated.materialgraph source=local
+Fade_Min # 0x93C8A4D3 constant arity=1 graphs=1 from=gbl_amb_debris_paper_animated.materialgraph source=local
+cloud_thickness # 0x1CF8859B constant arity=1 graphs=1 from=test_gbl_gbl_ratchet_planet_cloud_01_01.materialgraph source=local
+GlossMap2D_UseColor # 0x7107A2D8 const uses=4044 source=verified
+Color_ID_Primary # 0x2F53BB17 const uses=537 source=verified
+Color_ID_Secondary # 0x2EBC84C5 const uses=537 source=verified
+Color_ID_Spec # 0x4FE2F713 const uses=533 source=verified
+Lit # 0x778EA754 variation uses=68 source=verified
+UV_Offset # 0x77700062 const uses=57 source=verified
+UV_Tiling # 0x85773B3C const uses=55 source=verified
+Clear # 0xFCE23DC7 variation uses=19 source=verified
+TopiaryWipeOff # 0xD50C305D const uses=17 source=verified
+one # 0x6874E9D8 const uses=16 source=verified
+zero # 0x3B7C9E1C const uses=16 source=verified
+Palette_Index_Min # 0xE4568769 const uses=12 source=verified
+Palette_Index_Max # 0xD85BB830 const uses=12 source=verified
+HSL_Range_Min # 0x9103D751 const uses=12 source=verified
+HSL_Range_Max # 0xAD0EE808 const uses=12 source=verified
+Bool # 0x6511F622 variation uses=10 source=verified
+Portal_Vector # 0x3D12B0B9 const uses=8 source=verified
+offset_x # 0xDBDAC2F7 const uses=7 source=verified
+Wind # 0x119B944E variation uses=7 source=verified
+RGBA # 0x66A3B07F variation uses=6 source=verified
+Red # 0xD0347646 const uses=5 source=verified
+offset_y # 0xACDDF261 const uses=4 source=verified
+Variation # 0xE066ACE6 variation uses=4 source=verified
+Flicker # 0x5464EC5A variation uses=4 source=verified
+Move_Y # 0x0F6E4D9C const uses=4 source=verified
+ammo # 0x7F2D11A4 const uses=4 source=verified
+Fade_In # 0x3B531E44 const uses=4 source=verified
+Fade # 0x7AC52D10 variation uses=3 source=verified
+Fill # 0xC5D34E04 const uses=3 source=verified
+Move_X # 0x78697D0A const uses=3 source=verified
+Pulse_Last_Hit_Time # 0x89516652 const uses=3 source=verified
+Pulse_Next_Hit_Time # 0xC92A6F22 const uses=3 source=verified
+Left # 0x4AF727D8 variation uses=2 source=verified
+Hit_Direction # 0x8D5040B7 const uses=2 source=verified
+Beetle_Bomb_Active # 0x2FE7DA74 const uses=2 source=verified
+health_slider # 0x382A51E2 const uses=2 source=verified
+Upgrade_Boolean # 0xBB8D619C const uses=2 source=verified
+DissolveColorChange # 0x5AB3B87F const uses=2 source=verified
+Ice_Amount # 0x05F947C2 const uses=2 source=verified
+diff # 0xD5D22825 const uses=1 source=verified
+Keys # 0x841E845C const uses=1 source=verified
+Min # 0x8B2E3419 const uses=1 source=verified
+transparency # 0x2C597839 variation uses=1 source=verified
+Paused # 0x78C900FC variation uses=1 source=verified
+light_transmittance # 0x457A06CA const uses=1 source=verified
+u_tile # 0x3E715882 const uses=1 source=verified
+damage_slider # 0x503AA174 const uses=1 source=verified
+Dash_Emissive # 0x250F5B32 const uses=1 source=verified
+Rift_Tether_Emissive # 0x66CCC918 const uses=1 source=verified
+start_pos # 0x8CBEE4A5 const uses=1 source=verified
+final_scale # 0xE61EA818 const uses=1 source=verified
+Distance_Far # 0x35491B43 const uses=1 source=verified
+Color_A # 0x8B70A60B const uses=1 source=verified
+Color_B # 0x1279F7B1 const uses=1 source=verified
+Color_ID_Emissive # 0xA9C2766A const uses=516 source=verified

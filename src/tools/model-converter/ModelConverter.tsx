@@ -28,6 +28,12 @@ interface SlotRequest {
 interface SlotPlan {
   new_slots: SlotRequest[];
   existing: { name: string; path: string }[];
+  hair: { groups: string[]; strands: number } | null;
+  strip_hair: boolean | null;
+}
+
+function hairGroupName(name: string) {
+  return name.replace(/^HairDescription_/, "");
 }
 
 function baseName(path: string) {
@@ -60,6 +66,7 @@ export default function ModelConverter() {
   const [slotPaths, setSlotPaths] = useState<Record<string, string>>({});
   const [rememberPaths, setRememberPaths] = useState(true);
   const [slotError, setSlotError] = useState("");
+  const [stripHair, setStripHair] = useState(false);
 
   useEffect(() => {
     setSlotPlan(null);
@@ -168,22 +175,24 @@ export default function ModelConverter() {
     }
   }
 
-  // `materials` is set once the user has filled in the new-slot paths.
-  async function runAsciiToModel(materials?: Record<string, string>) {
+  // `confirmed` is set once the user has answered the import prompt.
+  async function runAsciiToModel(confirmed?: { materials: Record<string, string>; stripHair: boolean | null }) {
     if (!asciiPath) { pushLog("error", `Select a .${format} file first.`); return; }
     if (!srcModelPath) { pushLog("error", "Select a source .model file first."); return; }
     const outputPath = overwriteSourceModel ? srcModelPath : (modelOutPath || null);
     setRunning(true);
     setLog([]);
     try {
-      if (format === "gltf" && !materials) {
+      if (format === "gltf" && !confirmed) {
         const plan: SlotPlan = await invoke("gltf_material_slots", { gltfPath: asciiPath, srcModelPath });
-        if (plan.new_slots.some((s) => !s.path)) {
+        const missing = plan.new_slots.filter((s) => !s.path).map((s) => s.name);
+        if (missing.length > 0 || plan.hair) {
           setSlotPlan(plan);
           setSlotPaths(Object.fromEntries(plan.new_slots.map((s) => [s.name, s.path ?? ""])));
           setSlotError("");
-          const missing = plan.new_slots.filter((s) => !s.path).map((s) => s.name);
-          pushLog("warning", `New material slot(s) need a .material path: ${missing.join(", ")}`);
+          setStripHair(plan.strip_hair ?? false);
+          if (missing.length > 0) pushLog("warning", `New material slot(s) need a .material path: ${missing.join(", ")}`);
+          if (plan.hair) pushLog("info", `Target model has ${plan.hair.groups.length} hair group(s); choose whether to keep them.`);
           return;
         }
       }
@@ -193,7 +202,8 @@ export default function ModelConverter() {
             gltfPath: asciiPath,
             srcModelPath,
             outPath: outputPath,
-            materials: materials ?? null,
+            materials: confirmed?.materials ?? null,
+            stripHair: confirmed?.stripHair ?? null,
             remember: rememberPaths,
           })
         : await invoke("ascii_to_model", { asciiPath, srcModelPath, outPath: outputPath });
@@ -210,7 +220,7 @@ export default function ModelConverter() {
     if (!slotPlan) return;
     const materials: Record<string, string> = {};
     for (const s of slotPlan.new_slots) {
-      const path = (slotPaths[s.name] ?? "").trim();
+      const path = (slotPaths[s.name] ?? "").trim().replace(/\//g, "\\");
       if (!path) {
         if (s.required) { setSlotError(`"${s.name}" needs a .material path.`); return; }
         continue;
@@ -222,7 +232,7 @@ export default function ModelConverter() {
       materials[s.name] = path;
     }
     setSlotError("");
-    runAsciiToModel(materials);
+    runAsciiToModel({ materials, stripHair: slotPlan.hair ? stripHair : null });
   }
 
   return (
@@ -344,11 +354,31 @@ export default function ModelConverter() {
           />
           {format === "gltf" && slotPlan && (
             <div className={styles.slotPrompt}>
-              <div className={styles.slotPromptTitle}>New material slots</div>
-              <p className={styles.slotPromptHint}>
-                These glTF materials are not slots of the target model. Enter the .material each one should use,
-                or rename the material in your editor to an existing slot name.
-              </p>
+              {slotPlan.hair && (
+                <>
+                  <div className={styles.slotPromptTitle}>Hair / fur strands</div>
+                  <p className={styles.slotPromptHint}>
+                    {slotPlan.hair.groups.map(hairGroupName).join(", ")} ({slotPlan.hair.strands.toLocaleString()} strands).
+                    Bound to the original meshes; remove if you replaced them.
+                  </p>
+                  <label className={styles.overwriteToggle}>
+                    <input type="radio" checked={!stripHair} onChange={() => setStripHair(false)} />
+                    <span>Keep</span>
+                  </label>
+                  <label className={styles.overwriteToggle}>
+                    <input type="radio" checked={stripHair} onChange={() => setStripHair(true)} />
+                    <span>Remove all</span>
+                  </label>
+                </>
+              )}
+              {slotPlan.new_slots.length > 0 && (
+                <>
+                  <div className={styles.slotPromptTitle}>New material slots</div>
+                  <p className={styles.slotPromptHint}>
+                    Not in the target model. Enter a .material path, or rename to an existing slot.
+                  </p>
+                </>
+              )}
               {slotPlan.new_slots.map((s) => (
                 <label key={s.name} className={styles.slotRow}>
                   <span className={styles.slotName}>{s.name}</span>
@@ -357,10 +387,10 @@ export default function ModelConverter() {
                     className={styles.slotInput}
                     list="omni-model-materials"
                     value={slotPaths[s.name] ?? ""}
-                    onChange={(e) => setSlotPaths((prev) => ({ ...prev, [s.name]: e.target.value }))}
+                    onChange={(e) => setSlotPaths((prev) => ({ ...prev, [s.name]: e.target.value.replace(/\//g, "\\") }))}
                     placeholder={s.required
                       ? "material\\characters\\…\\name.material"
-                      : "optional: leave blank to keep the mesh's current slot"}
+                      : "optional: blank keeps the current slot"}
                     spellCheck={false}
                   />
                 </label>
@@ -372,7 +402,7 @@ export default function ModelConverter() {
               </datalist>
               <label className={styles.overwriteToggle}>
                 <input type="checkbox" checked={rememberPaths} onChange={(e) => setRememberPaths(e.target.checked)} />
-                <span>Remember for this glTF (saves {baseName(asciiPath)}.omni.json next to it)</span>
+                <span>Remember for this glTF ({baseName(asciiPath)}.omni.json)</span>
               </label>
               {slotError && <div className={styles.slotError}>{slotError}</div>}
               <div className={styles.injectActionsRow}>

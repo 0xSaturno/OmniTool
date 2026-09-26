@@ -1094,7 +1094,7 @@ impl ConfigFile {
                         size: 0,
                     },
                 ],
-                unknowns: vec![],
+                fixups: vec![],
                 strings_pool: pool.data,
                 section_data: vec![Vec::new(), Vec::new()],
                 sections_map,

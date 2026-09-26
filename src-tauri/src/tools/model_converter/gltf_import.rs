@@ -18,7 +18,7 @@ use super::gltf_reader::{inject_prepared, GltfMesh, GltfModel, GltfVertex, Injec
 use super::model::ModelFile;
 use super::morph_build::{self, Delta, MorphDef, MorphSet};
 use super::sections::{
-    built::{get_position_scale, get_uv1_scale, get_uv_scale},
+    built::{get_position_scale, get_uv1_scale, get_uv_scale, Built},
     dynamics::TAG_CLOTH_META_DATA,
     geo::{IndexesSection, Uv1Section, Vertex, VertexesSection, DEFAULT_UV_SCALE, TAG_INDEXES, TAG_UV1, TAG_VERTEXES},
     joints::{Joint, TAG_JOINTS},
@@ -27,7 +27,7 @@ use super::sections::{
     meshes::{subset_flags, MeshDefinition, TAG_MESHES},
     morph::{TAG_ANIM_MORPH_DATA, TAG_ANIM_MORPH_INDICES, TAG_ANIM_MORPH_INFO},
     skin::{SkinBatch, SkinSource, TAG_RCRA_SKIN, TAG_SKIN_BATCH},
-    splines::TAG_SPLINE_SKIN_BINDING,
+    splines::{SplineSubsets, TAG_SPLINES, TAG_SPLINE_CVS, TAG_SPLINE_SKIN_BINDING, TAG_SPLINE_SUBSETS},
 };
 
 const TAG_BUILT: u32 = 0x283D0383;
@@ -56,6 +56,8 @@ pub struct ImportOptions {
     pub remove_missing: Option<bool>,
     /// Ignore shape keys and keep the model's morphs wherever the geometry allows.
     pub keep_morphs: bool,
+    /// Drop the model's hair / fur strands. Unset: keep them.
+    pub strip_hair: Option<bool>,
 }
 
 /// Flag names from `subset_flags::OVERRIDABLE`.
@@ -96,6 +98,8 @@ pub struct ImportReport {
     pub subsets: Vec<SubsetReport>,
     /// Source indices of removed subsets.
     pub removed: Vec<usize>,
+    /// Hair groups dropped with `strip_hair`.
+    pub hair_removed: usize,
     /// Source indices of replaced-look subsets the glTF lacks, left untouched.
     pub kept: Vec<usize>,
     pub new_slots: Vec<String>,
@@ -138,6 +142,49 @@ pub struct ExistingSlot {
 pub struct SlotPlan {
     pub new_slots: Vec<SlotRequest>,
     pub existing: Vec<ExistingSlot>,
+    /// The model's hair / fur strands, when it has any.
+    pub hair: Option<HairInfo>,
+    /// The saved `strip_hair` choice.
+    pub strip_hair: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HairInfo {
+    pub groups: Vec<String>,
+    pub strands: usize,
+}
+
+const HAIR_SECTIONS: [u32; 4] = [TAG_SPLINE_SUBSETS, TAG_SPLINES, TAG_SPLINE_CVS, TAG_SPLINE_SKIN_BINDING];
+
+fn hair_info(model: &ModelFile) -> Option<HairInfo> {
+    let d = &model.dat1;
+    let subsets = SplineSubsets::parse(d.get_section_data(TAG_SPLINE_SUBSETS)?).ok()?;
+    let strands = d.get_section_data(TAG_SPLINES).map_or(0, |s| s.len() / 12);
+    if subsets.subsets.is_empty() && strands == 0 {
+        return None;
+    }
+    let groups = subsets
+        .subsets
+        .iter()
+        .map(|s| d.get_string(s.name_offset).unwrap_or_else(|| format!("{:08X}", s.name_hash)))
+        .collect();
+    Some(HairInfo { groups, strands })
+}
+
+/// Removes the spline sections and zeroes Built's strand group count. The Spline model flag does
+/// not track these sections in the corpus, so it is left alone.
+fn strip_hair(model: &mut ModelFile) -> Result<usize> {
+    let groups = hair_info(model).map_or(0, |h| h.groups.len());
+    if model.dat1.remove_sections(&HAIR_SECTIONS) == 0 {
+        return Ok(0);
+    }
+    if let Some(mut b) = model.dat1.get_section_data(TAG_BUILT).map(|b| b.to_vec()) {
+        if b.len() >= Built::SIZE {
+            b[0x62] = 0;
+            model.dat1.set_section_data(TAG_BUILT, b)?;
+        }
+    }
+    Ok(groups)
 }
 
 /// The model's material slots and the glTF materials an import would add as new slots.
@@ -176,7 +223,7 @@ pub fn material_slot_plan(model: &ModelFile, gltf: &GltfModel, opts: &ImportOpti
             None => new_slots.push(SlotRequest { name: name.to_string(), path, required: !hinted, meshes: vec![m.name.clone()] }),
         }
     }
-    Ok(SlotPlan { new_slots, existing })
+    Ok(SlotPlan { new_slots, existing, hair: hair_info(model), strip_hair: opts.strip_hair })
 }
 
 /// Material paths are stored the way the game writes them: backslash-separated.
@@ -269,7 +316,7 @@ impl Source {
         self.vertexes.get(m.vertex_start as usize..(m.vertex_start + m.vertex_count) as usize)
     }
 
-    /// The subset's triangles in glTF winding, as the exporter writes them.
+    /// The subset's triangles reversed from game order, as `parse_gltf` stores them.
     fn faces(&self, m: &MeshDefinition) -> Option<Vec<(u32, u32, u32)>> {
         let base = if m.has_relative_indices() { 0 } else { m.vertex_start };
         let idx = self.indices.get(m.index_start as usize..(m.index_start + m.index_count) as usize)?;
@@ -1083,11 +1130,12 @@ pub fn import_gltf(model: &mut ModelFile, gltf: &GltfModel, opts: &ImportOptions
         }
     }
 
-    if model.dat1.get_section_data(TAG_SPLINE_SKIN_BINDING).is_some()
+    if !opts.strip_hair.unwrap_or(false)
+        && model.dat1.get_section_data(TAG_SPLINE_SKIN_BINDING).is_some()
         && (structure_changed || prims.iter().any(|p| matches!(p.tier, Tier::Rebuilt | Tier::New)))
     {
         report.warn(
-            "this model has hair / fur strands bound to subset triangles; changed topology or subset order can detach them".into(),
+            "this model has hair / fur strands bound to subset triangles; changed topology or subset order can detach them (strip_hair removes them)".into(),
         );
     }
 
@@ -1201,6 +1249,11 @@ pub fn import_gltf(model: &mut ModelFile, gltf: &GltfModel, opts: &ImportOptions
         model.dat1.set_section_data(TAG_ANIM_MORPH_INFO, enc.info)?;
         model.dat1.set_section_data(TAG_ANIM_MORPH_DATA, enc.data)?;
         model.dat1.set_section_data(TAG_ANIM_MORPH_INDICES, enc.indices)?;
+    }
+
+    // Last, so strings interned above sit behind the pool padding too.
+    if opts.strip_hair.unwrap_or(false) {
+        report.hair_removed = strip_hair(model)?;
     }
 
     for (pi, p) in prims.iter().enumerate() {

@@ -48,12 +48,13 @@ fn main() {
     if let Some(sec) = material.dat1.get_section_data(TAG_MATERIAL_HEADER) {
         let h = MaterialHeaderSection::parse(sec).expect("parse header");
         println!(
-            "header: flags={:#010X} av={} audio={:#010X} f14={} f1c={}",
+            "header: flags={:#010X} av={} audio={} alpha={} alpha_test={} lod_dist={}",
             h.flags,
             material_names::label(h.av_material_hash),
-            h.audio_material_hash,
-            h.unk14,
-            h.unk1c
+            material_names::label(h.audio_material_hash),
+            h.alpha,
+            h.alpha_test,
+            h.lod_dist
         );
     }
 

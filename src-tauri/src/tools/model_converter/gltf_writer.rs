@@ -498,9 +498,10 @@ pub fn model_to_glb_for_looks(model: &ModelFile, looks: &[usize]) -> Result<Vec<
         let mut idx_arr: Vec<u16> = Vec::with_capacity(face_count as usize * 3);
         for f in 0..face_count as usize {
             let base = mesh.index_start as usize + f * 3;
-            let i0 = indexes[base + 2].wrapping_sub(vc_offset);
+            // Game order already winds counter-clockwise around the normals, as glTF expects.
+            let i0 = indexes[base + 0].wrapping_sub(vc_offset);
             let i1 = indexes[base + 1].wrapping_sub(vc_offset);
-            let i2 = indexes[base + 0].wrapping_sub(vc_offset);
+            let i2 = indexes[base + 2].wrapping_sub(vc_offset);
             idx_arr.push(i0);
             idx_arr.push(i1);
             idx_arr.push(i2);

@@ -1,7 +1,9 @@
 //! Edits a model through the glTF path the way a mod would, then checks the rebuilt file against
 //! the format rules a replaced mesh has to satisfy.
 //!
-//! usage: mesh_edit_check <file.model> [--scenario S] [--mesh N] [--wide-joint J]
+//! usage: mesh_edit_check <file.model> [--scenario S] [--mesh N] [--wide-joint J] [--glb G]
+//!
+//! `--glb` edits an existing export of the model instead of a fresh one.
 //!
 //! Scenarios (default `grow`):
 //! - `unchanged`: re-import the untouched export; the file must come back byte-identical.
@@ -12,6 +14,7 @@
 //! - `drop`: that mesh is left out of the glTF, so its subset is removed.
 //! - `morph-edit`: one shape key of a morph mesh is scaled 1.5x; topology unchanged.
 //! - `morph-grow`: a morph mesh grows like `grow`; its shape keys must survive the rebuild.
+//! - `strip-hair`: the untouched export is imported with `strip_hair`; strings must survive.
 
 use std::collections::BTreeMap;
 
@@ -274,9 +277,15 @@ fn main() {
     let orig = ModelFile::parse(&data).expect("parse model");
     let orig_subs = subsets(&orig);
 
-    let glb = model_to_glb_for_looks(&orig, &[0]).expect("export");
-    let glb_path = std::env::temp_dir().join("mesh_edit_check.glb");
-    std::fs::write(&glb_path, &glb).unwrap();
+    let glb_path = match get("--glb") {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            let glb = model_to_glb_for_looks(&orig, &[0]).expect("export");
+            let p = std::env::temp_dir().join("mesh_edit_check.glb");
+            std::fs::write(&p, &glb).unwrap();
+            p
+        }
+    };
     let mut gltf: GltfModel = parse_gltf(&glb_path.to_string_lossy()).expect("parse glb");
 
     let morphing = scenario.starts_with("morph");
@@ -296,6 +305,7 @@ fn main() {
 
     match scenario.as_str() {
         "unchanged" => {}
+        "strip-hair" => opts.strip_hair = Some(true),
         "shuffle" => {
             for m in &mut gltf.meshes {
                 let n = m.vertexes.len() as u32;
@@ -386,6 +396,27 @@ fn main() {
                 c.check("every shape key survives the rebuild (count and magnitude)", bad == 0, || format!("{bad}/{} keys differ", want.len()));
             }
             check_edited(&rt, target, &mut c);
+        }
+        "strip-hair" => {
+            let spline_tags = [0x3C9DABDF, 0x27CA5246, 0xB25B3163, 0xBB7303D5];
+            let had = spline_tags.iter().filter(|&&t| orig.dat1.get_section_data(t).is_some()).count();
+            let left = spline_tags.iter().filter(|&&t| rt.dat1.get_section_data(t).is_some()).count();
+            println!("  info removed {} hair groups, {had} spline sections", report.hair_removed);
+            c.check("no spline sections remain", left == 0, || format!("{left} left"));
+            let b = Built::parse(rt.dat1.get_section_data(TAG_BUILT).unwrap()).unwrap();
+            c.check("built.strand_subset_count is 0", b.strand_subset_count == 0, || b.strand_subset_count.to_string());
+            let mat = MaterialSection::parse(rt.dat1.get_section_data(TAG_MATERIAL).unwrap()).unwrap();
+            let paths: Vec<_> = mat.slots.iter().map(|s| rt.dat1.get_string(s.path_offset as u32)).collect();
+            let omat = MaterialSection::parse(orig.dat1.get_section_data(TAG_MATERIAL).unwrap()).unwrap();
+            let opaths: Vec<_> = omat.slots.iter().map(|s| orig.dat1.get_string(s.path_offset as u32)).collect();
+            c.check("material paths read back unchanged", paths == opaths, || format!("{paths:?}"));
+            c.check("slot names read back unchanged", slot_names(&rt) == slot_names(&orig), String::new);
+            let other = orig.dat1.sections.iter().filter(|s| !spline_tags.contains(&s.tag) && s.tag != TAG_BUILT)
+                .filter(|s| rt.dat1.get_section_data(s.tag) != orig.dat1.get_section_data(s.tag)).count();
+            c.check("every other section is byte-identical", other == 0 || had == 0, || format!("{other} differ"));
+            let fix = |m: &ModelFile| m.dat1.fixup_pairs().iter().filter_map(|&(_, t)| m.dat1.get_string(t)).collect::<Vec<_>>();
+            let (a, z) = (fix(&orig), fix(&rt));
+            c.check("fixups into the string pool still hit their strings", z.iter().all(|s| a.contains(s)), || format!("{} vs {}", a.len(), z.len()));
         }
         "add" => {
             let new = report.subsets.iter().find(|s| s.tier == Tier::New).map(|s| s.subset);

@@ -73,6 +73,31 @@ fn extras_json(x: &gltf::json::Extras) -> Option<serde_json::Value> {
     x.as_ref().and_then(|r| serde_json::from_str(r.get()).ok())
 }
 
+/// True when most triangles wind counter-clockwise around their vertex normals.
+fn winds_with_normals(positions: &[[f32; 3]], normals: &[[f32; 3]], faces: &[(u32, u32, u32)]) -> bool {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let (mut with, mut against) = (0usize, 0usize);
+    for &(a, b, c) in faces {
+        let (Some(&pa), Some(&pb), Some(&pc)) =
+            (positions.get(a as usize), positions.get(b as usize), positions.get(c as usize))
+        else {
+            continue;
+        };
+        let (u, v) = (sub(pb, pa), sub(pc, pa));
+        let g = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let n = [a, b, c].iter().filter_map(|&i| normals.get(i as usize)).fold([0.0f32; 3], |s, n| {
+            [s[0] + n[0], s[1] + n[1], s[2] + n[2]]
+        });
+        let d = g[0] * n[0] + g[1] * n[1] + g[2] * n[2];
+        if d > 0.0 {
+            with += 1;
+        } else if d < 0.0 {
+            against += 1;
+        }
+    }
+    with >= against
+}
+
 pub fn parse_gltf(path: &str) -> Result<GltfModel> {
     let (document, buffers, _) =
         gltf::import(path).map_err(|e| ToolkitError::Parse(e.to_string()))?;
@@ -91,11 +116,13 @@ pub fn parse_gltf(path: &str) -> Result<GltfModel> {
                 positions.extend(iter);
             }
             let mut normals: Vec<[f32; 3]> = Vec::new();
-            if let Some(iter) = reader.read_normals() {
+            let has_normals = if let Some(iter) = reader.read_normals() {
                 normals.extend(iter);
+                true
             } else {
                 normals.resize(positions.len(), [0.0, 1.0, 0.0]);
-            }
+                false
+            };
             let mut uvs: Vec<[f32; 2]> = Vec::new();
             if let Some(tex_coords) = reader.read_tex_coords(0) {
                 uvs.extend(tex_coords.into_f32());
@@ -164,6 +191,12 @@ pub fn parse_gltf(path: &str) -> Result<GltfModel> {
                         faces.push((chunk[0], chunk[1], chunk[2]));
                     }
                 }
+            }
+            // `faces` are kept reversed from game order (injection flips them back). Proper glTF
+            // winds counter-clockwise around its normals and is reversed here; exports from before
+            // the exporter wrote game order already come reversed and are left alone.
+            if !has_normals || winds_with_normals(&positions, &normals, &faces) {
+                faces.iter_mut().for_each(|f| *f = (f.2, f.1, f.0));
             }
 
             let mut joint_names = None;

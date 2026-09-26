@@ -738,7 +738,7 @@ mod tests {
             unk1: 0,
             total_size: 0,
             sections: vec![],
-            unknowns: vec![],
+            fixups: vec![],
             strings_pool: vec![],
             section_data: vec![],
             sections_map: Default::default(),
