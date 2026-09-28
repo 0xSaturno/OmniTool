@@ -15,6 +15,19 @@
 //!   ngslots                nodegraph: FieldNameHash histogram and what resolves
 //!   ngdump <substr>        one nodegraph, outlined
 //!   ngnode <substr> <n>    one node's full payload
+//!   keyprobe               the Events map key, entry by entry, against the pool string
+//!   keycheck               key == crc32(decimal(crc32(Name))) over every shipped event
+//!   root                   the root fields of a Conduit Built section
+//!   sounds                 Wwise id == fnv1(lowercase(name)) over every name/id pair
+//!   ngplugs                plug aliases, duplicate plug ids, ApproximatePlugCount
+//!   ngbad                  unnameable-slot nodes and unresolvable connections
+//!   ngcross                do unresolvable endpoints live in another shipped graph?
+//!   ngindex                node index vs decoded nodes, missing payloads, id uniqueness
+//!   ngsub                  FieldNameHash == buffer tag, and which graphs ref a nodegraph
+//!   ngdebug                Node Graph Built Debug: what the flattened ids resolve to
+//!   ngassetid              is every Debug row's OriginalAssetId the graph's own id?
+//!   ngobj                  what an ObjectiveNodeGameDef carries, over all 606
+//!   hashes                 crc32 preimages of the section names
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,7 +139,7 @@ fn main() {
                 tot.4,
                 tot.4 * 2 + tot.2 * 2
             );
-            println!("  Events map key == crc32(Name): {keys_ok} of {keys_total}");
+            println!("  Events map key == crc32(decimal(crc32(Name))): {keys_ok} of {keys_total}");
             println!("  conduits with no Conduit Asset Refs section: {}", no_refs.len());
 
             // Are the refs-less ones really value-only?
@@ -300,7 +313,7 @@ fn main() {
                 v.sort_by(|x, y| y.1.cmp(x.1));
                 let total: usize = d.values().sum();
                 println!("\n{k}: {total} mappings over {} distinct destination fields", d.len());
-                for (name, n) in v.iter().take(18) {
+                for (name, n) in v.iter().take(30) {
                     println!("   {name:<34} {n}");
                 }
             }
@@ -395,6 +408,47 @@ fn main() {
                 }
                 break;
             }
+        }
+
+        "sounds" => {
+            // Is the numeric id beside every Wwise name derivable from the name?
+            // FNV-1 (multiply then xor) of the lowercased name, as in core::zone_refs.
+            let fnv1 = |s: &str| -> u32 {
+                let mut h: u32 = 2166136261;
+                for b in s.as_bytes() { h = h.wrapping_mul(16777619); h ^= *b as u32; }
+                h
+            };
+            let mut pairs: BTreeMap<&str, (&str, u64, u64)> = BTreeMap::new();
+            pairs.insert("kSound", ("SoundEventName/SoundEventId", 0, 0));
+            pairs.insert("kWWise:action", ("WwiseActionName/WwiseActionId", 0, 0));
+            pairs.insert("kWWise:group", ("GroupName/GroupId", 0, 0));
+            let mut mism: Vec<String> = Vec::new();
+            for (id, name) in ship_c.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(c) = Conduit::from_dat1(&d1) else { continue };
+                for (_, _, r) in c.responses() {
+                    for (key, nf, idf) in [
+                        ("kSound", "SoundEventName", "SoundEventId"),
+                        ("kWWise:action", "WwiseActionName", "WwiseActionId"),
+                        ("kWWise:group", "GroupName", "GroupId"),
+                    ] {
+                        if !key.starts_with(&r.kind) { continue }
+                        let (Some(n), Some(v)) = (r.payload(nf), r.payload(idf)) else { continue };
+                        let e = pairs.get_mut(key).unwrap();
+                        e.2 += 1;
+                        let want = fnv1(&n.to_ascii_lowercase()) as u64;
+                        match v.parse::<u64>() {
+                            Ok(got) if got == want => e.1 += 1,
+                            other => if mism.len() < 8 { mism.push(format!("  {} {nf}={n} {idf}={v} want {want} parsed {other:?}", name.rsplit('/').next().unwrap())) },
+                        }
+                    }
+                }
+            }
+            for (k, (what, ok, tot)) in pairs.iter() {
+                println!("{k:<14} {what:<32} id == fnv1(lowercase(name)): {ok} of {tot}");
+            }
+            for m in mism { println!("{m}") }
         }
 
         "cmpddl" => {
@@ -525,6 +579,252 @@ fn main() {
             println!("\nslots resolved {named} ({nn} nodes), unresolved {unnamed} ({un} nodes)");
         }
 
+        "ngbad" => {
+            // nodes whose FieldNameHash this build cannot name, and connections
+            // whose endpoints do not resolve inside the asset.
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let short = name.rsplit('/').next().unwrap();
+                for (i, n) in g.nodes.iter().enumerate() {
+                    if n.slot.is_none() {
+                        println!("--- {short} node #{i} slot {:#010X} buffer {:#010X}", n.slot_hash, n.buffer_tag);
+                        println!("{}", serde_json::to_string(&n.params).unwrap());
+                    }
+                }
+                let by_id = g.node_index();
+                let plugs = g.plug_owners();
+                for c in &g.connections {
+                    let sn = by_id.contains_key(&c.source_node);
+                    let tn = by_id.contains_key(&c.target_node);
+                    let sp = plugs.contains_key(&c.source_plug);
+                    let tp = plugs.contains_key(&c.target_plug);
+                    if sn && tn && sp && tp { continue }
+                    println!("--- {short} conn {:016X} src node {:016X}({}) plug {:016X}({}) -> dst node {:016X}({}) plug {:016X}({})",
+                        c.id, c.source_node, sn, c.source_plug, sp, c.target_node, tn, c.target_plug, tp);
+                    for m in g.id_mappings.iter().filter(|m| m.flattened_id == c.source_node || m.flattened_id == c.target_node || m.flattened_id == c.source_plug || m.flattened_id == c.target_plug) {
+                        println!("      debug map flat {:016X} -> asset {:016X} id {:016X} embedded {:016X}",
+                            m.flattened_id, m.original_asset_id, m.original_id, m.original_embedded_graph_id);
+                    }
+                }
+                // do the subgraph node payloads name the missing ids?
+                for n in g.nodes.iter().filter(|n| matches!(n.slot, Some("SubGraphs") | Some("EmbeddedSubGraphs"))) {
+                    println!("--- {short} subgraph node {:#010X} {}", n.slot_hash, serde_json::to_string(&n.params).unwrap());
+                }
+            }
+        }
+
+        "ngplugs" => {
+            // does the builder really emit a duplicate "<plug> <i>" field per element?
+            let (mut arr, mut idxd, mut dup_id) = (0usize, 0usize, 0usize);
+            let mut detailed = 0usize;
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let mut sum_plugs = 0usize;
+                for n in &g.nodes {
+                    let mut ids: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+                    for p in &n.plugs {
+                        if p.label.rsplit(' ').next().is_some_and(|t| t.parse::<u32>().is_ok()) { idxd += 1 } else { arr += 1 }
+                        if p.detail.is_some() { detailed += 1 }
+                        ids.entry(p.id).or_default().push(p.label.clone());
+                    }
+                    dup_id += ids.values().filter(|v| v.len() > 1).count();
+                    sum_plugs += n.plugs.len();
+                }
+                if sum_plugs as u64 != g.approximate_plug_count {
+                    println!("  {:<52} plugs read {sum_plugs} vs ApproximatePlugCount {}", name.rsplit('/').next().unwrap(), g.approximate_plug_count);
+                }
+            }
+            println!("plug fields with an array-element name (\"Inputs 0\"): {idxd}, plain: {arr}");
+            println!("plugs carrying a SyncLabel: {}", detailed);
+            println!("plug ids carried by more than one field on the same node: {dup_id}");
+        }
+
+        "ngcross" => {
+            // Do the unresolvable endpoints live in a *different* shipped graph?
+            let mut all_nodes: BTreeMap<u64, String> = BTreeMap::new();
+            let mut all_plugs: BTreeMap<u64, String> = BTreeMap::new();
+            let mut parsed: Vec<(String, NodeGraph)> = Vec::new();
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let short = name.rsplit('/').next().unwrap().to_string();
+                for n in &g.nodes {
+                    all_nodes.insert(n.id, short.clone());
+                    for pl in &n.plugs { all_plugs.insert(pl.id, format!("{short}:{}", pl.label)); }
+                }
+                parsed.push((short, g));
+            }
+            let (mut elsewhere, mut nowhere) = (0usize, 0usize);
+            for (short, g) in parsed.iter() {
+                let local = g.node_index();
+                let lp = g.plug_owners();
+                for c in &g.connections {
+                    if local.contains_key(&c.source_node) && local.contains_key(&c.target_node)
+                        && lp.contains_key(&c.source_plug) && lp.contains_key(&c.target_plug) { continue }
+                    let s = all_nodes.get(&c.source_node);
+                    let t = all_nodes.get(&c.target_node);
+                    let sp = all_plugs.get(&c.source_plug);
+                    let tp = all_plugs.get(&c.target_plug);
+                    if s.is_some() && t.is_some() { elsewhere += 1 } else { nowhere += 1 }
+                    println!("{short}: src {:?}/{:?} dst {:?}/{:?}", s, sp, t, tp);
+                    println!("   refs of {short}: {:?}", g.refs.iter().map(|r| r.path.rsplit('/').next().unwrap().to_string()).collect::<Vec<_>>());
+                }
+            }
+            println!("dangling endpoints found in another shipped graph: {elsewhere}, found nowhere: {nowhere}");
+        }
+
+        "ngindex" => {
+            use omnitool_lib::core::prius::{self, NameCtx, PValue};
+            let (mut rows, mut missing, mut dupe_id, mut zero_id) = (0usize, 0usize, 0usize, 0usize);
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let ctx = NameCtx::new(Some(&d1), None);
+                let Some(sec) = d1.get_section_data(nodegraph::NG_NODES_TAG) else { continue };
+                let Ok(index) = prius::decode(sec, 0, None, &ctx) else { continue };
+                let mut n_rows = 0usize;
+                let mut miss: Vec<u32> = Vec::new();
+                if let Some(f) = index.field_named("Nodes") {
+                    for v in &f.values {
+                        let PValue::Struct(o) = v else { continue };
+                        n_rows += 1;
+                        let tag = o.field_named("BuiltNodeDataBufferNameHash")
+                            .and_then(|x| x.values.first())
+                            .and_then(|v| match v { PValue::U32(t) => Some(*t), PValue::U64(t) => Some(*t as u32), PValue::U16(t) => Some(*t as u32), PValue::U8(t) => Some(*t as u32), _ => None })
+                            .unwrap_or(0);
+                        if d1.get_section_data(tag).is_none() { miss.push(tag) }
+                    }
+                }
+                rows += n_rows;
+                missing += miss.len();
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                if n_rows != g.nodes.len() {
+                    println!("  {:<52} index rows {n_rows} decoded {} missing payload {:?}", name.rsplit('/').next().unwrap(), g.nodes.len(), miss.iter().map(|t| format!("{t:#010X}")).collect::<Vec<_>>());
+                }
+                let mut seen: BTreeSet<u64> = BTreeSet::new();
+                for n in &g.nodes {
+                    if n.id == 0 { zero_id += 1 }
+                    if !seen.insert(n.id) { dupe_id += 1 }
+                }
+            }
+            println!("node index rows {rows}, rows whose payload section is absent {missing}, nodes with Id==0 {zero_id}, duplicate node Ids {dupe_id}");
+        }
+
+        "ngsub" => {
+            let (mut eq, mut neq, mut eq_named) = (0usize, 0usize, 0usize);
+            let mut refkinds: BTreeMap<String, BTreeMap<u32, usize>> = BTreeMap::new();
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let short = name.rsplit('/').next().unwrap().to_string();
+                for n in &g.nodes {
+                    if n.slot_hash == n.buffer_tag {
+                        eq += 1;
+                        if n.slot.is_some() { eq_named += 1 }
+                    } else { neq += 1 }
+                }
+                let e = refkinds.entry(short).or_default();
+                for r in &g.refs { *e.entry(r.type_id).or_default() += 1 }
+            }
+            println!("nodes with FieldNameHash == BuiltNodeDataBufferNameHash: {eq} (of which the slot table names {eq_named}); other nodes {neq}");
+            for (k, v) in refkinds.iter().filter(|(_, v)| v.contains_key(&0x53B8EA03u32)) {
+                println!("  {k:<52} {:?}", v.iter().map(|(t, n)| (format!("{t:#010X}"), n)).collect::<Vec<_>>());
+            }
+        }
+
+        "ngdebug" => {
+            let (mut rows, mut emb, mut noemb, mut hit_node, mut hit_plug, mut hit_other) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut odd_slot_in_map = (0usize, 0usize);
+            let mut distinct_assets: BTreeSet<u64> = BTreeSet::new();
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let by_id = g.node_index();
+                let plugs = g.plug_owners();
+                for m in &g.id_mappings {
+                    rows += 1;
+                    distinct_assets.insert(m.original_asset_id);
+                    if m.original_embedded_graph_id != u64::MAX { emb += 1 } else { noemb += 1 }
+                    if by_id.contains_key(&m.flattened_id) { hit_node += 1 }
+                    else if plugs.contains_key(&m.flattened_id) { hit_plug += 1 }
+                    else { hit_other += 1 }
+                }
+                // are the FieldNameHash==buffer nodes flagged as embedded in the map?
+                for n in g.nodes.iter().filter(|n| n.slot_hash == n.buffer_tag) {
+                    match g.id_mappings.iter().find(|m| m.flattened_id == n.id) {
+                        Some(m) if m.original_embedded_graph_id != u64::MAX => odd_slot_in_map.0 += 1,
+                        _ => odd_slot_in_map.1 += 1,
+                    }
+                }
+                if name.contains("mis_ard_01_first_visit") {
+                    println!("  {} debug rows {} nodes {}", name.rsplit('/').next().unwrap(), g.id_mappings.len(), g.nodes.len());
+                    for m in g.id_mappings.iter().take(4) {
+                        println!("     flat {:016X} asset {:016X} orig {:016X} emb {:016X}", m.flattened_id, m.original_asset_id, m.original_id, m.original_embedded_graph_id);
+                    }
+                    for n in g.nodes.iter().filter(|n| n.slot_hash == n.buffer_tag) {
+                        let m = g.id_mappings.iter().find(|m| m.flattened_id == n.id);
+                        println!("     odd node {:016X} -> {:?}", n.id, m.map(|m| (format!("{:016X}", m.original_asset_id), format!("{:016X}", m.original_id), format!("{:016X}", m.original_embedded_graph_id))));
+                    }
+                }
+            }
+            println!("Debug rows {rows}: embedded-graph id set {emb}, unset {noemb}");
+            println!("  flattened_id is a node id {hit_node}, a plug id {hit_plug}, neither {hit_other}");
+            println!("  FieldNameHash==buffer nodes flagged embedded in the map: {} of {}", odd_slot_in_map.0, odd_slot_in_map.0 + odd_slot_in_map.1);
+            println!("  distinct OriginalAssetId values {}", distinct_assets.len());
+        }
+
+        "ngassetid" => {
+            let (mut ok, mut tot) = (0usize, 0usize);
+            for (id, name) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                let all_self = !g.id_mappings.is_empty() && g.id_mappings.iter().all(|m| m.original_asset_id == *id);
+                tot += 1;
+                if all_self { ok += 1 } else {
+                    println!("  {} asset {:016X} first map asset {:?}", name.rsplit('/').next().unwrap(), id,
+                        g.id_mappings.first().map(|m| format!("{:016X}", m.original_asset_id)));
+                }
+            }
+            println!("graphs where every Debug row's OriginalAssetId is the graph's own asset id: {ok} of {tot}");
+        }
+
+        "ngobj" => {
+            // What an ObjectiveNodeGameDef actually carries, over all 606.
+            let mut fields: BTreeMap<String, usize> = BTreeMap::new();
+            let mut taskmode: BTreeMap<String, usize> = BTreeMap::new();
+            let mut uimode: BTreeMap<String, usize> = BTreeMap::new();
+            let (mut n_obj, mut with_cp, mut seg, mut with_load) = (0usize, 0usize, 0usize, 0usize);
+            for (id, _) in ship_g.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Ok(g) = NodeGraph::from_dat1(&d1) else { continue };
+                for n in g.nodes.iter().filter(|n| n.class == Some("ObjectiveNodeGameDef")) {
+                    n_obj += 1;
+                    if let Some(m) = n.params.as_object() {
+                        for k in m.keys() { *fields.entry(k.clone()).or_default() += 1 }
+                    }
+                    if let Some(v) = n.param("TaskMode") { *taskmode.entry(v).or_default() += 1 }
+                    if let Some(v) = n.param("UIMode") { *uimode.entry(v).or_default() += 1 }
+                    if n.param("Checkpoint").is_some() { with_cp += 1 }
+                    if n.param("SegmentComplete").as_deref() == Some("true") { seg += 1 }
+                    if n.params.get("DebugLoadInfo").is_some() { with_load += 1 }
+                }
+            }
+            println!("ObjectiveNodeGameDef nodes: {n_obj}");
+            println!("  with a Checkpoint {with_cp}, SegmentComplete true {seg}, with DebugLoadInfo {with_load}");
+            top("payload fields present", &fields, 30);
+            top("TaskMode", &taskmode, 10);
+            top("UIMode", &uimode, 10);
+        }
+
         "ngdump" => {
             for (id, name) in ship_g.iter() {
                 if !arg.is_empty() && !name.contains(&arg) {
@@ -572,6 +872,56 @@ fn main() {
             }
         }
 
+        "root" => {
+            use omnitool_lib::core::prius::{self, NameCtx};
+            let mut n = 0;
+            for (id, name) in ship_c.iter() {
+                if !arg.is_empty() && !name.contains(&arg) { continue }
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Some(sec) = d1.get_section_data(CONDUIT_BUILT_TAG) else { continue };
+                let ctx = NameCtx::new(Some(&d1), None);
+                let Ok(root) = prius::decode(sec, 0, None, &ctx) else { continue };
+                println!("=== {name} (asset id {:016X}) ===", id);
+                for f in &root.fields {
+                    println!("   id={:#010X} name={:?} type={} count={} vals={:?}",
+                        f.id, f.name, f.encoding_type, f.count,
+                        f.values.iter().take(3).map(|v| format!("{v:?}").chars().take(90).collect::<String>()).collect::<Vec<_>>());
+                }
+                n += 1;
+                if n >= 3 { break }
+            }
+        }
+
+        "keycheck" => {
+            use omnitool_lib::core::prius::{self, NameCtx, PValue};
+            let (mut ok, mut tot, mut bad) = (0u64, 0u64, 0u64);
+            for (id, name) in ship_c.iter() {
+                let Ok(bytes) = idx.extract(*id) else { continue };
+                let Some(d1) = parse_dat1(&bytes) else { continue };
+                let Some(sec) = d1.get_section_data(CONDUIT_BUILT_TAG) else { continue };
+                let ctx = NameCtx::new(Some(&d1), None);
+                let Ok(root) = prius::decode(sec, 0, None, &ctx) else { continue };
+                let Some(ev) = root.field_named("Events") else { continue };
+                let Some(PValue::Struct(map)) = ev.values.first() else { continue };
+                for f in &map.fields {
+                    tot += 1;
+                    let mut ename = String::new();
+                    if let Some(PValue::Struct(e)) = f.values.first() {
+                        if let Some(PValue::Str { value, .. }) = e.field_named("Name").and_then(|x| x.values.first()) {
+                            ename = value.clone();
+                        }
+                    }
+                    let decimal = format!("{}", crc32::hash(&ename));
+                    if crc32::hash(&decimal) == f.id { ok += 1 } else {
+                        bad += 1;
+                        if bad <= 5 { println!("  MISS {name} key={:#010X} name={ename:?} decimal={decimal}", f.id) }
+                    }
+                }
+            }
+            println!("Events map key == crc32(decimal text of crc32(Name)): {ok} of {tot}");
+        }
+
         "hashes" => {
             for s in [
                 "Node Graph Built Header",
@@ -612,8 +962,8 @@ fn main() {
                             }
                         }
                     }
-                    println!("   key={:#010X} ({}) pool={:?} name={:?} stored_crc32={:#010X} crc32(name)={:#010X} crc64={:#018X}",
-                        f.id, f.id, pool, ename, ehash, crc32::hash(&ename), echk);
+                    println!("   key={:#010X} pool={:?} crc32(pool)={:#010X} name={:?} stored_crc32={:#010X} crc32(name)={:#010X} dec(crc32(name))={} crc64={:#018X}",
+                        f.id, pool, crc32::hash(&pool), ename, ehash, crc32::hash(&ename), crc32::hash(&ename), echk);
                 }
                 n += 1;
                 if n >= 3 { break }

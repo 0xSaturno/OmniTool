@@ -5,7 +5,9 @@ mod commands;
 pub mod commands_model_inspector;
 pub mod commands_level_editor;
 pub mod commands_level_entities;
+pub mod commands_level_graphs;
 pub mod commands_level_lighting;
+pub mod commands_level_nav;
 pub mod commands_level_prius;
 pub mod commands_level_script;
 pub mod commands_level_world;
@@ -116,6 +118,18 @@ pub fn run() {
             commands_level_prius::prius_plan_edit,
             // --- Level Editor: script graph ---
             commands_level_script::level_zone_script_graph,
+            commands_level_nav::level_nav_zones,
+            commands_level_nav::level_nav_summary,
+            commands_level_nav::level_nav_surface,
+            commands_level_nav::level_nav_edges,
+            commands_level_nav::level_nav_clues,
+            commands_level_graphs::level_list_graphs,
+            commands_level_graphs::level_nodegraph,
+            commands_level_graphs::level_nodegraph_node,
+            commands_level_graphs::level_nodegraph_outline,
+            commands_level_graphs::level_list_conduits,
+            commands_level_graphs::level_conduit,
+            commands_level_graphs::level_conduit_search,
             commands_level_script::level_zone_script_dump,
             commands_level_script::level_zone_script_node,
             // --- Level Editor: world / region / hibernate ---

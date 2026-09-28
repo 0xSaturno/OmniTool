@@ -6,6 +6,10 @@ default-run = "OmniTool"
 
 [features]
 dev-tools = []
+# Lets `nav_probe cmd` drive the `level_nav_*` Tauri commands. Off by default
+# because it needs `pub mod commands_level_nav;` in lib.rs, and the default build
+# must stay green before that line lands.
+nav-commands = []
 
 [lib]
 name = "omnitool_lib"

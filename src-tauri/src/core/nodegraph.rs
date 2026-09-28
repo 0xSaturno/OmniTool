@@ -14,12 +14,16 @@
 //!
 //! # What ships
 //!
-//! Measured on the PC build (`conduit_probe ngcensus`): 221 `.nodegraph` paths
-//! are in the name list, **60 are present in the TOC**, and all 60 decode with
-//! the code below. Largest is
-//! `nodegraph/missions/i29_default.missions.nodegraph` at 228,992 bytes.
-//! The split by graph type is 58 objective graphs, 1 mission graph, 1 nodal-shot
-//! graph.
+//! Re-measured on the PC build (`conduit_probe census`, `ngcensus`): 221
+//! `.nodegraph` paths are in the name list, **60 are present in the TOC**, and
+//! all 60 decode. Largest is `nodegraph/missions/i29_default.missions.nodegraph`
+//! at 228,992 bytes. The split is 58 objective graphs, 1 mission graph
+//! (`i29_default`, the whole campaign), 1 nodal-shot graph.
+//!
+//! Totals over the 60: **853 nodes, 802 connections, 4,151 debug id mappings,
+//! 188 reference rows.** Every one of the 853 node-index rows has its payload
+//! section present, every node id is non-zero and unique, and no section tag in
+//! any of the 60 is left unclaimed.
 //!
 //! # File layout
 //!
@@ -28,12 +32,13 @@
 //! against readable names by [`tests::section_tags_are_crc32_of_their_names`]:
 //!
 //! ```text
-//!   tag         name                             contents
-//!   0xE5065650  "Node Graph Built Header"        GraphTypeHash, ApproximatePlugCount
-//!   0xD8110E80  "Node Graph Built Nodes"         the node index
-//!   0x7884E530  "Node Graph Built Connections"   the edge list
-//!   0xA9894CDB  "Node Graph Built Debug"         flattened-id -> authored-id map
-//!   0xFBD496D6  "Node Graph Refs"                16-byte asset refs (all Config)
+//!   tag         name                             in   bytes    contents
+//!   0xE5065650  "Node Graph Built Header"        60    2,880    GraphTypeHash, ApproximatePlugCount
+//!   0xD8110E80  "Node Graph Built Nodes"         60   42,624    the node index
+//!   0x7884E530  "Node Graph Built Connections"   60  142,832    the edge list
+//!   0xA9894CDB  "Node Graph Built Debug"         60  401,376    flattened-id -> authored-id map
+//!   0xFBD496D6  "Node Graph Refs"                55    3,008    16-byte asset refs
+//!               <853 per-node payloads>         853  805,712
 //! ```
 //!
 //! `GraphTypeHash` is a DDL **type id**, i.e. `crc32` of the graph's struct
@@ -51,7 +56,27 @@
 //!   * `FieldNameHash` is the **field id of the array slot on the graph struct**
 //!     the node belongs to — `crc32("ObjectiveNodes")`, `crc32("AndNodes")`, … —
 //!     which is what names the node's class. [`NODE_SLOTS`] carries the 77 slots
-//!     this build resolves, every row verified by `crc32(name) == hash`.
+//!     this build resolves, every row verified by `crc32(name) == hash`. 19 of
+//!     the 77 are actually used by shipped data, covering 836 of the 853 nodes.
+//!     `ObjectiveNodeGameDef` alone is 606 of them.
+//!   * …**except** when `FieldNameHash == BuiltNodeDataBufferNameHash`, which
+//!     happens on exactly 17 of the 853 nodes and on no node that the slot
+//!     table can name. Those 17 are flattened sub-graph instances, not elements
+//!     of a named array slot: see [`Node::is_flattened_instance`]. Every one of
+//!     them carries a `Start` output plug plus `FallbackMissionName` /
+//!     `DebugName`, i.e. the shape of `MissionStartObjectiveNodeGameDef`, and
+//!     three of them additionally carry a `GraphData` sub-object typed
+//!     `ObjectiveGraphDataGame`. All 17 sit in objective graphs.
+//!
+//! # Node Graph Refs
+//!
+//! **Two** type tags ship, not one: `0xA9F149C4` = `.config` on 133 rows and
+//! `0x53B8EA03` = `.nodegraph` on 55 rows. The 55 `.nodegraph` rows are all in
+//! `i29_default.missions.nodegraph` and are the objective graphs its 57
+//! `MissionNodes` hand off to — each such node also names its objective graph
+//! in the payload at `ObjectiveGraph.AssetPath`, which is how the mission graph
+//! and the 58 objective graphs join up. The `.config` rows are equipment and
+//! hero loadouts named by the debug-load-info blocks. 91 distinct assets in all.
 //!
 //! # Plugs and connections
 //!
@@ -63,11 +88,99 @@
 //! `DebugOnlyOutput`, …). A connection names a source node + source plug and a
 //! target node + target plug, all by tuid.
 //!
-//! Beside each plug array the builder also emits one field per element named
-//! `"<plug> <i>"` (`"Inputs 0"`, `"Inputs 1"`, …) holding the *authored* id of
-//! that element; `Node Graph Built Debug` maps the flattened id used at runtime
-//! back to it. Those are ignored here — [`Plug`] carries the flattened id, which
-//! is what connections actually reference.
+//! Beside each plug array the builder *also* emits one field per element named
+//! `"<plug> <i>"` (`"Inputs 0"`, `"SyncOutput 2"`, …) carrying the **same**
+//! `Id`, and often the same `Type`, as the array element. Measured: 637 such
+//! alias fields across the 60 graphs, 591 of them an exact id duplicate of a
+//! sibling. They are aliases, not ports, and [`read_plugs`] drops them — an
+//! earlier version of this module claimed to ignore them and did not, which
+//! inflated the port list of 591 nodes and made a viewer draw every input twice.
+//! After the fix the 60 graphs have **1,613 plugs** — 797 inputs, 816 outputs,
+//! over 12 distinct port labels instead of the 25 the aliases produced — and no
+//! plug id occurs twice on one node. `ApproximatePlugCount` in the header counts
+//! the aliases too, so it totals 2,250 across the 60 and is an upper bound on
+//! the real port count, which is presumably why the builder calls it
+//! approximate: 191 real ports against a stated 298 on the mission graph.
+//!
+//! The array element is the one worth keeping for another reason: on a
+//! `MissionNodeGameDef` each `SyncOutput` element carries a `SyncLabel`
+//! (`"Zurkon_Met"`, `"First_Pirates_Dead"`, `"Francois_Defeated"`) that the
+//! alias field does not, and that label is the only human name a mid-mission
+//! branch point has. [`Plug::detail`] carries it.
+//!
+//! # Stale edges ship
+//!
+//! 10 of the 802 connections name a node id that exists in **no** shipped graph
+//! — 8 in `mis_intro.objectives.nodegraph` and 2 in
+//! `mis_zurk_01_visit_01.objectives.nodegraph`. Neither graph references another
+//! nodegraph, the ids are absent from the debug map, and every node index row in
+//! both graphs has its payload, so these are edges to nodes that were deleted
+//! from the authored graph and left in the built one. [`NodeGraph::edges`] drops
+//! them; [`NodeGraph::stale_connections`] hands them back so a UI can say so
+//! instead of quietly losing them.
+//!
+//! # What an objective node expresses
+//!
+//! `ObjectiveNodeGameDef` is 606 of the 853 nodes and is the unit a designer
+//! works in. Censused over all 606 (`conduit_probe ngobj`), every single one
+//! carries exactly one `Inputs` input plug and one `Output` output plug, so an
+//! objective is a **link in a chain**: it becomes live when the previous node's
+//! `Output` fires into its `Inputs`, and it reports done by firing its own
+//! `Output`. Only 3 of the 606 have a second, third or fourth input, i.e. a
+//! join. The node holds no completion *test* — the test lives in the zone's
+//! scripts, which raise the objective by its `ObjectiveName`; the graph holds
+//! the ordering, the save behaviour and the UI.
+//!
+//! What it does hold, with counts:
+//!
+//! ```text
+//!   ObjectiveName    606   the key gameplay raises; the objective's identity
+//!   DebugLoadInfo    606   "start the game here": SpawnCheckpoint, SpawnAsHero,
+//!                          SpawnLoadout / BackpackLoadout .config
+//!   TaskMode         585   kNormal 324, kHidden 158, kInherited 103
+//!   UIMode           455   kInherited 254, kHidden 102, kNormal 99
+//!   InfoUI           433   NameLocTag / DescriptionLocTag for the HUD and map
+//!   TaskInfo         326   PlaytimeEstimate and friends
+//!   Checkpoint       181   the checkpoint to save at when this objective opens
+//!   SegmentComplete  122   true on 61 — the objective closes a save segment
+//!   SaveOptions       84
+//! ```
+//!
+//! Worked example, `mis_ard_bar.objectives.nodegraph`, 5 nodes and 4 edges:
+//!
+//! ```text
+//!   MissionStartObjectiveNodeGameDef "MIS_ARD_BAR"
+//!     Start   -> OBJ_ARD_BAR            checkpoint CHK_A1_1, task kNormal
+//!     Output  -> OBJ_ARD_BAR_FRONT      checkpoint CHK_A1_1, task kNormal
+//!     Output  -> OBJ_ARD_BAR_COMPLETE   checkpoint CHK_A1_1, task kNormal
+//!     Output  -> MissionCompleteObjectiveNodeGameDef
+//! ```
+//!
+//! So: entering the mission triggers `OBJ_ARD_BAR`; when gameplay raises that
+//! objective the graph advances to `OBJ_ARD_BAR_FRONT`, then to
+//! `OBJ_ARD_BAR_COMPLETE`, whose `Output` reaches the mission-complete node and
+//! ends the mission. `OBJ_ARD_BAR_COMPLETE` also carries
+//! `DebugLoadInfo.SpawnCheckpoint = "CHK_ARD_BAR_EXIT"` and
+//! `SpawnLoadout = configs/equipment/equip_loadout_ardolis.config`, which is the
+//! recipe for booting the game straight into that step.
+//!
+//! A branching example, `mis_zurk_03_visit_03.objectives.nodegraph`: the chain
+//! `OBJ_ZURK_V3_GO_TO_ZURKONS` (task `kHidden`) fans out to both
+//! `OBJ_ZURK_V3_START` and a `SyncOutputNodeSharedDef` named `Arrived_Zurk_3`.
+//! That sync node is how an objective graph tells the *mission* graph something
+//! happened mid-mission: in `i29_default.missions.nodegraph` the
+//! `MIS_ZURK_03_VISIT_03` mission node has a `SyncOutput` plug labelled
+//! `Arrived_Zurk_3`, and it is what unlocks five arena challenge missions.
+//!
+//! # Node Graph Built Debug
+//!
+//! 4,151 rows. `OriginalAssetId` is the graph's **own** asset id on 60 of 60
+//! graphs, so the table never reaches outside the asset, and
+//! `OriginalEmbeddedGraphId` is `u64::MAX` on all 4,151 rows — nothing shipped
+//! came from an embedded sub-graph. Of the 4,151 `FlattenedId` values, 853 are
+//! node ids and 2,250 are plug ids (including the alias ids); the remaining
+//! 1,048 match neither, and what they identify is **not established** — most
+//! likely the ids of nested sub-objects such as `SaveOptions` or `InfoUI`.
 //!
 //! # Why this uses the prius decoder, not the generic one
 //!
@@ -252,6 +365,13 @@ pub struct Plug {
     pub kind: String,
     /// The flattened id connections reference.
     pub id: u64,
+    /// Position within the plug array when the field held more than one, else 0.
+    pub index: usize,
+    /// The element's own `SyncLabel`, when it has one — the designer's name for
+    /// a mid-mission sync point, e.g. `"First_Pirates_Dead"`. 6 of the 1,613
+    /// shipped plugs carry one, all on `MissionNodeGameDef` nodes of the mission
+    /// graph.
+    pub detail: Option<String>,
 }
 
 impl Plug {
@@ -260,6 +380,15 @@ impl Plug {
     }
     pub fn is_output(&self) -> bool {
         self.kind == "kOutputPlug"
+    }
+    /// What to print on the port: the `SyncLabel` when there is one, else the
+    /// field name, with the array index appended when the array has several.
+    pub fn display(&self) -> String {
+        match (&self.detail, self.index) {
+            (Some(d), _) => format!("{} \"{d}\"", self.label),
+            (None, 0) => self.label.clone(),
+            (None, i) => format!("{}[{i}]", self.label),
+        }
     }
 }
 
@@ -287,12 +416,50 @@ pub struct Node {
 }
 
 impl Node {
-    /// `class` when known, else the slot, else the raw hash.
+    /// A flattened sub-graph instance: its `FieldNameHash` is its own payload
+    /// section tag instead of a slot field id, so it belongs to no named array.
+    ///
+    /// True on exactly 17 of the 853 shipped nodes, and on none that
+    /// [`NODE_SLOTS`] can name, so this is the whole of the "unresolved slot"
+    /// population — there is no missing slot name to go and find.
+    pub fn is_flattened_instance(&self) -> bool {
+        self.slot_hash == self.buffer_tag
+    }
+
+    /// `class` when known, else the slot, else what the node actually is.
     pub fn kind_label(&self) -> String {
-        self.class
-            .map(str::to_string)
-            .or_else(|| self.slot.map(str::to_string))
-            .unwrap_or_else(|| format!("slot_{:08X}", self.slot_hash))
+        if let Some(c) = self.class {
+            return c.to_string();
+        }
+        if let Some(sl) = self.slot {
+            return sl.to_string();
+        }
+        if self.is_flattened_instance() {
+            return "<flattened sub-graph instance>".to_string();
+        }
+        format!("slot_{:08X}", self.slot_hash)
+    }
+
+    /// Assets this node's payload names by path, e.g. a `MissionNodeGameDef`'s
+    /// `ObjectiveGraph.AssetPath` or a debug-load-info `SpawnLoadout` config.
+    /// Every string in the payload that looks like an asset path, deduplicated.
+    pub fn linked_assets(&self) -> Vec<String> {
+        fn walk(v: &Value, out: &mut BTreeSet<String>) {
+            match v {
+                Value::String(s) => {
+                    let l = s.to_ascii_lowercase();
+                    if l.contains('/') && l.rsplit('.').next().is_some_and(|e| !e.contains('/')) && l.contains('.') {
+                        out.insert(s.clone());
+                    }
+                }
+                Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                Value::Object(m) => m.values().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(&self.params, &mut out);
+        out.into_iter().collect()
     }
 
     /// The payload value at a top-level field, as text. `None` when absent.
@@ -345,13 +512,19 @@ pub struct NodeGraph {
     pub nodes: Vec<Node>,
     pub connections: Vec<Connection>,
     pub id_mappings: Vec<IdMapping>,
-    /// `Node Graph Refs` — measured on the shipped build, every row is a
-    /// `.config` (type tag `0xA9F149C4`).
+    /// `Node Graph Refs`. Two tags ship: `.config` (`0xA9F149C4`) on 133 rows
+    /// and `.nodegraph` (`0x53B8EA03`) on 55, the latter only on the mission
+    /// graph. An earlier note here claimed every row was a `.config`.
     pub refs: Vec<GraphRef>,
     /// Section tags in the asset that are neither a fixed section nor a node
     /// payload. Empty on every shipped graph; non-empty means something new.
     pub unclaimed_sections: Vec<u32>,
 }
+
+/// `crc32(".config")`.
+pub const REF_TAG_CONFIG: u32 = 0xA9F1_49C4;
+/// `crc32(".nodegraph")` — a referenced sub-graph.
+pub const REF_TAG_NODEGRAPH: u32 = 0x53B8_EA03;
 
 /// One row of `Node Graph Refs`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -359,6 +532,18 @@ pub struct GraphRef {
     pub asset_id: u64,
     pub path: String,
     pub type_id: u32,
+}
+
+impl GraphRef {
+    /// `".config"`, `".nodegraph"`, or `"unknown"` — from the tag, not the
+    /// spelling.
+    pub fn kind(&self) -> &'static str {
+        match self.type_id {
+            REF_TAG_CONFIG => ".config",
+            REF_TAG_NODEGRAPH => ".nodegraph",
+            _ => "unknown",
+        }
+    }
 }
 
 impl NodeGraph {
@@ -453,12 +638,13 @@ impl NodeGraph {
         })
     }
 
-    /// `plug id -> (node index, plug label)` over every plug of every node.
+    /// `plug id -> (node index, printable port label)` over every plug of every
+    /// node. 1,613 entries across the 60 shipped graphs, one per real port.
     pub fn plug_owners(&self) -> HashMap<u64, (usize, String)> {
         let mut m = HashMap::new();
         for (i, n) in self.nodes.iter().enumerate() {
             for p in &n.plugs {
-                m.insert(p.id, (i, p.label.clone()));
+                m.insert(p.id, (i, p.display()));
             }
         }
         m
@@ -495,8 +681,31 @@ impl NodeGraph {
         out
     }
 
+    /// Connections [`Self::edges`] throws away, because at least one endpoint
+    /// is not in this asset.
+    ///
+    /// 10 of the 802 shipped connections, in 2 of the 60 graphs, and none of
+    /// them resolves in any other shipped graph either — they are edges to
+    /// deleted nodes that the builder kept. A UI should list these rather than
+    /// let them vanish.
+    pub fn stale_connections(&self) -> Vec<&Connection> {
+        let by_id = self.node_index();
+        let plugs = self.plug_owners();
+        self.connections
+            .iter()
+            .filter(|c| {
+                !by_id.contains_key(&c.source_node)
+                    || !by_id.contains_key(&c.target_node)
+                    || !plugs.contains_key(&c.source_plug)
+                    || !plugs.contains_key(&c.target_plug)
+            })
+            .collect()
+    }
+
     /// `(connections whose node ids do not resolve, connections whose plug ids
-    /// do not resolve)` — both are 0 on a well-formed graph.
+    /// do not resolve)`. Both are 0 on 58 of the 60 shipped graphs;
+    /// `mis_intro.objectives` reports 8/8 and `mis_zurk_01_visit_01.objectives`
+    /// 2/2. See [`Self::stale_connections`].
     pub fn dangling(&self) -> (usize, usize) {
         let by_id = self.node_index();
         let plugs = self.plug_owners();
@@ -562,6 +771,7 @@ impl NodeGraph {
     }
 
     /// One line per node in [`Self::walk_order`]: what a designer would read.
+    /// Any stale connection is listed after the nodes rather than dropped.
     pub fn outline(&self) -> Vec<String> {
         let edges = self.edges();
         let mut out = Vec::new();
@@ -572,17 +782,36 @@ impl NodeGraph {
                 .filter(|e| e.from == i)
                 .map(|e| format!("{} -> #{} {}", e.from_plug, e.to, self.nodes[e.to].name))
                 .collect();
-            let mut line = format!("#{i} [{}] {}", n.kind_label(), n.name);
+            let label = if n.name.is_empty() {
+                n.param("DebugName").unwrap_or_default()
+            } else {
+                n.name.clone()
+            };
+            let mut line = format!("#{i} [{}] {label}", n.kind_label());
             if let Some(cp) = n.param("Checkpoint") {
                 line.push_str(&format!("  checkpoint={cp}"));
             }
             if let Some(tm) = n.param("TaskMode") {
                 line.push_str(&format!("  task={tm}"));
             }
+            if let Some(og) = n
+                .params
+                .get("ObjectiveGraph")
+                .and_then(|v| v.get("AssetPath"))
+                .and_then(|v| v.as_str())
+            {
+                line.push_str(&format!("  objectives={og}"));
+            }
             if !outs.is_empty() {
                 line.push_str(&format!("  |  {}", outs.join("; ")));
             }
             out.push(line);
+        }
+        for c in self.stale_connections() {
+            out.push(format!(
+                "! stale connection {:016X}: {:016X}.{:016X} -> {:016X}.{:016X} (endpoint not in this asset)",
+                c.id, c.source_node, c.source_plug, c.target_node, c.target_plug
+            ));
         }
         out
     }
@@ -658,19 +887,49 @@ fn str_of(obj: &PObject, name: &str) -> Option<String> {
     }
 }
 
+/// Is this field one of the builder's `"<base> <i>"` per-element aliases, given
+/// the set of field names the node actually has?
+///
+/// The alias repeats an array element's `Id` verbatim and adds nothing, so it is
+/// a duplicate port. Only treated as an alias when the base field is really
+/// present, so a designer-authored field that happens to end in a number is
+/// safe.
+fn is_plug_alias(name: &str, siblings: &BTreeSet<&str>) -> bool {
+    let Some((base, idx)) = name.rsplit_once(' ') else { return false };
+    !idx.is_empty() && idx.bytes().all(|b| b.is_ascii_digit()) && siblings.contains(base)
+}
+
 /// A plug sub-struct is any struct value whose `Type` is one of the two plug
 /// members. The field name is the port label.
+///
+/// Per-element alias fields are skipped ([`is_plug_alias`]) and any id that
+/// still turns up twice on one node is kept only once, so the port list is the
+/// node's real ports: 1,613 across the 60 shipped graphs.
 fn read_plugs(obj: &PObject) -> Vec<Plug> {
+    let siblings: BTreeSet<&str> = obj.fields.iter().map(|f| f.name.as_str()).collect();
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut out = Vec::new();
     for f in &obj.fields {
-        for v in &f.values {
+        if is_plug_alias(&f.name, &siblings) {
+            continue;
+        }
+        for (i, v) in f.values.iter().enumerate() {
             let PValue::Struct(inner) = v else { continue };
             let Some(kind) = str_of(inner, "Type") else { continue };
             if kind != "kInputPlug" && kind != "kOutputPlug" {
                 continue;
             }
             let Some(id) = uint_of(inner, "Id") else { continue };
-            out.push(Plug { label: f.name.clone(), kind, id });
+            if !seen.insert(id) {
+                continue;
+            }
+            out.push(Plug {
+                label: f.name.clone(),
+                kind,
+                id,
+                index: i,
+                detail: str_of(inner, "SyncLabel"),
+            });
         }
     }
     out
@@ -746,6 +1005,41 @@ mod tests {
             assert!(*hash > prev, "slot table out of order at {slot}");
             prev = *hash;
         }
+    }
+
+    /// `"Inputs 0"` beside `"Inputs"` is an alias; `"Inputs"` on its own, and a
+    /// field whose base name the node does not have, are not.
+    #[test]
+    fn plug_aliases_are_only_dropped_when_the_base_field_exists() {
+        let sibs: BTreeSet<&str> = ["Inputs", "SyncOutput", "Stage 2"].into_iter().collect();
+        assert!(is_plug_alias("Inputs 0", &sibs));
+        assert!(is_plug_alias("SyncOutput 12", &sibs));
+        assert!(!is_plug_alias("Inputs", &sibs));
+        assert!(!is_plug_alias("Stage 2", &sibs));
+        assert!(!is_plug_alias("Complete 0", &sibs));
+        assert!(!is_plug_alias("Inputs x", &sibs));
+    }
+
+    #[test]
+    fn plug_display_prefers_the_sync_label() {
+        let p = Plug {
+            label: "SyncOutput".into(),
+            kind: "kOutputPlug".into(),
+            id: 1,
+            index: 1,
+            detail: Some("First_Pirates_Dead".into()),
+        };
+        assert_eq!(p.display(), "SyncOutput \"First_Pirates_Dead\"");
+        let q = Plug { detail: None, ..p.clone() };
+        assert_eq!(q.display(), "SyncOutput[1]");
+        let r = Plug { index: 0, ..q };
+        assert_eq!(r.display(), "SyncOutput");
+    }
+
+    #[test]
+    fn ref_tags_name_the_two_shipped_kinds() {
+        assert_eq!(crc32::hash(".config"), REF_TAG_CONFIG);
+        assert_eq!(crc32::hash(".nodegraph"), REF_TAG_NODEGRAPH);
     }
 
     #[test]

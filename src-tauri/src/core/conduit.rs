@@ -10,9 +10,10 @@
 //!
 //! # What ships
 //!
-//! Measured on the PC build with `conduit_probe census`: the name list knows
-//! 3,114 `.conduit` paths, of which **1,070 are present in the TOC**. Every one
-//! of the 1,070 parses with the code below.
+//! Re-measured on the PC build with `conduit_probe census`: the name list knows
+//! 3,114 `.conduit` paths, of which **1,070 are present in the TOC**. All 1,070
+//! parse with the code below and the decoder consumes the `Conduit Built`
+//! section to its last byte on 1,070 of 1,070.
 //!
 //! # File layout
 //!
@@ -28,17 +29,25 @@
 //!
 //! Both tag names are confirmed, not guessed: `crc32("Conduit Built")` in the
 //! Insomniac variant (see [`crate::core::crc32`]) is exactly `0xCEB30E68` and
-//! `crc32("Conduit Asset Refs")` is exactly `0x2F4056CE`. The 24 conduits with
-//! no refs section are the ones whose every response is a pure value edit
-//! (`kConstant` / `kMaterial`) that names no external asset.
+//! `crc32("Conduit Asset Refs")` is exactly `0x2F4056CE`. 24 conduits carry no
+//! refs section; on 19 of those every response really is a pure value edit
+//! (`kConstant` / `kMaterial`) that names no external asset, so "value-only
+//! conduits need no ref table" is the *tendency*, not a rule — the other 5 have
+//! `kVFX` or `kSound` responses whose constants name assets that the builder
+//! did not list.
 //!
 //! `Conduit Built` is one DDL object — `EffectConduitMapping` — and is read by
 //! the generic [`crate::core::ddl`] parser. Field *names* come from the asset's
 //! own DAT1 string pool, so nothing here depends on an external name list.
 //! `Conduit Asset Refs` is the ordinary 16-byte-per-entry asset-reference table
-//! ([`ddl::parse_asset_refs`]); Wwise event references are interleaved into the
-//! same table by the builder, which is why some entries carry an `asset_id` of
-//! zero and a bare event name instead of a path.
+//! ([`ddl::parse_asset_refs`]). Wwise sound-event references are interleaved
+//! into the same table by the builder, under their own type tag — see
+//! [`ConduitRef`].
+//!
+//! The two other root fields are small and both constant across the build:
+//! `BuiltValueStackSize` is 8 on all 1,070, and `AssetId64` is **0 on all
+//! 1,070** (the builder narrows it to a one-byte zero). It is *not* the asset's
+//! own id — that matched 0 of 1,070 — so nothing should be keyed off it.
 //!
 //! # Object model
 //!
@@ -54,14 +63,31 @@
 //!           ECMResponse           10,187   Name, Type, GroupIndex, IsValid,
 //!                                          FieldMap[]
 //!             ECMFieldMap         32,443   Source, Dest, Op
-//!               ECMField          64,886   Type, Value        (2 per FieldMap)
+//!               ECMField          73,506   Type, Value
 //! ```
 //!
-//! `ECMSelector.Value` is a *fixed* 2-element array — left and right operand of
-//! the comparison — which is why the selector count doubles into `ECMField`.
+//! `ECMField` is two per `ECMFieldMap` (`Source` and `Dest`) *plus* two per
+//! `ECMSelector` (`Value` is a fixed 2-element array — left and right operand
+//! of the comparison): 32,443 * 2 + 4,310 * 2 = 73,506.
 //!
-//! The `Events` map key is `crc32(ECMEvent.Name)`; `conduit_probe keys` checks
-//! that on every event of every shipped conduit.
+//! # The `Events` map key
+//!
+//! The key is **not** `crc32(ECMEvent.Name)` — that matched 0 of 4,006 shipped
+//! events. A DDL map field id is the crc32 of the key *rendered as text*, and
+//! the authored key of this map is the event's name hash as a decimal number,
+//! so the field id is
+//!
+//! ```text
+//!   field_id = crc32( decimal_text( crc32(ECMEvent.Name) ) )
+//! ```
+//!
+//! which matches **4,006 of 4,006** (`conduit_probe keycheck`). The DAT1 string
+//! at the map entry's `name_offset` is that decimal text, e.g. `"329625189"`
+//! for `crc32("BotTelekinesisStartedEvent") == 0x13A5AE65`. See
+//! [`Event::key_matches_name`] and [`key_for_event_name`].
+//!
+//! Event names and keys are 1:1 over the whole build: 793 distinct names, 793
+//! distinct keys, no name under two keys and no key under two names.
 //!
 //! # How a response is actually parameterised
 //!
@@ -105,6 +131,12 @@ const ASSET_HEADER_LEN: usize = 36;
 /// `ECMResponse.Type` slot (DDL writes `select` fields as their member name).
 /// The second column is the designer-facing label the same select carries in
 /// the DDL type database, kept here so a UI can show it without a database.
+///
+/// All nine members occur in the shipped build (`conduit_probe responses`, over
+/// 10,187 responses): `kVFX` 5,256, `kSound` 3,782, `kWWise` 437,
+/// `kConstant` 264, `kMaterial` 193, `kDecal` 129, `kKeyFrameMod` 50,
+/// `kCompositeShaderConstant` 39, `kCompositeShader` 37. No tenth member
+/// appears, so this table is complete for reading shipped data.
 pub const RESPONSE_TYPES: &[(&str, &str)] = &[
     ("kKeyFrameMod", "VFX KeyFrame Modifier"),
     ("kVFX", "Visual Effect"),
@@ -118,6 +150,11 @@ pub const RESPONSE_TYPES: &[(&str, &str)] = &[
 ];
 
 /// `ECMFieldType` — where one side of a field mapping reads from / writes to.
+///
+/// Measured over 32,443 mappings: a `Dest` is only ever `kFieldResponse`
+/// (32,203) or `kFieldStack` (240); a `Source` is `kFieldConst` 25,543,
+/// `kFieldActor` 5,616, `kFieldEvent` 1,222, `kFieldSender` 56,
+/// `kFieldGlobal` 6. All seven members occur.
 pub const FIELD_TYPES: &[(&str, &str)] = &[
     ("kFieldResponse", "Effect Response"),
     ("kFieldStack", "Field Stack"),
@@ -129,6 +166,11 @@ pub const FIELD_TYPES: &[(&str, &str)] = &[
 ];
 
 /// `ECMFieldMapOp` — the assignment operator of one `FieldMap` row.
+///
+/// Only four of the ten occur in shipped data: `kMapOpAssign` 32,203,
+/// `kMapOpRandRange` 205, `kMapOpMul` 24, `kMapOpRandSelect` 11. The other six
+/// are carried here for completeness and have **not** been seen on the wire, so
+/// a writer must not assume its encoding of them is exercised.
 pub const MAP_OPS: &[(&str, &str)] = &[
     ("kMapOpAssign", "="),
     ("kMapOpMul", "*="),
@@ -143,6 +185,10 @@ pub const MAP_OPS: &[(&str, &str)] = &[
 ];
 
 /// `ECMSelectType` — the comparison a filter's selector performs.
+///
+/// All seven occur, over 4,310 selectors: `kSelOpEQ` 3,665, `kSelOpGT` 244,
+/// `kSelOpNEQ` 156, `kSelOpMABF` 133, `kSelOpGTE` 55, `kSelOpLT` 38,
+/// `kSelOpLTE` 19.
 pub const SELECT_OPS: &[(&str, &str)] = &[
     ("kSelOpEQ", "=="),
     ("kSelOpNEQ", "!="),
@@ -154,6 +200,8 @@ pub const SELECT_OPS: &[(&str, &str)] = &[
 ];
 
 /// `ECMFilter.Scope` — which copy of the event the filter answers.
+///
+/// Over 6,105 filters: `kSelfOnly` 6,005, `kAll` 90, `kRemoteOnly` 10.
 pub const FILTER_SCOPES: &[(&str, &str)] = &[
     ("kAll", "All Events"),
     ("kSelfOnly", "Self Event Only"),
@@ -161,11 +209,45 @@ pub const FILTER_SCOPES: &[(&str, &str)] = &[
 ];
 
 /// `ECMFilter.ContinueType` — what happens to later filters once this one fires.
+///
+/// Over 6,105 filters: `Unresponded` 4,989, `Continue` 1,107, `Stop` 9. Note
+/// these three members carry no `k` prefix in the file, unlike every other
+/// conduit select.
 pub const CONTINUE_TYPES: &[(&str, &str)] = &[
     ("Unresponded", "Unresponded Systems"),
     ("Continue", "Continue All"),
     ("Stop", "Stop All"),
 ];
+
+/// The `Events` map field id for an event name.
+///
+/// A DDL map keys its entries by `crc32` of the key rendered as text, and the
+/// authored key here is `crc32(name)` written as a decimal number. Verified on
+/// 4,006 of 4,006 shipped events by `conduit_probe keycheck`.
+pub fn key_for_event_name(name: &str) -> u32 {
+    crc32::hash(&crc32::hash(name).to_string())
+}
+
+/// The Wwise id that belongs beside a Wwise event name — FNV-**1** (multiply,
+/// then xor) of the lowercased name, the same law `crate::core::zone_refs`
+/// established for the low dword of a zone's Wwise reference ids.
+///
+/// Measured on the shipped build (`conduit_probe sounds`): a `kSound`
+/// response's `SoundEventId` equals this for 3,624 of 3,632 pairs — the 8
+/// exceptions are placeholder rows with an empty name and an id of 0 — and a
+/// `kWWise` response's `WwiseActionId` matches on 437 of 437 and its `GroupId`
+/// on 408 of 408. So a sound swap does **not** need a Wwise project: rename the
+/// event and recompute the id from the name.
+///
+/// `crate::core::fnv` implements FNV-1**a**, which matches none of them.
+pub fn wwise_event_id(name: &str) -> u32 {
+    let mut h: u32 = 2_166_136_261;
+    for b in name.to_ascii_lowercase().as_bytes() {
+        h = h.wrapping_mul(16_777_619);
+        h ^= *b as u32;
+    }
+    h
+}
 
 fn label_in(table: &[(&'static str, &'static str)], member: &str) -> Option<&'static str> {
     table.iter().find(|(m, _)| *m == member).map(|(_, l)| *l)
@@ -265,6 +347,95 @@ impl Response {
             .map(|m| (m.dest.value.as_str(), m.source.value.as_str()))
             .collect()
     }
+
+    /// The `.visualeffect` this `kVFX` response spawns, or `None`.
+    ///
+    /// `FXPackage` is present on 5,224 of the 5,256 shipped `kVFX` responses;
+    /// the rest inherit it or only modify an effect already running.
+    pub fn vfx_package(&self) -> Option<&str> {
+        (self.kind == "kVFX").then(|| self.payload("FXPackage")).flatten()
+    }
+
+    /// `(SoundEventName, SoundEventId)` of a `kSound` response. Both are stored
+    /// as constants, 3,632 times each, and the id is
+    /// [`wwise_event_id`]`(name)`.
+    pub fn sound_event(&self) -> Option<(&str, u32)> {
+        if self.kind != "kSound" {
+            return None;
+        }
+        let name = self.payload("SoundEventName")?;
+        let id = self
+            .payload("SoundEventId")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        Some((name, id))
+    }
+
+    /// Does the numeric Wwise id beside the name agree with the name?
+    /// `None` when this response carries no such pair.
+    pub fn sound_id_derives_from_name(&self) -> Option<bool> {
+        let (name, id) = self.sound_event()?;
+        Some(id == wwise_event_id(name))
+    }
+
+    /// Where this response's effect hangs: the joint or locator it attaches to,
+    /// preferring the explicit joint over the bare handle.
+    ///
+    /// Over the shipped `kVFX` responses: `AttachLocJoint` 2,091,
+    /// `AttachHashLocJoint` 116, `AttachHandle` 5,000 (almost always sourced
+    /// from the receiving actor rather than a constant, which is why this can
+    /// return `None` on a response that does attach).
+    pub fn attach_point(&self) -> Option<&str> {
+        self.payload("AttachLocJoint")
+            .or_else(|| self.payload("AttachHashLocJoint"))
+            .or_else(|| self.payload("AttachLocator"))
+            .or_else(|| self.payload("RefLocator"))
+    }
+
+    /// Does the effect follow the thing it is attached to? `FollowLocJoint` on
+    /// 570 responses, `FollowActor` on 443.
+    pub fn follows(&self) -> bool {
+        matches!(self.payload("FollowLocJoint"), Some(v) if v != "0")
+            || matches!(self.payload("FollowActor"), Some(v) if v != "0")
+    }
+
+    /// in the file: `(StartDelay, FadeIn, FadeOut, MaxInstances)`.
+    ///
+    /// Each is a constant when present and `None` when the response leaves the
+    /// effect's own default alone. Counts over shipped `kVFX`: `StartDelay` 93,
+    /// `FadeIn` 46, `FadeOut` 476, `MaxInstances` 269. There is **no** viewport
+    /// mask destination field anywhere in the shipped build — 0 of 32,443
+    /// mappings name one — so if `VisualResponseEvent` has one, no conduit sets
+    /// it and a UI should not offer it.
+    pub fn timing(&self) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
+        (
+            self.payload("StartDelay"),
+            self.payload("FadeIn"),
+            self.payload("FadeOut"),
+            self.payload("MaxInstances"),
+        )
+    }
+
+    /// One line a modder can read: what this response does and with what.
+    pub fn summary(&self) -> String {
+        let what = match self.kind.as_str() {
+            "kVFX" => self.vfx_package().map(str::to_string),
+            "kSound" => self.sound_event().map(|(n, i)| format!("{n} (id {i})")),
+            "kDecal" => self.payload("Material").map(str::to_string),
+            "kMaterial" => self.payload("Material").map(str::to_string),
+            "kWWise" => self.payload("WwiseActionName").map(str::to_string),
+            "kConstant" | "kCompositeShaderConstant" => {
+                self.payload("ConstantName").map(str::to_string)
+            }
+            _ => None,
+        }
+        .unwrap_or_else(|| "<from event / actor>".into());
+        let mut line = format!("[{}] {what}", self.kind_label());
+        if let Some(a) = self.attach_point() {
+            line.push_str(&format!("  on {a}"));
+        }
+        line
+    }
 }
 
 /// One `ECMSelector` — a guard on a filter. `Value` is a fixed 2-element array.
@@ -320,18 +491,52 @@ pub struct Event {
 }
 
 impl Event {
-    /// Does the map key equal `crc32(name)`? True for every shipped event —
-    /// `conduit_probe keys` re-measures it.
+    /// Does [`Self::key`] agree with [`Self::name`] under the map-key law?
+    ///
+    /// True on 4,006 of 4,006 shipped events (`conduit_probe keycheck`). An
+    /// earlier version of this compared the key against `crc32(name)`, which is
+    /// wrong and returned false for every event in the game; see
+    /// [`key_for_event_name`].
     pub fn key_matches_name(&self) -> bool {
-        crc32::hash(&self.name) == self.key
+        key_for_event_name(&self.name) == self.key
+    }
+
+    /// `crc32(name)` — the event's own name hash, which is what the map key is
+    /// built from and what the runtime dispatches on.
+    pub fn name_hash(&self) -> u32 {
+        crc32::hash(&self.name)
+    }
+
+    /// Every response under this event, with the filter that gates it.
+    pub fn responses(&self) -> Vec<(&Filter, &Response)> {
+        self.filters
+            .iter()
+            .flat_map(|f| f.responses.iter().map(move |r| (f, r)))
+            .collect()
     }
 }
+
+/// `crc32` type tag of a Wwise event reference row, as
+/// [`crate::core::zone_refs::TAG_WWISE_EVENT`] — no CRC-32 preimage is known
+/// for it, so it is named by what it does.
+pub const REF_TAG_WWISE_EVENT: u32 = 0x3F08_A054;
+/// `crc32(".visualeffect")` — the tag on an `FXPackage` row.
+pub const REF_TAG_VISUAL_EFFECT: u32 = 0xDABA_2AEA;
+/// `crc32(".material")`.
+pub const REF_TAG_MATERIAL: u32 = 0xB5AA_FACC;
 
 /// One row of the `Conduit Asset Refs` table.
 ///
 /// The builder writes file references and Wwise sound-event references into
-/// the *same* table, in that order, so a row is not necessarily a file: see
+/// the *same* table, so a row is not necessarily a file: see
 /// [`Self::is_wwise_event`].
+///
+/// Measured over all 1,070 conduits (`conduit_probe refs`): **6,108 rows**, and
+/// exactly three type tags — [`REF_TAG_WWISE_EVENT`] 3,623,
+/// [`REF_TAG_VISUAL_EFFECT`] 2,196, [`REF_TAG_MATERIAL`] 289. So a conduit only
+/// ever declares three kinds of dependency. Every one of the 2,485 file rows has
+/// `asset_id == crc64::hash(lowercased path)`; **no row has `asset_id == 0`**,
+/// contrary to an earlier note here.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConduitRef {
     pub asset_id: u64,
@@ -341,10 +546,30 @@ pub struct ConduitRef {
 }
 
 impl ConduitRef {
-    /// A Wwise event row rather than a file row. Measured discriminator on the
-    /// shipped build — `conduit_probe refs` prints the split.
+    /// A Wwise event row rather than a file row, decided by the row's own type
+    /// tag. The "no dot in the path" heuristic this used to use agrees on
+    /// 3,623 of 3,623 rows, but the tag is what the loader reads, so the tag is
+    /// what is trusted here.
     pub fn is_wwise_event(&self) -> bool {
-        !self.path.contains('.')
+        self.type_id == REF_TAG_WWISE_EVENT
+    }
+
+    /// `".visualeffect"`, `".material"`, or `"wwise event"` — what this row
+    /// points at, from the tag rather than from the spelling.
+    pub fn kind(&self) -> &'static str {
+        match self.type_id {
+            REF_TAG_WWISE_EVENT => "wwise event",
+            REF_TAG_VISUAL_EFFECT => ".visualeffect",
+            REF_TAG_MATERIAL => ".material",
+            _ => "unknown",
+        }
+    }
+
+    /// For a file row, does the id match the path? (`crc64` of the normalised
+    /// path.) True on 2,485 of 2,485 shipped file rows, so a repointing writer
+    /// has to recompute it.
+    pub fn id_matches_path(&self) -> bool {
+        !self.is_wwise_event() && crate::core::crc64::hash(&self.path) == self.asset_id
     }
 }
 
@@ -443,6 +668,27 @@ impl Conduit {
             }
         }
         out
+    }
+
+    /// Every `.visualeffect` this conduit can spawn, deduplicated, in file
+    /// order of first mention — the list a VFX swap picks from.
+    pub fn visual_effects(&self) -> Vec<&str> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.responses()
+            .into_iter()
+            .filter_map(|(_, _, r)| r.vfx_package())
+            .filter(|p| seen.insert(*p))
+            .collect()
+    }
+
+    /// Every Wwise event this conduit can post, as `(name, id)`, deduplicated.
+    pub fn sound_events(&self) -> Vec<(&str, u32)> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.responses()
+            .into_iter()
+            .filter_map(|(_, _, r)| r.sound_event())
+            .filter(|(n, _)| seen.insert(*n))
+            .collect()
     }
 
     /// `ECMResponseType` member -> count, for this asset.
@@ -607,6 +853,61 @@ mod tests {
     fn section_tags_are_crc32_of_their_names() {
         assert_eq!(crc32::hash("Conduit Built"), CONDUIT_BUILT_TAG);
         assert_eq!(crc32::hash("Conduit Asset Refs"), CONDUIT_ASSET_REFS_TAG);
+    }
+
+    /// The map-key law, on a row read straight out of
+    /// `emp_nef_finale_telekinesis_object.conduit`: the event is
+    /// `BotTelekinesisStartedEvent`, its name hash is `0x13A5AE65` = 329625189,
+    /// the string the builder put in the pool at the map entry is `"329625189"`,
+    /// and the DDL field id is `0xA8AEFD06`.
+    #[test]
+    fn events_map_key_is_crc32_of_the_decimal_name_hash() {
+        assert_eq!(crc32::hash("BotTelekinesisStartedEvent"), 0x13A5_AE65);
+        assert_eq!(0x13A5_AE65u32.to_string(), "329625189");
+        assert_eq!(crc32::hash("329625189"), 0xA8AE_FD06);
+        assert_eq!(key_for_event_name("BotTelekinesisStartedEvent"), 0xA8AE_FD06);
+        // and the old, wrong law does not agree with it
+        assert_ne!(crc32::hash("BotTelekinesisStartedEvent"), 0xA8AE_FD06);
+    }
+
+    /// Four `SoundEventName` / `SoundEventId` pairs copied out of
+    /// `conduit/equipment/weapon/...` blaster conduits.
+    #[test]
+    fn wwise_ids_are_fnv1_of_the_lowercased_name() {
+        for (name, id) in [
+            ("Play_HAP_WPN_IcicleBlaster_Fire", 261_346_987u32),
+            ("Play_WPN_Blaster_Ardolis_Capgun_fire", 3_282_583_458),
+            ("Play_WPN_blaster_equip", 2_876_778_432),
+            ("Stop_WPN_Global_equip", 1_654_849_968),
+        ] {
+            assert_eq!(wwise_event_id(name), id, "{name}");
+        }
+        // FNV-1a, which core::fnv implements, matches none of them.
+        assert_ne!(
+            crate::core::fnv::hash_string("play_wpn_blaster_equip"),
+            2_876_778_432
+        );
+    }
+
+    #[test]
+    fn ref_tags_split_the_three_shipped_kinds() {
+        let wwise = ConduitRef {
+            asset_id: 1,
+            path: "Play_WPN_blaster_equip".into(),
+            type_id: REF_TAG_WWISE_EVENT,
+        };
+        assert!(wwise.is_wwise_event());
+        assert_eq!(wwise.kind(), "wwise event");
+        assert!(!wwise.id_matches_path());
+        let path = "visualeffect/enm/nefarious/finale_emp_nef_tk_object.visualeffect";
+        let vfx = ConduitRef {
+            asset_id: crate::core::crc64::hash(path),
+            path: path.into(),
+            type_id: REF_TAG_VISUAL_EFFECT,
+        };
+        assert!(!vfx.is_wwise_event());
+        assert_eq!(vfx.kind(), ".visualeffect");
+        assert!(vfx.id_matches_path());
     }
 
     #[test]

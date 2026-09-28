@@ -238,3 +238,181 @@
   color: var(--text-muted);
   flex-shrink: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Tabs                                                                */
+/*                                                                     */
+/* Object / Properties / Script. These, the chips, the swatch, the      */
+/* breadcrumb and the pending banner were all referenced by            */
+/* `Inspector.tsx` with no rule behind them, so every one of them fell  */
+/* back to an unstyled inline <span>/<button> — the flag chips ran into */
+/* one another as "starts activeStartedActive" and the tab strip looked */
+/* like three stray form buttons. Found by rendering the real panel.    */
+/* ------------------------------------------------------------------ */
+
+.tabs {
+  display: flex;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tabOn {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tabBadge {
+  background: var(--warning);
+  color: var(--bg-base);
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+}
+
+/* ---- flag chips ---- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.chip {
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-radius: 3px;
+  font-size: 0.62rem;
+  font-family: var(--font-mono);
+  padding: 0.05rem 0.3rem;
+  white-space: nowrap;
+}
+
+/* ---- light card ---- */
+
+.swatchRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.offTag {
+  margin-left: 0.35rem;
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--warning);
+  border-radius: 3px;
+  font-size: 0.6rem;
+  padding: 0.05rem 0.3rem;
+}
+
+.loading {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-style: italic;
+  padding: 0.3rem 0.1rem;
+}
+
+/* ---- tuid breadcrumb ---- */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.45rem;
+  flex-shrink: 0;
+}
+
+.linkBtn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 0.68rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.linkBtn:hover { text-decoration: underline; }
+
+/* ---- staged prius edits ---- */
+
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.55rem;
+  flex-shrink: 0;
+}
+
+.pendingHead {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--warning);
+}
+
+.pendingHead > span:first-of-type { flex: 1; }
+
+.pendingNote {
+  font-size: 0.66rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.pendingList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.pendingRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.66rem;
+}
+
+.pendingPath {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}

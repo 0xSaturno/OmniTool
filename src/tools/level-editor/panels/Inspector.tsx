@@ -169,6 +169,11 @@ export function compose(t: Trs, template?: number[]): number[] {
   return out;
 }
 
+/** True for every spelling of a zero 64-bit id: `0x0`, `0x0000000000000000`, `0`. */
+export function isZeroId(id: string): boolean {
+  return /^(0x)?0+$/i.test(id.trim());
+}
+
 function fmt(n: number) {
   if (!Number.isFinite(n)) return "0";
   const r = Math.round(n * 10000) / 10000;
@@ -244,9 +249,15 @@ function ColorSwatch({ rgb, luminance }: { rgb: readonly number[]; luminance: nu
         style={{ background: `rgb(${srgb[0]}, ${srgb[1]}, ${srgb[2]})` }}
         title={`hue only — linear rgb is (${rgb.map((c) => c.toFixed(3)).join(", ")})`}
       />
-      <span className={styles.mono}>
+      <span
+        className={styles.mono}
+        title="The zone stores one colour already multiplied by the light's intensity, so these linear RGB numbers ARE the intensity; the swatch above is hue only."
+      >
         {rgb.map((c) => round(c, 3)).join(", ")}
-        <span className={styles.dim}> · luminance {round(luminance, 3)}</span>
+        <span className={styles.dim}>
+          {" "}
+          linear × intensity · luminance {round(luminance, 3)}
+        </span>
       </span>
     </span>
   );
@@ -727,7 +738,11 @@ export default function Inspector({
             </div>
           )}
 
-          {object.modelId && object.modelId !== "0x0" && (
+          {/* `level_load_zone` formats the model id as a padded 16-digit hex
+              string, so "no model" arrives as 0x0000000000000000 and a bare
+              !== "0x0" test showed an empty Model card on every volume, light
+              and trigger in the zone. Test the value, not the spelling. */}
+          {object.modelId && !isZeroId(object.modelId) && (
             <div className={styles.card}>
               <h4 className={styles.cardTitle}>Model</h4>
               <div className={styles.path}>{modelPath || object.modelId}</div>

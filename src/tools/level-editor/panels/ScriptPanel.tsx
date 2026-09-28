@@ -42,6 +42,14 @@ export const OVERSCAN = 8;
 export const EDGE_CAP = 40;
 /** Nodes the panel will ask the backend for in one go. */
 export const NODE_LIMIT = 4000;
+/**
+ * Components offered in the picker. `level_zone_script_graph` returns EVERY
+ * connected component, largest first, and a shipped zone has 872 of them
+ * (`i29_molonoth_gp.zone`) — so the `<select>` is the one list in this panel
+ * that is not windowed. It is capped instead, and the cut is stated in the
+ * list; the components dropped are the smallest ones.
+ */
+export const SUBGRAPH_CAP = 200;
 
 export interface ScriptPanelProps {
   graph: ScriptGraphDto | null;
@@ -290,13 +298,17 @@ function NodeDetail({
         <div className={styles.edgeBlock}>
           <div className={styles.edgeTitle}>declared but unwired</div>
           <div className={styles.plugChips}>
+            {/* A dashed vs dotted border is not a readable difference at
+                0.58rem, so the direction is spelled out on the chip. */}
             {inUnwired.map((p) => (
               <span key={`i${p}`} className={styles.plugChipIn} title="an input this type declares that nothing signals">
+                <LuArrowDownRight />
                 {p}
               </span>
             ))}
             {outUnwired.map((p) => (
               <span key={`o${p}`} className={styles.plugChipOut} title="an output this type declares that goes nowhere">
+                <LuArrowUpRight />
                 {p}
               </span>
             ))}
@@ -411,11 +423,17 @@ export default function ScriptPanel({
           <option value="">
             all {s.nodes.toLocaleString()} nodes (first {NODE_LIMIT.toLocaleString()})
           </option>
-          {graph.subgraphs.map((g) => (
+          {graph.subgraphs.slice(0, SUBGRAPH_CAP).map((g) => (
             <option key={g.id} value={g.id}>
               #{g.id} · {g.nodeCount} node{g.nodeCount === 1 ? "" : "s"} · {g.label}
             </option>
           ))}
+          {graph.subgraphs.length > SUBGRAPH_CAP && (
+            <option disabled>
+              … {(graph.subgraphs.length - SUBGRAPH_CAP).toLocaleString()} smaller components not
+              listed
+            </option>
+          )}
         </select>
         <label className={styles.searchBox}>
           <LuSearch />

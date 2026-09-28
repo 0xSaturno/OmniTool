@@ -1,3 +1,8 @@
+//! (inner attribute first: with nine command files the const scan exceeds
+//! rustc's default const-eval step budget. The lint exists to catch runaway
+//! const loops; this one terminates, it is just linear in the source bytes.)
+#![allow(long_running_const_eval)]
+
 //! Compile-time guard against unregistered Tauri commands.
 //!
 //! Three Level Editor features have shipped as dead code in this project
@@ -35,6 +40,14 @@ const SOURCES: &[(&str, &str)] = &[
     (
         "commands_level_entities.rs",
         include_str!("commands_level_entities.rs"),
+    ),
+    (
+        "commands_level_nav.rs",
+        include_str!("commands_level_nav.rs"),
+    ),
+    (
+        "commands_level_graphs.rs",
+        include_str!("commands_level_graphs.rs"),
     ),
     (
         "commands_level_lighting.rs",

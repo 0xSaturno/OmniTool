@@ -279,6 +279,9 @@
 
 .plugChipIn,
 .plugChipOut {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
   font-family: var(--font-mono);
   font-size: 0.58rem;
   border-radius: 3px;

@@ -99,6 +99,13 @@ export interface Editability {
   reason?: string;
   /** Extra constraint text shown under an editable control. */
   hint?: string;
+  /**
+   * The long form of {@link hint}, on hover. A wide sheet repeats one
+   * constraint on every narrowed field — eight identical 20-word sentences in
+   * one shipped actor — so the row carries the short rule and the reasoning
+   * waits in the tooltip.
+   */
+  hintTitle?: string;
   /** For `select`: the members that fit the slot, and those that do not. */
   fits?: string[];
   tooLong?: string[];
@@ -165,20 +172,41 @@ export function editability(f: PriusFieldView): Editability {
   }
   switch (f.edit) {
     case "not_editable":
+      // An empty array is one byte on the wire with nothing in it. Without
+      // this the row read "[1 values]" — the single `EmptyArray` marker — and
+      // said "no value", which is two wrong answers to the same question.
+      if (f.type === "empty-array") {
+        return {
+          mode: "readonly",
+          reason:
+            "an empty array: the blob spends a single marker byte on it, so there is no element to overwrite in place",
+        };
+      }
       return {
         mode: "readonly",
         reason: f.edit_note ?? (f.type === "struct" ? "a struct — edit its fields" : "no value"),
       };
     case "reference":
+      // The backend's note covers all three reference shapes at once ("a
+      // 64-bit asset/tuid reference…"), which is wrong for a tuid in the only
+      // way that matters: measured over the shipped build, 0 of 17 117
+      // non-zero tuids is a TOC asset id — they name objects in this very
+      // zone. So a tuid gets the precise sentence and the generic note stays
+      // in the tooltip.
+      if (f.type === "tuid") {
+        return {
+          mode: "readonly",
+          reason:
+            "a tuid: the uid of another object in this zone. Retarget it by picking an object, not by typing a number",
+        };
+      }
       return {
         mode: "readonly",
         reason:
           f.edit_note ??
-          (f.type === "tuid"
-            ? "a tuid: the uid of another object in this zone. Retarget it by picking an object, not by typing a number"
-            : f.schema_type === "file"
-              ? "an asset path. The zone builder derives the zone's backing asset list from these, so repointing one can make the zone load without the asset"
-              : "an engine-allocated id; cloning one desyncs whatever allocated it"),
+          (f.schema_type === "file"
+            ? "an asset path. The zone builder derives the zone's backing asset list from these, so repointing one can make the zone load without the asset"
+            : "an engine-allocated id; cloning one desyncs whatever allocated it"),
       };
     case "select_same_len": {
       const cur = String(f.value ?? f.text);
@@ -230,8 +258,11 @@ export function editability(f: PriusFieldView): Editability {
         return {
           mode: "number",
           hint: narrowed
-            ? `the schema calls this a float but the builder stored it as ${f.type}: whole numbers only${range ? `, ${range}` : ""} — a fractional value needs a wider slot than this blob has`
+            ? `stored as ${f.type}, not the ${f.schema_type} the schema declares: whole numbers only${range ? `, ${range}` : ""}`
             : `${f.type}: whole numbers only${range ? `, ${range}` : ""}`,
+          hintTitle: narrowed
+            ? `The zone builder stores a field in the narrowest type that represents the authored value, so this ${f.schema_type} is ${f.type} on the wire. Saving rewrites the same bytes in place, so a fractional value cannot fit: it would need a wider slot than this blob has.`
+            : undefined,
         };
       }
       return { mode: "number", hint: range ? `${f.type}, ${range}` : f.type };
@@ -239,6 +270,20 @@ export function editability(f: PriusFieldView): Editability {
     default:
       return { mode: "readonly", reason: "unknown edit class" };
   }
+}
+
+/**
+ * The backend's refusal, minus the plumbing.
+ *
+ * `prius_plan_edit` answers through `ToolkitError`, so a perfectly clear
+ * sentence arrives as `Parse error: prius: FacingData.Type needs 48 bytes but
+ * the slot is 44 …`. The two prefixes name the error type and the module, not
+ * anything the person who typed the value can act on. The rest is shown
+ * verbatim — never reworded, never swallowed.
+ */
+export function readableError(e: string | null | undefined): string {
+  if (!e) return "the backend refused this value without saying why";
+  return e.replace(/^(parse|io|format)\s+error:\s*/i, "").replace(/^prius:\s*/i, "");
 }
 
 function fmtBound(n: number): string {
@@ -321,6 +366,9 @@ function PlainValue({
   onSelectTuid?: (t: TuidTarget) => void;
 }) {
   const shown = displayType(f);
+  if (f.type === "empty-array") {
+    return <span className={`${styles.plainValue} ${styles.dim}`}>empty array</span>;
+  }
   if (f.type === "tuid") return <TuidValue raw={f.value} tuids={tuids} onSelect={onSelectTuid} />;
   if (f.type === "asset-id") {
     return <span className={styles.mono}>{String(f.value)}</span>;
@@ -392,7 +440,7 @@ function Leaf({
           ? { row, scriptAction, fieldPath: path, text: value }
           : { row, scriptAction, fieldPath: path, number: Number(value) };
       const plan = await onPlanEdit(args);
-      if (!plan.ok) setRefusal(plan.error ?? "the backend refused this value without saying why");
+      if (!plan.ok) setRefusal(readableError(plan.error));
     } catch (e) {
       setRefusal(String(e));
     } finally {
@@ -540,7 +588,11 @@ function Leaf({
         )}
       </div>
 
-      {cap.hint && !refusal && <div className={styles.hint}>{cap.hint}</div>}
+      {cap.hint && !refusal && (
+        <div className={styles.hint} title={cap.hintTitle ?? cap.hint}>
+          {cap.hint}
+        </div>
+      )}
       {refusal && <div className={styles.refusal}>{refusal}</div>}
       {staged && (
         <div className={styles.dirtyNote}>
@@ -561,7 +613,16 @@ function typeTitle(f: PriusFieldView): string {
   if (f.schema_type && f.schema_type !== f.type) parts.push(`schema type ${f.schema_type}`);
   if (f.width !== null) parts.push(`${f.width} byte${f.width === 1 ? "" : "s"}`);
   if (f.offset !== null) parts.push(`at +0x${f.offset.toString(16)} in the blob`);
-  if (f.default !== undefined) parts.push(`schema default ${JSON.stringify(f.default)}`);
+  // A select's schema default is the MEMBER INDEX, not the member name, so
+  // printing it raw claims `MotionStyle` defaults to `0`.
+  if (f.default !== undefined) {
+    const opts = f.options;
+    const named =
+      opts && typeof f.default === "number" && f.default >= 0 && f.default < opts.length
+        ? `${opts[f.default]} (member ${f.default})`
+        : JSON.stringify(f.default);
+    parts.push(`schema default ${named}`);
+  }
   parts.push(`name from ${f.name_source}`);
   return parts.join(" · ");
 }
@@ -831,12 +892,14 @@ export default function PriusSheet({
           ))}
         </div>
       )}
-      {list.map((s) => (
+      {list.map((s, i) => (
         <ComponentGroup
           key={`${s.row}-${s.view.component}`}
           sheet={s}
           scriptAction={scriptAction}
-          defaultOpen={list.length <= 2}
+          // The first group is open so the panel never opens on a wall of
+          // collapsed headers; the rest wait to be asked for.
+          defaultOpen={i === 0 || list.length <= 2}
           tuids={tuids}
           stagedBy={rowScoped(stagedBy, s.row)}
           onPlanEdit={onPlanEdit}
