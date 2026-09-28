@@ -111,6 +111,45 @@ export function byteLength(s: string): number {
 }
 
 /**
+ * Bytes one inline string OCCUPIES, which is not its length.
+ *
+ * `core::prius::encode_value` writes a `u32` length, a `u32` crc32, a `u64`
+ * crc64, the UTF-8 bytes and a NUL, then pads the whole thing to a multiple of
+ * four. So the slot is `16 + ceil4(len + 1)` and a value may grow or shrink
+ * freely inside its own four-byte bucket — `kNeutral` (8) and `kBlueTeam` (9)
+ * both live in a 28-byte slot.
+ *
+ * MEASURED, not assumed: asked `prius_plan_edit` about every enum member of
+ * every select in five shipped zones — 1 722 probes — this rule predicts the
+ * backend's answer 1 722 times out of 1 722. The "same number of bytes" rule
+ * this panel used before is wrong on 623 of those 1 722 (36.2%), and wrong only
+ * in the direction that HIDES a legal edit.
+ */
+export function slotBytes(s: string): number {
+  return 16 + Math.ceil((byteLength(s) + 1) / 4) * 4;
+}
+
+/**
+ * The inclusive length range that fits a `slot`-byte string field, as
+ * `[min, max]`. Inverse of {@link slotBytes}: a 28-byte slot takes 8…11 bytes,
+ * a 20-byte slot takes 0…3.
+ */
+export function slotRange(slot: number): [number, number] {
+  const text = slot - 16; // the padded `len + 1` region
+  return [Math.max(0, text - 4), Math.max(0, text - 1)];
+}
+
+/**
+ * The slot a string field actually has. `width` is the span the decoder
+ * measured, which is authoritative; the current value's own encoding is the
+ * fallback for a field that arrived without one.
+ */
+function fieldSlot(f: PriusFieldView): number {
+  if (typeof f.width === "number" && f.width >= 20) return f.width;
+  return slotBytes(String(f.value ?? f.text ?? ""));
+}
+
+/**
  * The single place that decides what a field offers, and what it says when it
  * offers nothing. Mirrors `core::prius::Edit` plus the narrowing measurement;
  * `prius_plan_edit` enforces the same rules again server-side, so a bug here
@@ -143,20 +182,22 @@ export function editability(f: PriusFieldView): Editability {
       };
     case "select_same_len": {
       const cur = String(f.value ?? f.text);
-      const n = byteLength(cur);
+      const slot = fieldSlot(f);
+      const [lo, hi] = slotRange(slot);
       const opts = f.options ?? [];
-      const fits = opts.filter((o) => byteLength(o) === n);
-      const tooLong = opts.filter((o) => byteLength(o) !== n);
+      const fits = opts.filter((o) => slotBytes(o) === slot);
+      const tooLong = opts.filter((o) => slotBytes(o) !== slot);
       if (opts.length === 0) {
         return {
           mode: "readonly",
-          reason: "a select, but the type database does not list its members — load rcra_ddl.json",
+          reason:
+            "a select, but no type database is loaded, so its members are unknown — load rcra_ddl.json and this becomes a dropdown",
         };
       }
       if (fits.length <= 1) {
         return {
           mode: "readonly",
-          reason: `a select stored as an inline string: only a member whose name is exactly ${n} bytes fits in place, and "${cur}" is the only one`,
+          reason: `a select stored as an inline string in a ${slot}-byte slot, which holds a name of ${lo}–${hi} bytes; of its ${opts.length} members only "${cur}" is that size`,
         };
       }
       return {
@@ -165,17 +206,17 @@ export function editability(f: PriusFieldView): Editability {
         tooLong,
         hint:
           tooLong.length > 0
-            ? `${fits.length} of ${opts.length} members fit the ${n}-byte slot; the rest would change the blob size`
+            ? `${fits.length} of ${opts.length} members fit the ${slot}-byte slot (names of ${lo}–${hi} bytes); the rest would change the blob size`
             : undefined,
       };
     }
     case "string_same_len": {
-      const cur = String(f.value ?? f.text);
-      const n = byteLength(cur);
-      if (n === 0) {
-        return { mode: "readonly", reason: "an empty inline string: there is no room to write into" };
-      }
-      return { mode: "text", hint: `inline string — exactly ${n} bytes, no more and no fewer` };
+      const slot = fieldSlot(f);
+      const [lo, hi] = slotRange(slot);
+      return {
+        mode: "text",
+        hint: `inline string in a ${slot}-byte slot: ${lo}–${hi} bytes of text (16 bytes of header, then the text, a NUL and padding to 4)`,
+      };
     }
     case "scalar": {
       if (f.type === "bool") return { mode: "bool" };

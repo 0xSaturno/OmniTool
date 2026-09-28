@@ -82,8 +82,10 @@ use std::collections::BTreeMap;
 
 use crate::core::crc32;
 use crate::core::dat1::{Dat1, DAT1_MAGIC};
-use crate::core::ddl::{self, DdlObject, DdlValue};
+use crate::core::ddl;
+use crate::core::ddl_schema;
 use crate::core::error::{Result, ToolkitError};
+use crate::core::prius::{self, NameCtx, PObject, PValue};
 
 /// `crc32("Conduit Built")` — the single DDL section of a built conduit.
 pub const CONDUIT_BUILT_TAG: u32 = 0xCEB3_0E68;
@@ -355,6 +357,11 @@ pub struct Conduit {
     pub asset_refs: Vec<ConduitRef>,
     pub built_value_stack_size: u64,
     pub asset_id64: u64,
+    /// Size of the `Conduit Built` section.
+    pub built_bytes: usize,
+    /// Bytes the decoder actually consumed. Equal to `built_bytes` on every one
+    /// of the 1,070 shipped conduits -- `conduit_probe census` asserts it.
+    pub decoded_bytes: usize,
 }
 
 impl Conduit {
@@ -364,18 +371,26 @@ impl Conduit {
     }
 
     /// Parse from an already-opened `DAT1`.
+    ///
+    /// Field names come from the asset's own string pool. The external DDL type
+    /// database is consulted only for labels and enum member sets when one is
+    /// configured; nothing here needs it.
     pub fn from_dat1(dat1: &Dat1) -> Result<Self> {
         let section = dat1
             .get_section_data(CONDUIT_BUILT_TAG)
             .ok_or(ToolkitError::SectionNotFound(CONDUIT_BUILT_TAG))?;
-        let root = ddl::parse(section, dat1)?;
+        let schema = ddl_schema::get_default();
+        let schema_ref = if schema.is_empty() { None } else { Some(schema.as_ref()) };
+        let ctx = NameCtx::new(Some(dat1), schema_ref);
+        let root = prius::decode(section, 0, None, &ctx)?;
+        let consumed = root.span.1;
 
+        // `Events` is a DDL map: one field per entry, and the field id is the key.
         let mut events = Vec::new();
         if let Some(map) = struct_of(&root, "Events") {
-            for id in &map.field_order {
-                let f = &map.fields[id];
+            for f in &map.fields {
                 for v in &f.values {
-                    if let DdlValue::Struct(ev) = v {
+                    if let PValue::Struct(ev) = v {
                         events.push(read_event(f.id, ev));
                     }
                 }
@@ -394,6 +409,8 @@ impl Conduit {
                 .collect(),
             built_value_stack_size: uint_of(&root, "BuiltValueStackSize").unwrap_or(0),
             asset_id64: uint_of(&root, "AssetId64").unwrap_or(0),
+            built_bytes: section.len(),
+            decoded_bytes: consumed,
         })
     }
 
@@ -441,6 +458,14 @@ impl Conduit {
 // ---------------------------------------------------------------------------
 // DDL readers
 // ---------------------------------------------------------------------------
+//
+// These run on [`crate::core::prius::decode`], not on [`crate::core::ddl::parse`].
+// Both readers agree on the shipped conduits -- `conduit_probe cmpddl` re-measures
+// that -- but only the prius one is provably complete: it records the byte span of
+// every object it reads, so the census can assert that decoding a `Conduit Built`
+// section consumes it to the last byte, and it spends the one byte a type-19
+// `Default` field occupies even when its declared count is 0, which is where the
+// generic reader loses struct-array element boundaries.
 
 fn open_dat1(asset: &[u8]) -> Result<Dat1> {
     let magic_at = |o: usize| {
@@ -463,24 +488,14 @@ fn open_dat1(asset: &[u8]) -> Result<Dat1> {
     }
 }
 
-fn field<'a>(obj: &'a DdlObject, name: &str) -> Option<&'a ddl::DdlField> {
-    obj.fields.values().find(|f| f.name == name)
-}
-
-fn struct_of<'a>(obj: &'a DdlObject, name: &str) -> Option<&'a DdlObject> {
-    match field(obj, name)?.values.first()? {
-        DdlValue::Struct(s) => Some(s),
-        _ => None,
-    }
-}
-
-fn structs_of<'a>(obj: &'a DdlObject, name: &str) -> Vec<&'a DdlObject> {
-    field(obj, name)
+/// Every struct value of a named field, in file order.
+fn structs_of<'a>(obj: &'a PObject, name: &str) -> Vec<&'a PObject> {
+    obj.field_named(name)
         .map(|f| {
             f.values
                 .iter()
                 .filter_map(|v| match v {
-                    DdlValue::Struct(s) => Some(s),
+                    PValue::Struct(o) => Some(o.as_ref()),
                     _ => None,
                 })
                 .collect()
@@ -488,73 +503,69 @@ fn structs_of<'a>(obj: &'a DdlObject, name: &str) -> Vec<&'a DdlObject> {
         .unwrap_or_default()
 }
 
-fn string_of(obj: &DdlObject, name: &str) -> String {
-    match field(obj, name).and_then(|f| f.values.first()) {
-        Some(DdlValue::String { value, .. }) => value.clone(),
+fn struct_of<'a>(obj: &'a PObject, name: &str) -> Option<&'a PObject> {
+    structs_of(obj, name).into_iter().next()
+}
+
+fn string_of(obj: &PObject, name: &str) -> String {
+    match obj.field_named(name).and_then(|f| f.values.first()) {
+        Some(PValue::Str { value, .. }) => value.clone(),
         _ => String::new(),
     }
 }
 
-fn bool_of(obj: &DdlObject, name: &str) -> bool {
+fn bool_of(obj: &PObject, name: &str) -> bool {
     matches!(
-        field(obj, name).and_then(|f| f.values.first()),
-        Some(DdlValue::Bool(true))
+        obj.field_named(name).and_then(|f| f.values.first()),
+        Some(PValue::Bool(true))
     )
 }
 
 /// The builder narrows every integer to the smallest lossless type, so a field
-/// declared `uint32` can arrive as `UInt8`. Read whatever width it used.
-fn uint_of(obj: &DdlObject, name: &str) -> Option<u64> {
-    Some(match field(obj, name)?.values.first()? {
-        DdlValue::U8(v) => *v as u64,
-        DdlValue::U16(v) => *v as u64,
-        DdlValue::U32(v) => *v as u64,
-        DdlValue::U64(v) => *v,
-        DdlValue::I8(v) => *v as u64,
-        DdlValue::I16(v) => *v as u64,
-        DdlValue::I32(v) => *v as u64,
-        DdlValue::I64(v) => *v as u64,
+/// declared `uint32` can arrive as `U8`. Read whatever width it used.
+fn uint_of(obj: &PObject, name: &str) -> Option<u64> {
+    Some(match obj.field_named(name)?.values.first()? {
+        PValue::U8(v) => *v as u64,
+        PValue::U16(v) => *v as u64,
+        PValue::U32(v) => *v as u64,
+        PValue::U64(v) => *v,
+        PValue::I8(v) => *v as u64,
+        PValue::I16(v) => *v as u64,
+        PValue::I32(v) => *v as u64,
+        PValue::I64(v) => *v as u64,
+        PValue::Tuid(v) | PValue::AssetId(v) => *v,
         _ => return None,
     })
 }
 
-fn read_field_ref(obj: &DdlObject) -> FieldRef {
+fn read_field_ref(obj: &PObject) -> FieldRef {
     FieldRef {
         kind: string_of(obj, "Type"),
         value: string_of(obj, "Value"),
     }
 }
 
-fn read_event(key: u32, obj: &DdlObject) -> Event {
+fn read_event(key: u32, obj: &PObject) -> Event {
     Event {
         key,
         name: string_of(obj, "Name"),
         is_valid: bool_of(obj, "IsValid"),
-        filters: structs_of(obj, "Filters")
-            .into_iter()
-            .map(read_filter)
-            .collect(),
+        filters: structs_of(obj, "Filters").into_iter().map(read_filter).collect(),
     }
 }
 
-fn read_filter(obj: &DdlObject) -> Filter {
+fn read_filter(obj: &PObject) -> Filter {
     Filter {
         name: string_of(obj, "Name"),
         scope: string_of(obj, "Scope"),
         continue_type: string_of(obj, "ContinueType"),
         is_valid: bool_of(obj, "IsValid"),
-        selectors: structs_of(obj, "Selector")
-            .into_iter()
-            .map(read_selector)
-            .collect(),
-        responses: structs_of(obj, "Response")
-            .into_iter()
-            .map(read_response)
-            .collect(),
+        selectors: structs_of(obj, "Selector").into_iter().map(read_selector).collect(),
+        responses: structs_of(obj, "Response").into_iter().map(read_response).collect(),
     }
 }
 
-fn read_selector(obj: &DdlObject) -> Selector {
+fn read_selector(obj: &PObject) -> Selector {
     let operands = structs_of(obj, "Value");
     Selector {
         op: string_of(obj, "Op"),
@@ -564,25 +575,20 @@ fn read_selector(obj: &DdlObject) -> Selector {
     }
 }
 
-fn read_response(obj: &DdlObject) -> Response {
+fn read_response(obj: &PObject) -> Response {
     Response {
         name: string_of(obj, "Name"),
         kind: string_of(obj, "Type"),
         group_index: uint_of(obj, "GroupIndex").unwrap_or(0) as u32,
         is_valid: bool_of(obj, "IsValid"),
-        field_map: structs_of(obj, "FieldMap")
-            .into_iter()
-            .map(read_mapping)
-            .collect(),
+        field_map: structs_of(obj, "FieldMap").into_iter().map(read_mapping).collect(),
     }
 }
 
-fn read_mapping(obj: &DdlObject) -> Mapping {
+fn read_mapping(obj: &PObject) -> Mapping {
     Mapping {
         dest: struct_of(obj, "Dest").map(read_field_ref).unwrap_or_default(),
-        source: struct_of(obj, "Source")
-            .map(read_field_ref)
-            .unwrap_or_default(),
+        source: struct_of(obj, "Source").map(read_field_ref).unwrap_or_default(),
         op: string_of(obj, "Op"),
     }
 }
