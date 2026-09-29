@@ -56,7 +56,7 @@ export default function Sidebar() {
         <div key={cat.id} className={styles.group}>
           <span className={styles.groupLabel}>{cat.label}</span>
           {TOOLS.filter((t) => t.category === cat.id).map((tool) => {
-            const isWIP = ["atmosphere-editor", "zonelightbin-module", "wwise-patcher", "bnk-explorer", "arena-editor"].includes(tool.id);
+            const isWIP = ["wwise-patcher", "bnk-explorer", "arena-editor"].includes(tool.id);
             const isDisabled = tool.disabled === true || (tool.devOnly === true && !import.meta.env.DEV);
             return (
               <NavLink

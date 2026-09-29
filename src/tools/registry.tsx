@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio, LuSwords } from "react-icons/lu";
+import { LuPackagePlus, LuMusic, LuFileAudio, LuSwords } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
 import { TbHexagon3D, TbListSearch } from "react-icons/tb";
 import { MdTexture, MdOutlinePalette } from "react-icons/md";
@@ -114,14 +114,5 @@ export const TOOLS: ToolDefinition[] = [
     path: "/tools/atmosphere-editor",
     icon: <RiCloudyLine />,
     category: "misc",
-  },
-  {
-    id: "zonelightbin-module",
-    label: "ZoneLightBin",
-    description: "under construction",
-    path: "/tools/zonelightbin-module",
-    icon: <LuLightbulb />,
-    category: "misc",
-    devOnly: true,
   },
 ];

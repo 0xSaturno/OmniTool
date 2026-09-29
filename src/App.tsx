@@ -10,7 +10,6 @@ import Stager from "./tools/stager/Stager";
 import ConfigEditor from "./tools/config-editor/ConfigEditor";
 import AtmosphereEditor from "./tools/atmosphere-editor/AtmosphereEditor";
 import ArenaEditor from "./tools/arena-editor/ArenaEditor";
-import ZoneLightBinModule from "./tools/zonelightbin-module/ZoneLightBinModule";
 import TextureConverter from "./tools/texture-converter/TextureConverter";
 import SettingsModal from "./components/shared/SettingsModal";
 import WwisePatcher from "./tools/wwise-patcher/WwisePatcher";
@@ -29,7 +28,6 @@ const TOOL_PATHS = [
   "/tools/config-editor",
   "/tools/atmosphere-editor",
   "/tools/arena-editor",
-  "/tools/zonelightbin-module",
   "/tools/wwise-patcher",
   "/tools/bnk-explorer",
 ] as const;
@@ -85,9 +83,6 @@ export default function App() {
           </div>
           <div style={{ display: show("/tools/bnk-explorer", pathname) }}>
             <BnkExplorer />
-          </div>
-          <div style={{ display: show("/tools/zonelightbin-module", pathname) }}>
-            <ZoneLightBinModule />
           </div>
 
           <Routes>
