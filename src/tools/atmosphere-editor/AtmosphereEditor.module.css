@@ -81,6 +81,40 @@
   color: var(--text-primary);
 }
 
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  margin-bottom: -0.5rem;
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.tabWarn {
+  margin-left: 0.35rem;
+  color: var(--warning);
+  font-size: 0.7rem;
+}
+
 .sectionPane {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -135,6 +169,47 @@
   padding: 0.15rem 0.3rem;
 }
 
+.valueInputWarn {
+  border-color: var(--warning);
+}
+
+.weatherRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.weatherSelect {
+  flex: 1;
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.5rem;
+}
+
+.weatherSelect:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.weatherTable {
+  margin-top: 0.75rem;
+}
+
+.warnList {
+  margin: 0.6rem 0 0 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--warning);
+  font-size: 0.8rem;
+}
+
 .helperText {
   margin: 0 0 0.45rem 0;
   color: var(--text-secondary);
@@ -142,9 +217,16 @@
   line-height: 1.35;
 }
 
+.stringsPane {
+  display: flex;
+  flex-direction: column;
+}
+
 .stringsEditor {
+  flex: 1;
+  min-height: 8rem;
   width: 100%;
-  resize: vertical;
+  resize: none;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elevated);
@@ -174,4 +256,24 @@
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+}
+
+.saveRow {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.overwriteToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  user-select: none;
+}
+
+.overwriteToggle input {
+  width: 0.9rem;
+  height: 0.9rem;
 }

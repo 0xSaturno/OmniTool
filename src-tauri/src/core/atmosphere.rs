@@ -1,5 +1,4 @@
-//! Cooked atmosphere header (section `0x02F06D4E`, 1800 bytes): every field, solved against all 95
-//! shipped atmospheres. See docs/ATMOSPHERE_LAYOUT.md for the evidence.
+//! Cooked atmosphere header (section `0x02F06D4E`, 1800 bytes): every field, solved against all 95 shipped atmospheres.
 
 pub const HEADER_SIZE: usize = 1800;
 
@@ -184,7 +183,11 @@ pub const FIELDS: &[Field] = &[
     field("BloomSettings.LensFlareGhostDispersal", 748, F32),
     field("BloomSettings.AnamorphicLensFlareIntensity", 752, F32),
     field("BloomSettings.AnamorphicLensFlareValueThreshold", 756, F32),
-    field("BloomSettings.AnamorphicLensFlareSaturationThreshold", 760, F32),
+    field(
+        "BloomSettings.AnamorphicLensFlareSaturationThreshold",
+        760,
+        F32,
+    ),
     field("ColorCorrectionSettings.SourcePath", 768, AssetRef),
     field("VignetteSettings.Intensity", 792, F32),
     field("VignetteSettings.CenterClear", 796, F32),
@@ -299,8 +302,16 @@ pub const FIELDS: &[Field] = &[
     field("VolumetricClouds.2DLayer.CloudTypeModifier", 1360, F32),
     field("VolumetricClouds.2DLayer.AnvilBias", 1364, F32),
     field("VolumetricClouds.2DLayer.WeatherTexSize", 1368, F32),
-    field("VolumetricClouds.2DLayer.WeatherTexOffsetAzimuth", 1372, F32),
-    field("VolumetricClouds.2DLayer.WeatherTexOffsetDistance", 1376, F32),
+    field(
+        "VolumetricClouds.2DLayer.WeatherTexOffsetAzimuth",
+        1372,
+        F32,
+    ),
+    field(
+        "VolumetricClouds.2DLayer.WeatherTexOffsetDistance",
+        1376,
+        F32,
+    ),
     field("VolumetricClouds.2DLayer.WindAzimuth", 1380, F32),
     field("VolumetricClouds.2DLayer.WindIntensity", 1384, F32),
     field("VolumetricClouds.2DLayer.RotationPivotAzimuth", 1388, F32),
@@ -362,11 +373,65 @@ pub const FIELDS: &[Field] = &[
     field("VolumetricClouds.LocalLight3_AttenRadius", 1784, F32),
 ];
 
-/// Scalar type an edit at `offset` must use (`float`, `u32` or `u8`); `None` for references,
-/// paths and padding, which are not edited directly.
+pub const EXT_MATERIAL: u32 = 0xB5AA_FACC;
+pub const EXT_TEXTURE: u32 = 0x95A3_A227;
+
+/// Weather references with the extension each must have. They occur only in the header, so an
+/// edit needs no other section.
+pub const WEATHER_REFS: &[(usize, u32)] = &[
+    (224, EXT_TEXTURE),
+    (248, EXT_TEXTURE),
+    (272, EXT_TEXTURE),
+    (512, EXT_MATERIAL),
+];
+
+/// Header byte ranges of the weather block: wet surfaces, particles, wind, `WeatherConstant`.
+pub const WEATHER_RANGES: &[(usize, usize)] = &[(224, 312), (512, 596), (600, 632), (652, 656)];
+
+pub fn in_weather_block(offset: usize) -> bool {
+    WEATHER_RANGES
+        .iter()
+        .any(|&(start, end)| offset >= start && offset < end)
+}
+
+pub fn weather_ref_ext(offset: usize) -> Option<u32> {
+    WEATHER_REFS
+        .iter()
+        .find(|(o, _)| *o == offset)
+        .map(|(_, ext)| *ext)
+}
+
+pub fn ext_for_path(path: &str) -> Option<u32> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".material") {
+        Some(EXT_MATERIAL)
+    } else if lower.ends_with(".texture") {
+        Some(EXT_TEXTURE)
+    } else {
+        None
+    }
+}
+
+/// The 24-byte reference record for `id`; `None` gives the all-zero unset record.
+pub fn encode_asset_ref(target: Option<(u64, u32)>) -> [u8; 24] {
+    let mut out = [0u8; 24];
+    if let Some((id, ext)) = target {
+        out[0..8].copy_from_slice(&id.to_le_bytes());
+        out[20..24].copy_from_slice(&ext.to_le_bytes());
+    }
+    out
+}
+
+/// Edit type at `offset`: `float`, `u32` or `u8` for scalars, `asset` for the weather refs; `None`
+/// for other references, paths and padding, which are not edited directly.
 pub fn editable_type(offset: usize) -> Option<&'static str> {
+    if weather_ref_ext(offset).is_some() {
+        return Some("asset");
+    }
     FIELDS.iter().find_map(|f| {
-        let within = |len: usize| offset >= f.offset && offset < f.offset + len && (offset - f.offset) % 4 == 0;
+        let within = |len: usize| {
+            offset >= f.offset && offset < f.offset + len && (offset - f.offset) % 4 == 0
+        };
         match f.kind {
             F32 if offset == f.offset => Some("float"),
             Vec3 if within(12) => Some("float"),
@@ -385,7 +450,12 @@ mod tests {
     #[test]
     fn fields_are_ordered_and_fit() {
         for pair in FIELDS.windows(2) {
-            assert!(pair[0].offset + pair[0].kind.size() <= pair[1].offset, "{} overlaps {}", pair[0].name, pair[1].name);
+            assert!(
+                pair[0].offset + pair[0].kind.size() <= pair[1].offset,
+                "{} overlaps {}",
+                pair[0].name,
+                pair[1].name
+            );
         }
         let last = FIELDS.last().unwrap();
         assert!(last.offset + last.kind.size() <= HEADER_SIZE);
@@ -399,5 +469,43 @@ mod tests {
         assert_eq!(editable_type(1557), Some("u8"));
         assert_eq!(editable_type(64), None);
         assert_eq!(editable_type(44), None);
+        assert_eq!(editable_type(512), Some("asset"));
+        assert_eq!(editable_type(248), Some("asset"));
+        assert_eq!(editable_type(688), None);
+    }
+
+    #[test]
+    fn weather_refs_and_ranges_match_fields() {
+        for &(off, _) in WEATHER_REFS {
+            let f = FIELDS.iter().find(|f| f.offset == off).unwrap();
+            assert_eq!(f.kind, FieldKind::AssetRef);
+            assert!(f.name.starts_with("Weather."));
+        }
+        for f in FIELDS {
+            assert_eq!(
+                in_weather_block(f.offset),
+                f.name.starts_with("Weather."),
+                "{}",
+                f.name
+            );
+            if in_weather_block(f.offset) {
+                assert!(in_weather_block(f.offset + f.kind.size() - 1), "{}", f.name);
+            }
+        }
+    }
+
+    #[test]
+    fn asset_ref_record() {
+        let id = crate::core::crc64::hash(r"required\materials\weatherparticlesrain.material");
+        assert_eq!(id, 0xA315_153F_6A2E_A5F2);
+        let rec = encode_asset_ref(Some((id, EXT_MATERIAL)));
+        assert_eq!(&rec[0..8], &id.to_le_bytes());
+        assert!(rec[8..20].iter().all(|&b| b == 0));
+        assert_eq!(&rec[20..24], &EXT_MATERIAL.to_le_bytes());
+        assert_eq!(encode_asset_ref(None), [0u8; 24]);
+        assert_eq!(
+            ext_for_path("required/textures/rain_splash.texture"),
+            Some(EXT_TEXTURE)
+        );
     }
 }
