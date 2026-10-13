@@ -332,6 +332,8 @@ pub struct Zone {
     pub wrapper_reserved: [u8; 24],
     /// Trailing DAT1 blob after the main one; empty when absent.
     pub tail: Vec<u8>,
+    /// Undecoded blob after the tail, sized by the wrapper's fourth u32.
+    pub extra: Vec<u8>,
     pub dat1: Dat1,
 
     pub actions: Vec<ScriptAction>,
@@ -418,6 +420,7 @@ impl Zone {
             wrapper_magic,
             wrapper_reserved,
             tail: data[dat1_end..tail_end].to_vec(),
+            extra: data[tail_end..].to_vec(),
             dat1,
             actions,
             plugs,
@@ -728,6 +731,7 @@ impl Zone {
         out.extend_from_slice(&self.wrapper_reserved);
         out.extend_from_slice(&dat1_bytes);
         out.extend_from_slice(&self.tail);
+        out.extend_from_slice(&self.extra);
         Ok(out)
     }
 
