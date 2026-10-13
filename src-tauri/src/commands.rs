@@ -2093,6 +2093,17 @@ pub struct AtmosphereKnownValue {
     pub offset: u32,
     pub value_type: String,
     pub value: String,
+    pub editable: bool,
+}
+
+fn known_value(name: &str, off: usize, value_type: &str, value: String) -> AtmosphereKnownValue {
+    AtmosphereKnownValue {
+        name: name.to_string(),
+        offset: off as u32,
+        value_type: value_type.to_string(),
+        value,
+        editable: crate::core::atmosphere::editable_type(off).is_some(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -2114,6 +2125,16 @@ pub struct AtmosphereData {
     pub known_values: Vec<AtmosphereKnownValue>,
     pub strings: Vec<String>,
     pub notes: Vec<String>,
+    /// Dag path of the shipped atmosphere this file was matched to by name.
+    pub shipped_path: Option<String>,
+    /// That atmosphere's direct dag dependencies, as normalized paths.
+    pub dependencies: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AtmosphereWeather {
+    pub source_path: String,
+    pub values: Vec<AtmosphereKnownValue>,
 }
 
 fn read_u32_at(data: &[u8], off: usize) -> Option<u32> {
@@ -2128,12 +2149,7 @@ fn read_f32_at(data: &[u8], off: usize) -> Option<f32> {
 
 fn push_f32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_f32_at(data, off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "float".to_string(),
-            value: format!("{v:.6}"),
-        });
+        values.push(known_value(name, off, "float", format!("{v:.6}")));
     }
 }
 
@@ -2166,33 +2182,18 @@ fn push_asset_ref(
             None => format!("{id:016X}"),
         }
     };
-    values.push(AtmosphereKnownValue {
-        name: name.to_string(),
-        offset: off as u32,
-        value_type: "asset".to_string(),
-        value,
-    });
+    values.push(known_value(name, off, "asset", value));
 }
 
 fn push_u32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_u32_at(data, off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "u32".to_string(),
-            value: v.to_string(),
-        });
+        values.push(known_value(name, off, "u32", v.to_string()));
     }
 }
 
 fn push_u8(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(&v) = data.get(off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "u8".to_string(),
-            value: v.to_string(),
-        });
+        values.push(known_value(name, off, "u8", v.to_string()));
     }
 }
 
@@ -2212,12 +2213,7 @@ fn push_path(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], dat1: &[u8], n
             Err(_) => format!("<bad offset {raw:#X}>"),
         }
     };
-    values.push(AtmosphereKnownValue {
-        name: name.to_string(),
-        offset: off as u32,
-        value_type: "path".to_string(),
-        value,
-    });
+    values.push(known_value(name, off, "path", value));
 }
 
 fn push_atmosphere_field(
@@ -2242,6 +2238,127 @@ fn push_atmosphere_field(
         FieldKind::AssetRef | FieldKind::AssetId => push_asset_ref(values, header, name, off, names),
         FieldKind::PathOffset => push_path(values, header, dat1, name, off),
     }
+}
+
+/// Dag index of the shipped atmosphere `name` refers to: its dag path, a file path ending in it,
+/// or a file name (an `_edited` suffix is ignored).
+fn find_shipped_atmosphere(dag: &crate::core::dag::Dag, name: &str) -> Result<usize, String> {
+    fn stem_of(path: &str) -> String {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        let mut stem = file.strip_suffix(".atmosphere").unwrap_or(file);
+        while let Some(s) = stem.strip_suffix("_edited") {
+            stem = s;
+        }
+        stem.to_string()
+    }
+    let wanted = crate::core::crc64::normalize_path(name);
+    let wanted_stem = stem_of(&wanted);
+    let mut by_stem = Vec::new();
+    for i in (0..dag.len()).filter(|&i| dag.type_name(i) == "Atmosphere") {
+        let Some(path) = dag.name(i).map(crate::core::crc64::normalize_path) else {
+            continue;
+        };
+        if wanted == path || wanted.ends_with(&format!("/{path}")) {
+            return Ok(i);
+        }
+        if stem_of(&path) == wanted_stem {
+            by_stem.push(i);
+        }
+    }
+    match by_stem.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("no shipped atmosphere named {wanted_stem}")),
+        many => Err(format!("{wanted_stem} matches {} shipped atmospheres", many.len())),
+    }
+}
+
+/// Header section of a shipped atmosphere, read from the game's archives.
+fn shipped_atmosphere_header(game_dir: &Path, id: u64, path: &str) -> Result<Vec<u8>, ToolkitError> {
+    let toc = Toc::parse(&std::fs::read(game_dir.join("toc"))?)?;
+    let asset = find_toc_asset_candidate(&toc, id, Some(path))
+        .ok_or_else(|| ToolkitError::Parse(format!("{path} not found in the toc")))?;
+    warn_if_mod_source(&toc, &asset);
+    let raw = toc.extract_asset(&asset, game_dir)?;
+    let size = read_u32_at(&raw, 4).unwrap_or(0) as usize;
+    let payload = raw
+        .get(36..36 + size)
+        .ok_or_else(|| ToolkitError::Parse(format!("{path}: truncated atmosphere")))?;
+    Dat1::parse(payload)?
+        .get_section_data(ATMOSPHERE_SECTION_HEADER)
+        .map(<[u8]>::to_vec)
+        .ok_or(ToolkitError::SectionNotFound(ATMOSPHERE_SECTION_HEADER))
+}
+
+/// The record an edit of the weather ref at `off` writes. Empty or `<unset>` clears it; anything
+/// else is a game path (or 16-digit hex id) the dag must list with the slot's asset type.
+fn weather_ref_record(off: usize, value: &str, game_dir: Option<&str>) -> Result<[u8; 24], ToolkitError> {
+    use crate::core::atmosphere::{encode_asset_ref, ext_for_path, weather_ref_ext, EXT_MATERIAL};
+    let ext = weather_ref_ext(off)
+        .ok_or_else(|| ToolkitError::Parse(format!("offset {off} is not a weather reference")))?;
+    let value = value.trim();
+    if value.is_empty() || value.starts_with("<unset>") {
+        return Ok(encode_asset_ref(None));
+    }
+    let (want_ext, want_type) = if ext == EXT_MATERIAL { (".material", "Material") } else { (".texture", "Texture") };
+    let hex_id = (value.len() == 16).then(|| u64::from_str_radix(value, 16).ok()).flatten();
+    let id = match hex_id {
+        Some(id) => id,
+        None if ext_for_path(value) == Some(ext) => crate::core::crc64::hash(value),
+        None => {
+            return Err(ToolkitError::Parse(format!(
+                "offset {off} needs a {want_ext} path, got {value}"
+            )))
+        }
+    };
+    let dir = game_dir.filter(|d| !d.is_empty()).ok_or_else(|| {
+        ToolkitError::Parse("set the game folder so weather asset paths can be checked against the dag".into())
+    })?;
+    let game = crate::core::dag::load_game_dag(Path::new(dir))?;
+    let index = game
+        .dag
+        .index_of(id)
+        .ok_or_else(|| ToolkitError::Parse(format!("{value} is not in the game's dag")))?;
+    let found = game.dag.type_name(index);
+    if found != want_type {
+        return Err(ToolkitError::Parse(format!(
+            "{value} is a {found}; offset {off} needs a {want_type}"
+        )));
+    }
+    Ok(encode_asset_ref(Some((id, ext))))
+}
+
+/// Paths of every shipped atmosphere, for "copy weather from".
+#[tauri::command]
+pub async fn list_atmospheres(game_dir: String) -> Result<Vec<String>, ToolkitError> {
+    let game = crate::core::dag::load_game_dag(Path::new(&game_dir))?;
+    let dag = &game.dag;
+    let mut paths: Vec<String> = (0..dag.len())
+        .filter(|&i| dag.type_name(i) == "Atmosphere")
+        .filter_map(|i| dag.name(i).map(|n| n.replace('\\', "/")))
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// Weather fields of a shipped atmosphere (dag path or file name), to apply as edits.
+#[tauri::command]
+pub async fn read_atmosphere_weather(
+    source: String,
+    game_dir: String,
+) -> Result<AtmosphereWeather, ToolkitError> {
+    let dir = Path::new(&game_dir);
+    let game = crate::core::dag::load_game_dag(dir)?;
+    let index = find_shipped_atmosphere(&game.dag, &source).map_err(ToolkitError::Parse)?;
+    let source_path = game.dag.name(index).unwrap_or_default().replace('\\', "/");
+    let header = shipped_atmosphere_header(dir, game.dag.id(index), &source_path)?;
+    let mut values = Vec::new();
+    for field in crate::core::atmosphere::FIELDS
+        .iter()
+        .filter(|f| crate::core::atmosphere::in_weather_block(f.offset))
+    {
+        push_atmosphere_field(&mut values, &header, &[], field, &game.names);
+    }
+    Ok(AtmosphereWeather { source_path, values })
 }
 
 #[tauri::command]
@@ -2287,6 +2404,37 @@ pub async fn read_atmosphere(
         });
     }
 
+    let game = match game_dir.as_deref().filter(|d| !d.is_empty()) {
+        Some(dir) => match crate::core::dag::load_game_dag(Path::new(dir)) {
+            Ok(game) => Some(game),
+            Err(e) => {
+                notes.push(format!("asset names unavailable ({e}); references show as ids"));
+                None
+            }
+        },
+        None => {
+            notes.push("no game folder set; references show as ids".to_string());
+            None
+        }
+    };
+
+    let mut shipped_path = None;
+    let mut dependencies = Vec::new();
+    if let Some(game) = &game {
+        match find_shipped_atmosphere(&game.dag, &atmosphere_path) {
+            Ok(i) => {
+                shipped_path = game.dag.name(i).map(|n| n.replace('\\', "/"));
+                dependencies = game
+                    .dag
+                    .direct_dependencies(i, None)
+                    .into_iter()
+                    .filter_map(|d| game.dag.name(d).map(crate::core::crc64::normalize_path))
+                    .collect();
+            }
+            Err(e) => notes.push(format!("{e}; weather dependency warnings are off")),
+        }
+    }
+
     let mut known_values = Vec::new();
     if let Some(header) = dat1.get_section_data(ATMOSPHERE_SECTION_HEADER) {
         if header.len() != crate::core::atmosphere::HEADER_SIZE {
@@ -2296,16 +2444,7 @@ pub async fn read_atmosphere(
                 crate::core::atmosphere::HEADER_SIZE
             ));
         }
-        let hash_lookup = match game_dir.as_deref().filter(|d| !d.is_empty()) {
-            Some(dir) => crate::core::dag::name_table(Path::new(dir)).unwrap_or_else(|e| {
-                notes.push(format!("asset names unavailable ({e}); references show as ids"));
-                Default::default()
-            }),
-            None => {
-                notes.push("no game folder set; references show as ids".to_string());
-                Default::default()
-            }
-        };
+        let hash_lookup = game.as_ref().map(|g| g.names.clone()).unwrap_or_default();
         for field in crate::core::atmosphere::FIELDS {
             push_atmosphere_field(&mut known_values, header, dat1_bytes, field, &hash_lookup);
         }
@@ -2353,6 +2492,8 @@ pub async fn read_atmosphere(
         known_values,
         strings,
         notes,
+        shipped_path,
+        dependencies,
     })
 }
 
@@ -2362,6 +2503,7 @@ pub async fn write_atmosphere(
     values: Vec<AtmosphereValueEdit>,
     strings: Option<Vec<String>>,
     out_path: Option<String>,
+    game_dir: Option<String>,
 ) -> Result<String, ToolkitError> {
     let bytes = std::fs::read(&atmosphere_path)?;
     if bytes.len() < 36 {
@@ -2400,7 +2542,8 @@ pub async fn write_atmosphere(
             )));
         }
 
-        if off + 4 > header_data.len() {
+        let width = if expected == "asset" { 24 } else { 4 };
+        if off + width > header_data.len() {
             return Err(ToolkitError::Parse(format!(
                 "offset {} out of bounds for header section size {}",
                 edit.offset,
@@ -2408,7 +2551,10 @@ pub async fn write_atmosphere(
             )));
         }
 
-        if expected == "float" {
+        if expected == "asset" {
+            let record = weather_ref_record(off, &edit.value, game_dir.as_deref())?;
+            header_data[off..off + 24].copy_from_slice(&record);
+        } else if expected == "float" {
             let parsed = edit.value.parse::<f32>().map_err(|e| {
                 ToolkitError::Parse(format!(
                     "invalid float at offset {}: {} ({e})",

@@ -4,6 +4,7 @@ pub mod commands;
 pub mod commands_arena;
 pub mod commands_arena_graph;
 pub mod commands_model_inspector;
+pub mod commands_rivet;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -49,6 +50,8 @@ pub fn run() {
             commands::export_config_envelope,
             commands::read_atmosphere,
             commands::write_atmosphere,
+            commands::list_atmospheres,
+            commands::read_atmosphere_weather,
             commands::extract_to_temp,
             commands::import_file_to_project,
             commands_arena::read_arena_zone,
@@ -83,6 +86,10 @@ pub fn run() {
             commands::soundbank_extract_bnk,
             commands::bnk_batch_inject_wems,
             commands::bnk_scan_wem_folder,
+            commands_rivet::rivet_hook_installed,
+            commands_rivet::read_rivet_config,
+            commands_rivet::write_rivet_config,
+            commands_rivet::install_rivet_mod,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
