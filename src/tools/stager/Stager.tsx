@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useProjects } from "../../contexts/ProjectsContext";
+import { useSettings } from "../../contexts/SettingsContext";
+import { useRivetHookInstalled } from "../../utils/useRivetHook";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useLocation } from "react-router-dom";
@@ -10,6 +12,8 @@ import styles from "./Stager.module.css";
 export default function Stager() {
   const location = useLocation();
   const { projects, selectedProject: selected, setSelectedProject: setSelected, createProject, deleteProject, refreshProjects } = useProjects();
+  const { settings } = useSettings();
+  const rivetInstalled = useRivetHookInstalled(settings.archivesDir);
   const [assets, setAssets] = useState<string[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -81,16 +85,19 @@ export default function Stager() {
     }
   }
 
+  function stageFileName(name: string): string {
+    const project = projects.find(p => p.name === name);
+    const versionSuffix = project && project.version !== "" ? `-${project.version}` : "";
+    return `${name}${versionSuffix}.stage`;
+  }
+
   async function handleExport() {
     if (!selected) return;
     try {
       setExporting(true);
-      const selectedProject = projects.find(p => p.name === selected);
-      const versionSuffix = selectedProject && selectedProject.version !== "" ? `-${selectedProject.version}` : "";
-
       const outputPath = await save({
         filters: [{ name: "Stage File", extensions: ["stage"] }],
-        defaultPath: `${selected}${versionSuffix}.stage`,
+        defaultPath: stageFileName(selected),
       });
       if (!outputPath) return;
 
@@ -98,6 +105,25 @@ export default function Stager() {
       pushLog("info", `Exporting "${selected}" …`);
       const result: string = await invoke("export_stage", { name: selected, outputPath });
       pushLog("success", `Done → ${result}`);
+    } catch (e) {
+      pushLog("error", String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleInstallRivet() {
+    if (!selected || !settings.archivesDir) return;
+    try {
+      setExporting(true);
+      setLog([]);
+      pushLog("info", `Installing "${selected}" to Rivet Hook …`);
+      const result = await invoke<{ entry: string; note: string }>("install_rivet_mod", {
+        gameDir: settings.archivesDir,
+        project: selected,
+        fileName: stageFileName(selected),
+      });
+      pushLog("success", `${result.note}: ${result.entry}`);
     } catch (e) {
       pushLog("error", String(e));
     } finally {
@@ -263,9 +289,25 @@ export default function Stager() {
               </div>
             </div>
 
-            <button className={styles.exportBtn} onClick={handleExport} disabled={exporting || assets.length === 0}>
-              {exporting ? "Exporting…" : "Export as .stage"}
-            </button>
+            <div className={styles.exportRow}>
+              <button className={styles.exportBtn} onClick={handleExport} disabled={exporting || assets.length === 0}>
+                {exporting ? "Exporting…" : "Export as .stage"}
+              </button>
+              <button
+                className={styles.installBtn}
+                onClick={handleInstallRivet}
+                disabled={exporting || assets.length === 0 || !settings.archivesDir || rivetInstalled === false}
+                title={
+                  !settings.archivesDir
+                    ? "Set the game folder in Settings first"
+                    : rivetInstalled === false
+                      ? "Rivet Hook not detected: rivet_hook.dll is not in the game folder"
+                      : "Export into <game>/mods and add it to rivet.toml's load list"
+                }
+              >
+                Install Mod to Rivet Hook
+              </button>
+            </div>
           </div>
         ) : (
           <div className={styles.placeholder}>Select or create a project to begin.</div>

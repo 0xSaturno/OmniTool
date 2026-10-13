@@ -285,6 +285,33 @@
   cursor: not-allowed;
 }
 
+.exportRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.installBtn {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 1.2rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.installBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.installBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .placeholder {
   flex: 1;
   display: flex;

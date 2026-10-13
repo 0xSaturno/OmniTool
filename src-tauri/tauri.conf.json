@@ -36,5 +36,9 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "shell": {
+      "open": "^((mailto:\\w+)|(tel:\\w+)|(https?://\\w+)).+|^steam://rungameid/\\d+$"
+    }
+  }
 }

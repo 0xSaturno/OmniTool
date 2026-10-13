@@ -149,6 +149,7 @@ dashmap = "6"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 ww2ogg = "0.1"
 gltf           = { version = "1.4", features = ["extras"] }
+toml_edit      = "0.25"
 
 [profile.release]
 opt-level    = 3

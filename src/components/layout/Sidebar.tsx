@@ -1,11 +1,24 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
+import { open } from "@tauri-apps/plugin-shell";
+import { message } from "@tauri-apps/plugin-dialog";
 import { TOOLS, type ToolDefinition } from "../../tools/registry";
 import { useSettings } from "../../contexts/SettingsContext";
 import { openToolWindow } from "../../utils/openToolWindow";
+import { useRivetHookInstalled } from "../../utils/useRivetHook";
 import styles from "./Sidebar.module.css";
 import OmniToolIcon from "../icons/OmniToolIcon";
-import { LuHouse, LuChevronsLeft, LuChevronsRight, LuSettings } from "react-icons/lu";
+import RivetHookIcon from "../icons/RivetHookIcon";
+import { LuHouse, LuChevronsLeft, LuChevronsRight, LuSettings, LuGamepad2 } from "react-icons/lu";
+
+const STEAM_LAUNCH_URL = "steam://rungameid/1895880";
+const RIVET_MANAGER_PATH = "/tools/rivet-manager";
+
+function launchGame() {
+  open(STEAM_LAUNCH_URL).catch((e) =>
+    message(`Could not launch the game through Steam: ${e}`, { title: "Launch Game", kind: "error" }),
+  );
+}
 
 const CATEGORIES: { id: ToolDefinition["category"]; label: string }[] = [
   { id: "asset", label: "Asset" },
@@ -18,6 +31,7 @@ const CATEGORIES: { id: ToolDefinition["category"]; label: string }[] = [
 
 export default function Sidebar() {
   const { settings, setSettingsOpen } = useSettings();
+  const rivetMissing = useRivetHookInstalled(settings.archivesDir) === false;
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("rcra_sidebar_collapsed") === "true"
   );
@@ -81,6 +95,41 @@ export default function Sidebar() {
       ))}
 
       <div className={styles.spacer} />
+
+      <NavLink
+        to={RIVET_MANAGER_PATH}
+        onClick={(e) => {
+          e.preventDefault();
+          if (!rivetMissing) {
+            openToolWindow(RIVET_MANAGER_PATH, undefined, settings.launchToolsInNewWindows);
+          }
+        }}
+        className={({ isActive }) =>
+          `${styles.navLink} ${styles.settingsBtn} ${isActive ? styles.active : ""} ${rivetMissing ? styles.navLinkUnavailable : ""}`
+        }
+        aria-disabled={rivetMissing}
+        title={
+          rivetMissing
+            ? settings.archivesDir
+              ? "Rivet Hook not detected: rivet_hook.dll is not in the game folder"
+              : "Set the game folder in Settings to use Rivet Hook"
+            : collapsed
+              ? "RivetHook Manager"
+              : undefined
+        }
+      >
+        <span className={styles.navIcon}><RivetHookIcon /></span>
+        <span className={styles.navLabel}>RivetHook Manager</span>
+      </NavLink>
+
+      <button
+        className={`${styles.navLink} ${styles.settingsBtn}`}
+        onClick={launchGame}
+        title={collapsed ? "Launch Game" : undefined}
+      >
+        <span className={styles.navIcon}><LuGamepad2 /></span>
+        <span className={styles.navLabel}>Launch Game</span>
+      </button>
 
       <button
         className={`${styles.navLink} ${styles.settingsBtn}`}

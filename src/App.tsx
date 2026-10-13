@@ -14,6 +14,7 @@ import TextureConverter from "./tools/texture-converter/TextureConverter";
 import SettingsModal from "./components/shared/SettingsModal";
 import WwisePatcher from "./tools/wwise-patcher/WwisePatcher";
 import BnkExplorer from "./tools/bnk-explorer/BnkExplorer";
+import RivetManager from "./tools/rivet-manager/RivetManager";
 
 import Titlebar from "./components/layout/Titlebar";
 
@@ -30,6 +31,7 @@ const TOOL_PATHS = [
   "/tools/arena-editor",
   "/tools/wwise-patcher",
   "/tools/bnk-explorer",
+  "/tools/rivet-manager",
 ] as const;
 
 type ToolPath = (typeof TOOL_PATHS)[number];
@@ -83,6 +85,9 @@ export default function App() {
           </div>
           <div style={{ display: show("/tools/bnk-explorer", pathname) }}>
             <BnkExplorer />
+          </div>
+          <div style={{ display: show("/tools/rivet-manager", pathname) }}>
+            <RivetManager />
           </div>
 
           <Routes>

@@ -239,3 +239,13 @@
   pointer-events: none;
   filter: grayscale(100%);
 }
+
+/* Like navLinkDisabled, but keeps hover so the tooltip can say why. */
+.navLinkUnavailable,
+.navLinkUnavailable:hover {
+  opacity: 0.4;
+  filter: grayscale(100%);
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--text-secondary);
+}
