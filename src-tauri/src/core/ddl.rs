@@ -279,7 +279,10 @@ impl StringPoolRead for Dat1 {
 }
 
 impl StringPoolWrite for Dat1 {
+    /// Returns a DAT1-absolute offset: `get_string` reads any offset past the header end as absolute,
+    /// so a pool-relative one that large would name the wrong string.
     fn add_string(&mut self, s: &str) -> u32 {
+        let header_end = self.header_end() as u32;
         let target = s.as_bytes();
         let mut i = 0usize;
         while i < self.strings_pool.len() {
@@ -288,14 +291,11 @@ impl StringPoolWrite for Dat1 {
                 end += 1;
             }
             if &self.strings_pool[i..end] == target {
-                return i as u32;
+                return i as u32 + header_end;
             }
             i = end.saturating_add(1);
         }
-        let off = self.strings_pool.len() as u32;
-        self.strings_pool.extend_from_slice(target);
-        self.strings_pool.push(0);
-        off
+        self.append_string(s)
     }
 }
 
