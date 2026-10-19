@@ -1253,6 +1253,189 @@ fn main() {
     // ever puts something in bits 24..30, the two masks diverge and the heap
     // walk silently reads the wrong entry, so it is asserted rather than
     // assumed.
+    // REGRESSION GUARD. Zone Scene Objects is optional -- the build ships
+    // `_art` zones with no heap at all -- and `build_index` used to `return`
+    // the moment it was absent, skipping every plain section table below it as
+    // well as the heap walk. Because `save` re-emits those sections from the
+    // vectors `build_index` fills, and `put` only declines an empty body when
+    // the section is *absent*, a zone with a script but no heap parsed to zero
+    // actions and was then written back with its Zone Script Actions and Zone
+    // Script Priuses bodies zeroed. This asserts the readers are not gated: the
+    // decoded row count must equal what the section's own byte length implies,
+    // on every zone, heap or no heap.
+    r.check("zone_tables_ungated", |c| {
+        let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
+            Ok(i) => i,
+            Err(e) => return c.err(e),
+        };
+        use omnitool_lib::core::zone as zm;
+        let tables: [(&str, u32, usize, fn(&zm::Zone) -> usize); 4] = [
+            ("Zone Script Actions", zm::TAG_SCRIPT_ACTIONS, 40, |z| z.actions.len()),
+            ("Zone Actors", zm::TAG_ACTORS, 32, |z| z.actors.len()),
+            ("Zone Actor Groups", zm::TAG_ACTOR_GROUPS, 24, |z| z.actor_groups.len()),
+            ("Zone Model Names", zm::TAG_MODEL_NAMES, 12, |z| z.model_names.len()),
+        ];
+        let mut zones = 0usize;
+        let mut heapless = 0usize;
+        let mut heapless_with_script = 0usize;
+        let mut mismatches: Vec<String> = Vec::new();
+        let mut victim: Option<(String, Vec<u8>)> = None;
+        for path in spread(&idx, None, 4, 320, 8 << 20) {
+            let Some(rec) = idx.zones.iter().find(|z| z.path == path) else { continue };
+            let Ok(raw) = idx.extract(rec.id) else { continue };
+            let Ok(z) = zm::Zone::parse(&raw) else { continue };
+            zones += 1;
+            let has_heap = z.dat1.get_section_data(zm::TAG_SCENE_OBJECTS).is_some();
+            if !has_heap {
+                heapless += 1;
+            }
+            for (name, tag, stride, count_of) in tables {
+                let Some(sec) = z.dat1.get_section_data(tag) else { continue };
+                let want = sec.len() / stride;
+                let got = count_of(&z);
+                if tag == zm::TAG_SCRIPT_ACTIONS && !has_heap && want > 0 {
+                    heapless_with_script += 1;
+                    if victim.is_none() {
+                        victim = Some((path.clone(), raw.clone()));
+                    }
+                }
+                if got != want && mismatches.len() < 6 {
+                    mismatches.push(format!(
+                        "{path}: {name} is {} bytes ({want} rows) but parsed to {got}{}",
+                        sec.len(),
+                        if has_heap { "" } else { " [no heap -- the gate is back]" }
+                    ));
+                }
+            }
+        }
+        c.ok(zones > 50, format!("only {zones} zones sampled"));
+        c.ok(
+            mismatches.is_empty(),
+            format!("a section table decoded to the wrong row count: {}", mismatches.join(" | ")),
+        );
+        if heapless == 0 {
+            c.note("WARNING: no heapless zone in this sample, so the gate regression was not exercised");
+        }
+        if let Some((path, raw)) = victim {
+            match zm::Zone::parse(&raw) {
+                Ok(mut z) => {
+                    let out = z.to_asset_bytes();
+                    let want = &raw[zm::ASSET_HEADER_LEN..];
+                    c.ok(
+                        out == want,
+                        format!(
+                            "{path} has a script but no heap and does not round-trip: {} bytes in, {} out",
+                            want.len(),
+                            out.len()
+                        ),
+                    );
+                }
+                Err(e) => c.err(format!("{path}: {e}")),
+            }
+        }
+        c.note(format!(
+            "{zones} zones: {heapless} with no scene-object heap, {heapless_with_script} of those carrying a script; all four tables decoded to their declared row counts"
+        ));
+    });
+
+    // The three decode facts the whole tool rests on, each asserted against the
+    // WRONG reading so the check cannot pass by coincidence. None of these was
+    // asserted anywhere before.
+    r.check("zone_decode_discriminators", |c| {
+        let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
+            Ok(i) => i,
+            Err(e) => return c.err(e),
+        };
+        use omnitool_lib::core::crc64;
+        use omnitool_lib::core::zone as zm;
+        let mut entries = 0u64;
+        let mut with_extras = 0u64;
+        let mut u32_would_break = 0u64;
+        let mut len_agrees = 0u64;
+        let mut f0_zero = 0u64;
+        let mut soa_hit = 0u64;
+        let mut soa_rows = 0u64;
+        let mut inter_hit = 0u64;
+        let mut inter_rows = 0u64;
+        for path in spread(&idx, None, 3, 240, 4 << 20) {
+            let Some(rec) = idx.zones.iter().find(|z| z.path == path) else { continue };
+            let Ok(raw) = idx.extract(rec.id) else { continue };
+            let Ok(z) = zm::Zone::parse(&raw) else { continue };
+            let slots = z.model_names.len().max(1);
+            if let Some(heap) = z.dat1.get_section_data(zm::TAG_SCENE_OBJECTS) {
+                for o in z.scene_objects.iter().filter(|o| o.kind == zm::KIND_MODEL) {
+                    let off = o.offset as usize;
+                    let Some(e) = heap.get(off..off + 0x140) else { continue };
+                    let rd16 = |a: usize| u16::from_le_bytes(e[a..a + 2].try_into().unwrap());
+                    let rd32 = |a: usize| u32::from_le_bytes(e[a..a + 4].try_into().unwrap());
+                    entries += 1;
+                    let extras = rd16(0x112);
+                    if extras != 0 {
+                        with_extras += 1;
+                    }
+                    if zm::Zone::entry_len(heap, off) == Some(0x140 + 0x20 * extras as usize) {
+                        len_agrees += 1;
+                    }
+                    if rd32(0x110) as usize >= slots {
+                        u32_would_break += 1;
+                    }
+                    if rd32(0xF0) == 0 {
+                        f0_zero += 1;
+                    }
+                }
+            }
+            for tag in [zm::TAG_MODEL_NAMES, zm::TAG_ACTOR_ASSETS] {
+                let Some(sec) = z.dat1.get_section_data(tag).map(<[u8]>::to_vec) else { continue };
+                let n = sec.len() / 12;
+                for i in 0..n {
+                    let rd64 = |a: usize| u64::from_le_bytes(sec[a..a + 8].try_into().unwrap());
+                    let rd32 = |a: usize| u32::from_le_bytes(sec[a..a + 4].try_into().unwrap());
+                    soa_rows += 1;
+                    let name = z.dat1.get_string(rd32(n * 8 + i * 4)).unwrap_or_default();
+                    if !name.is_empty() && crc64::hash(&name) == rd64(i * 8) {
+                        soa_hit += 1;
+                    }
+                    if sec.len() >= i * 12 + 12 {
+                        inter_rows += 1;
+                        let nm = z.dat1.get_string(rd32(i * 12 + 8)).unwrap_or_default();
+                        if !nm.is_empty() && crc64::hash(&nm) == rd64(i * 12) {
+                            inter_hit += 1;
+                        }
+                    }
+                }
+            }
+        }
+        c.ok(entries > 10_000, format!("only {entries} model entries sampled"));
+        c.ok(
+            with_extras > 0,
+            "no entry in this sample carries extra records, so the u16/u32 question is not exercised",
+        );
+        c.ok(
+            len_agrees == entries,
+            format!("entry length != 0x140 + 0x20 * u16 at +0x112 on {} of {entries}", entries - len_agrees),
+        );
+        c.ok(
+            u32_would_break == with_extras,
+            format!("a u32 at +0x110 breaks {u32_would_break} entries but {with_extras} carry extras -- must be the same set"),
+        );
+        c.ok(
+            f0_zero == entries,
+            format!("+0xF0 is non-zero on {} of {entries}, so it could be the model index after all", entries - f0_zero),
+        );
+        c.ok(soa_rows > 5_000, format!("only {soa_rows} name rows sampled"));
+        c.ok(
+            soa_hit * 100 >= soa_rows * 99,
+            format!("struct-of-arrays only matches crc64(name) on {soa_hit}/{soa_rows}"),
+        );
+        c.ok(
+            inter_hit * 100 < inter_rows * 5,
+            format!("the interleaved reading matches on {inter_hit}/{inter_rows} -- too close to call the layout proven"),
+        );
+        c.note(format!(
+            "{entries} model entries: {with_extras} with extras, exactly the {u32_would_break} a u32 at +0x110 would corrupt; +0xF0 zero on {f0_zero}/{entries}; names crc64-match {soa_hit}/{soa_rows} struct-of-arrays vs {inter_hit}/{inter_rows} interleaved"
+        ));
+    });
+
     r.check("scene_entry_size_word", |c| {
         let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
             Ok(i) => i,

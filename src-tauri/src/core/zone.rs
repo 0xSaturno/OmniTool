@@ -1048,10 +1048,27 @@ impl Zone {
     }
 
     fn build_index(&mut self) {
-        let scene = match self.dat1.get_section_data(TAG_SCENE_OBJECTS) {
-            Some(s) => s.to_vec(),
-            None => return,
-        };
+        // Zone Scene Objects is OPTIONAL. The shipped game has 2.5 MB `_art`
+        // zones with no heap section at all (see `core::level`), and this used
+        // to `return` on them -- which skipped not just the heap walk but every
+        // plain section table read below it: Zone Model Names, Zone Actors,
+        // Zone Actor Groups, Zone Script Actions and the vertex paint tables.
+        //
+        // That was a silent data-destroying bug, because `save` re-emits those
+        // sections from these vectors and `put` only declines to write an empty
+        // body when the section is *absent*. A zone with a script but no heap
+        // would parse to zero actions and then be written back with its Zone
+        // Script Actions and Zone Script Priuses bodies zeroed, leaving every
+        // surviving plug pointing at rows that no longer existed.
+        //
+        // An absent heap is now an empty one: the two places that index into it
+        // (the decal-geometry mapping and the heap walk) are already bounds
+        // checked and yield nothing, while every table below is read as usual.
+        let scene = self
+            .dat1
+            .get_section_data(TAG_SCENE_OBJECTS)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
 
         // Zone Model Names is { u64 id[n] }{ u32 string_offset[n] }, not a flat u64 array.
         let (ids, paths) = read_soa_table(&self.dat1, TAG_MODEL_NAMES);
@@ -2022,7 +2039,14 @@ impl Zone {
             o += size;
         }
 
-        let existing: Vec<Vec<u8>> = insts.iter().filter_map(|&o| record(&scene, o)).collect();
+        // Same length guard as `template` above: `entry_len` only promises
+        // ENTRY_HEADER_LEN (0x80) bytes, so an entry declaring less than a full
+        // base record would make `id_of`/`uid_of` index past the end below.
+        let existing: Vec<Vec<u8>> = insts
+            .iter()
+            .filter_map(|&o| record(&scene, o))
+            .filter(|r| r.len() == MODEL_INST_LEN)
+            .collect();
         let id_of = |r: &[u8]| u16::from_le_bytes([r[156], r[157]]);
         let uid_of = |r: &[u8]| u64::from_le_bytes(r[256..264].try_into().unwrap());
         let mut ids: std::collections::HashSet<u16> = existing.iter().map(|r| id_of(r)).collect();
@@ -2083,7 +2107,8 @@ impl Zone {
             r[256..264].copy_from_slice(&uid.to_le_bytes());
             r[264..272].fill(0);
             r[OFF_MODEL_INDEX..OFF_MODEL_INDEX + 2].copy_from_slice(&(p.model as u16).to_le_bytes());
-            r[274..276].fill(0);
+            // +0x112: the clone carries no extra records.
+            r[OFF_MODEL_INDEX + 2..OFF_MODEL_INDEX + 4].fill(0);
             r[308..312].copy_from_slice(&(-1i32).to_le_bytes());
             insts.push((at + added.len()) as u32);
             added.extend_from_slice(&r);

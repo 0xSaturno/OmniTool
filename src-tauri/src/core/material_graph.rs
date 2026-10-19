@@ -59,6 +59,7 @@ pub struct TemplateSampler {
     /// True when the graph exposes this sampler in the material editor, i.e.
     /// rest. Stored as a `u16`, and only ever 0 or 1 on the shipped build.
     pub user_exposed: bool,
+    /// `crc32` of `sampler1D`, `sampler2D`, `sampler3D` or `samplerCUBE`.
     pub type_hash: u32,
     pub default_path: String,
 }

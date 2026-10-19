@@ -368,10 +368,10 @@ fn survey(index: &LevelIndex) -> usize {
             if a.pad != 0 {
                 s.actor_pad_nonzero += 1;
             }
-            if a.name_index < 0 || a.name_index as usize >= name_count {
+            if a.name_index as usize >= name_count {
                 s.actor_name_oob += 1;
             }
-            if a.asset_index < 0 || a.asset_index as usize >= asset_count {
+            if a.asset_index as usize >= asset_count {
                 s.actor_asset_oob += 1;
             }
             if a.prius_count > 0
