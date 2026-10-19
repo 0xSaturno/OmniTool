@@ -1244,6 +1244,83 @@ fn main() {
         ));
     });
 
+    // The word at +0x7C of a scene-object entry carries the entry's own byte
+    // length and at least one flag. Measured over 162 103 entries in 209 zones:
+    // its top byte is 0x00 or 0x80 and nothing else, bit 31 is set on 81.6 %,
+    // and bits 24..30 are zero everywhere -- which is why `& 0x00FF_FFFF` and
+    // `& 0x7FFF_FFFF` agree on everything shipped. `core::zone` uses the 24-bit
+    // mask and preserves the top byte when it writes the word back. If a build
+    // ever puts something in bits 24..30, the two masks diverge and the heap
+    // walk silently reads the wrong entry, so it is asserted rather than
+    // assumed.
+    r.check("scene_entry_size_word", |c| {
+        let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
+            Ok(i) => i,
+            Err(e) => return c.err(e),
+        };
+        let mut entries = 0u64;
+        let mut top_byte: std::collections::BTreeMap<u8, u64> = Default::default();
+        let mut bit31 = 0u64;
+        let mut low24_ok = 0u64;
+        let mut low31_ok = 0u64;
+        let mut zones = 0usize;
+        for path in spread(&idx, None, 3, 240, 4 << 20) {
+            let Some(rec) = idx.zones.iter().find(|z| z.path == path) else { continue };
+            let Ok(raw) = idx.extract(rec.id) else { continue };
+            let Ok(z) = omnitool_lib::core::zone::Zone::parse(&raw) else { continue };
+            let Some(heap) = z.dat1.get_section_data(omnitool_lib::core::zone::TAG_SCENE_OBJECTS)
+            else {
+                continue;
+            };
+            zones += 1;
+            // Walk the heap from each entry the object table already resolved,
+            // so this never guesses where an entry starts.
+            for o in &z.scene_objects {
+                let off = o.offset as usize;
+                if off + 0x80 > heap.len() {
+                    continue;
+                }
+                let w = u32::from_le_bytes(heap[off + 0x7C..off + 0x80].try_into().unwrap());
+                entries += 1;
+                *top_byte.entry((w >> 24) as u8).or_insert(0) += 1;
+                bit31 += (w >> 31) as u64;
+                let l24 = (w & 0x00FF_FFFF) as usize;
+                let l31 = (w & 0x7FFF_FFFF) as usize;
+                low24_ok += (l24 >= 0x80 && off + l24 <= heap.len()) as u64;
+                low31_ok += (l31 >= 0x80 && off + l31 <= heap.len()) as u64;
+            }
+        }
+        c.ok(entries > 10_000, format!("only {entries} entries sampled"));
+        c.ok(
+            low24_ok == entries,
+            format!("the 24-bit mask leaves the heap on {} of {entries} entries", entries - low24_ok),
+        );
+        c.ok(
+            low31_ok == entries,
+            format!("the 31-bit mask leaves the heap on {} of {entries} entries", entries - low31_ok),
+        );
+        let stray: Vec<String> = top_byte
+            .keys()
+            .filter(|b| **b != 0x00 && **b != 0x80)
+            .map(|b| format!("{b:#04X}"))
+            .collect();
+        c.ok(
+            stray.is_empty(),
+            format!("bits 24..30 are not unused after all -- top bytes {stray:?} appear"),
+        );
+        c.ok(bit31 > 0, "bit 31 is never set in this sample, so it is not the flag documented");
+        let tops: Vec<String> = top_byte
+            .iter()
+            .map(|(b, n)| format!("{b:#04X}x{n}"))
+            .take(8)
+            .collect();
+        c.note(format!(
+            "{entries} entries over {zones} zones: bit 31 set on {bit31} ({:.1}%),              24-bit length in range {low24_ok}, 31-bit length in range {low31_ok},              top byte {}",
+            bit31 as f64 * 100.0 / entries.max(1) as f64,
+            tops.join(" ")
+        ));
+    });
+
     r.check("zone_actor_row_signs", |c| {
         let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
             Ok(i) => i,

@@ -20,12 +20,17 @@
 //!   +0x5C u32     low 24 bits object flags, high byte = kind
 //!   +0x60 u32[4]  always zero on disk (runtime handles)
 //!   +0x70 f32[3]  cached transform scale
-//!   +0x7C u32     low 31 bits entry size, bit 31 = "memory ready"
+//!   +0x7C u32     low 24 bits entry size, bit 31 a flag, bits 24..30 unused
 //! ```
 //!
-//! Note the size field is 31 bits, not 24: bit 31 is a flag, so masking with
-//! `0x7FFF_FFFF` is the correct read. Every shipped entry measured has bit 31
-//! clear and a size below 64 KiB, so the difference never bites in practice.
+//! The size word was documented here as a 31-bit length whose top flag bit is
+//! "clear on every shipped entry". It is not: over 162 103 entries in 209
+//! zones, the top byte is 0x00 or 0x80 and nothing else, and bit 31 is **set**
+//! on 132 221 of them (81.6 %). Bits 24..30 are zero on every entry, so
+//! `& 0x00FF_FFFF` and `& 0x7FFF_FFFF` yield the same length on everything
+//! shipped; `core::zone` uses the 24-bit mask and preserves the top byte when
+//! it writes the word back. `scene_entry_size_word` in the acceptance harness
+//! re-measures all of this.
 
 use byteorder::{ByteOrder, LittleEndian as LE};
 use serde::Serialize;
