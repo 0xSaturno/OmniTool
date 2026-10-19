@@ -101,6 +101,41 @@ path = "src/bin/zone_probe.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
+name = "zone_place"
+path = "src/bin/zone_place.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "scene_import"
+path = "src/bin/scene_import.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "model_import"
+path = "src/bin/model_import.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "asset_extract"
+path = "src/bin/asset_extract.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "config_set"
+path = "src/bin/config_set.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dag_query"
+path = "src/bin/dag_query.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "png2texture"
+path = "src/bin/png2texture.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "model_extract"
 path = "src/bin/model_extract.rs"
 required-features = ["dev-tools"]
@@ -118,6 +153,11 @@ required-features = ["dev-tools"]
 [[bin]]
 name = "dag_dump"
 path = "src/bin/dag_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dyn_chain"
+path = "src/bin/dyn_chain.rs"
 required-features = ["dev-tools"]
 
 [build-dependencies]
