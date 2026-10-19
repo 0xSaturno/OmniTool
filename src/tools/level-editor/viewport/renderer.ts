@@ -99,6 +99,12 @@ export interface HudState {
   texturedModels: number;
   /** Submesh materials evaluating the `gbl_rgb_blend` RGB-splat blend. */
   blendedSubmeshes: number;
+  /** Metres to the surface the camera is pointed at; null = nothing out there. */
+  surfaceDist: number | null;
+  /** Metres per second the fly keys move at right now (what the probe buys). */
+  moveSpeed: number;
+  /** Mean cost of one surface probe, milliseconds. */
+  probeMs: number;
 }
 
 export interface LevelRendererOptions {
@@ -140,6 +146,12 @@ interface Batch {
   slotTextures?: SlotTextures[];
   /** `model` only: how many of its materials evaluate an RGB-splat blend. */
   blended?: number;
+  /**
+   * Per-instance world bounding spheres as [cx, cy, cz, r] quads, built lazily
+   * for the camera's surface probe and dropped whenever the geometry or an
+   * instance matrix changes. See `surfaceProbe`.
+   */
+  probeBounds?: Float32Array | null;
 }
 
 /**
@@ -272,6 +284,21 @@ function getEntityGeometry(): THREE.BoxGeometry {
   return entityGeometry;
 }
 
+/**
+ * The mesh the surface probe borrows to raycast one instance exactly.
+ *
+ * Its material is double-sided so the probe sees a wall from inside as well as
+ * outside, and its matrices are written directly (no auto-update) because the
+ * probe hands it a scene-object 4x4 and immediately raycasts.
+ */
+function makeProbeMesh(): THREE.Mesh {
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  mesh.matrixAutoUpdate = false;
+  mesh.matrixWorldAutoUpdate = false;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
 /** The wireframe marker box every non-model object starts (and may stay) as. */
 function makeMarkerMaterial(): THREE.Material {
   return new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.9 });
@@ -315,6 +342,19 @@ export class LevelRenderer {
   private camera: THREE.PerspectiveCamera;
   private rig: CameraRig;
   private raycaster = new THREE.Raycaster();
+  /** Kept apart from `raycaster` so a camera probe cannot clobber a pick. */
+  private probeRaycaster = new THREE.Raycaster();
+  /** World point of the last `pickAt` triangle hit; see `pickPointValid`. */
+  private pickPoint = new THREE.Vector3();
+  /** False when the last pick came from the screen-space entity fallback. */
+  private pickPointValid = false;
+  /** Scratch for the surface probe; see `surfaceProbe`. */
+  private probeVec = new THREE.Vector3();
+  private probeCandidates: { batch: Batch; index: number; near: number }[] = [];
+  private probeHits: THREE.Intersection[] = [];
+  private probeMatrix = new THREE.Matrix4();
+  /** Stand-in for one instance during the probe's exact pass. */
+  private probeMesh = makeProbeMesh();
 
   private modelGroup = new THREE.Group();
   private blockGeoGroup = new THREE.Group();
@@ -380,6 +420,8 @@ export class LevelRenderer {
   private frameTimes: number[] = [];
   private lastHud = 0;
   private lastHover = 0;
+  /** Camera position at the previous HUD tick; see `emitHud`. */
+  private lastHudCamera = new THREE.Vector3(NaN, NaN, NaN);
 
   private resizeObserver: ResizeObserver;
 
@@ -427,6 +469,9 @@ export class LevelRenderer {
     // free of z-fighting.
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 20000);
     this.rig = new CameraRig(this.camera);
+    // Every camera rate (fly speed, wheel step, pan) scales with how far the
+    // geometry in front of the camera actually is - see `cameraRig.ts`.
+    this.rig.setSurfaceProbe(this.surfaceProbe);
 
     this.scene.add(this.modelGroup, this.blockGeoGroup, this.entityGroup, this.helperGroup);
 
@@ -811,6 +856,7 @@ export class LevelRenderer {
   // -- scene teardown -------------------------------------------------------
 
   private clearScene(): void {
+    this.rig.invalidateSurface();
     this.meshQueue?.dispose();
     this.meshQueue = null;
     // Releases this scene's hold on every texture it asked for; those nothing
@@ -891,6 +937,11 @@ export class LevelRenderer {
 
     batch.mesh.geometry = geometry;
     batch.mesh.computeBoundingSphere();
+    // The camera's cached surface distance was measured against the box this
+    // mesh just replaced; keeping it would scale the next frame's speed off a
+    // placeholder that is no longer on screen.
+    batch.probeBounds = null;
+    this.rig.invalidateSurface();
     if (batch.kind === "model") {
       applyGroups(geometry, key);
       // The material table may have arrived first; the groups it indexes only
@@ -1224,6 +1275,7 @@ export class LevelRenderer {
       slot.batch.mesh.setMatrixAt(slot.index, m);
     }
     slot.batch.mesh.instanceMatrix.needsUpdate = true;
+    slot.batch.probeBounds = null; // the camera probe's prefilter is now stale
   }
 
   private refreshColor(offset: number): void {
@@ -1390,7 +1442,119 @@ export class LevelRenderer {
     return new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
   }
 
+  /**
+   * Distance from `origin` along `dir` to the first drawn surface, or null.
+   *
+   * This is the camera rig's speed reference. Targets are geometry batches
+   * only: an entity marker box is navigation furniture, not a wall, and
+   * scaling the fly speed to one would stall the camera in open air. Block-2
+   * batches ARE included - on an impostor zone they are the whole skyline.
+   *
+   * The rig caches the answer, rate-limits the call and carries the hit forward
+   * as the camera travels, so this runs at most ~20 times a second however hard
+   * the camera is driven; the measured cost per call is in the HUD (`probe`).
+   */
+  private surfaceProbe = (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number): number | null => {
+    if (!this.showGeometry) return null;
+
+    const far = Math.max(maxDist, 1e-3);
+    const rc = this.probeRaycaster;
+    rc.camera = this.camera;
+    rc.near = 0;
+    rc.far = far;
+    rc.ray.origin.copy(origin);
+    const rd = rc.ray.direction.copy(dir).normalize();
+    const ox = origin.x;
+    const oy = origin.y;
+    const oz = origin.z;
+
+    // Stage 1: per-INSTANCE sphere prefilter, in plain floats.
+    //
+    // `Raycaster.intersectObjects` cannot do this job: InstancedMesh.raycast
+    // walks every instance of every batch whose own (tile-sized) bounding
+    // sphere the ray crosses, paying a matrix multiply and an inverse each
+    // time, and `far` only spares it the triangle loop. Measured on savali
+    // tile_c17_art (9,917 instances, 91 block-2 meshes, 346,820 triangles) at
+    // a metre from a wall: 7.3 ms unbounded, 6.6 ms even with a 50 m window.
+    // The quads below cost one dot product and a compare per instance.
+    const cands = this.probeCandidates;
+    cands.length = 0;
+    for (const b of this.batches) {
+      if (b.kind === "entity" || !this.batchVisible(b)) continue;
+      const bounds = b.probeBounds ?? this.buildProbeBounds(b);
+      if (!bounds) continue;
+      for (let i = 0, q = 0; q < bounds.length; i++, q += 4) {
+        const r = bounds[q + 3];
+        if (r <= 0) continue;
+        const dx = bounds[q] - ox;
+        const dy = bounds[q + 1] - oy;
+        const dz = bounds[q + 2] - oz;
+        const along = dx * rd.x + dy * rd.y + dz * rd.z;
+        if (along - r > far || along + r < 0) continue; // too far, or behind
+        const perp2 = dx * dx + dy * dy + dz * dz - along * along;
+        if (perp2 > r * r) continue; // the ray misses this instance's sphere
+        cands.push({ batch: b, index: i, near: Math.max(0, along - r) });
+      }
+    }
+    if (!cands.length) return null;
+
+    // Stage 2: exact triangles, nearest candidate first, stopping as soon as no
+    // remaining candidate's sphere could start closer than the best hit.
+    cands.sort((a, b) => a.near - b.near);
+    const mesh = this.probeMesh;
+    const hits = this.probeHits;
+    let best = Infinity;
+    for (const c of cands) {
+      if (c.near >= best) break;
+      mesh.geometry = c.batch.mesh.geometry;
+      // A DOUBLE-SIDED stand-in on purpose: the drawn materials are
+      // single-sided, and three honours `material.side` when raycasting, so
+      // from inside a building every wall the ray would hit is back-facing and
+      // the probe came back empty - which handed the fly speed the orbit
+      // radius and 204 m/s in a corridor.
+      // Read back the matrix the batch is DRAWN with, not the scene object's
+      // own 4x4: an unresolved block-2 object wears a substituted marker-box
+      // transform, and the probe has to agree with what is on screen.
+      c.batch.mesh.getMatrixAt(c.index, mesh.matrixWorld);
+      hits.length = 0;
+      mesh.raycast(rc, hits);
+      for (const h of hits) if (h.distance > 0 && h.distance < best) best = h.distance;
+    }
+    return best === Infinity ? null : best;
+  };
+
+  /** World bounding sphere per instance as [cx, cy, cz, r] quads. */
+  private buildProbeBounds(b: Batch): Float32Array | null {
+    const geometry = b.mesh.geometry;
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const sphere = geometry.boundingSphere;
+    if (!sphere) return null;
+    const out = new Float32Array(b.objects.length * 4);
+    const c = this.probeVec;
+    const m = this.probeMatrix;
+    for (let i = 0, q = 0; i < b.objects.length; i++, q += 4) {
+      b.mesh.getMatrixAt(i, m);
+      const e = m.elements;
+      // Largest basis-column length: the scale the sphere radius has to survive.
+      const sx = Math.hypot(e[0], e[1], e[2]);
+      const sy = Math.hypot(e[4], e[5], e[6]);
+      const sz = Math.hypot(e[8], e[9], e[10]);
+      const scale = Math.max(sx, sy, sz);
+      // An instance slot nobody wrote is all zeros; leave its radius at 0, which
+      // the probe skips.
+      if (!(scale > 0) || !Number.isFinite(e[12] + e[13] + e[14])) continue;
+      c.copy(sphere.center).applyMatrix4(m);
+      out[q] = c.x;
+      out[q + 1] = c.y;
+      out[q + 2] = c.z;
+      out[q + 3] = sphere.radius * scale;
+    }
+    b.probeBounds = out;
+    return out;
+  }
+
   private pickAt(clientX: number, clientY: number): number | null {
+    this.pickPointValid = false;
     const targets: THREE.Object3D[] = [];
     for (const b of this.batches) if (this.batchVisible(b)) targets.push(b.mesh);
     if (!targets.length) return null;
@@ -1414,6 +1578,8 @@ export class LevelRenderer {
       if (d < bestDepth) {
         bestDepth = d;
         best = batch.objects[id].offset;
+        this.pickPoint.copy(h.point);
+        this.pickPointValid = true;
       }
     }
     if (best !== null) return best;
@@ -1498,6 +1664,10 @@ export class LevelRenderer {
     this.lastPointer = { x: e.clientX, y: e.clientY };
     this.boxSelecting = e.button === 0 && e.ctrlKey;
     if (this.boxSelecting) this.opts.onBoxSelect?.({ x: e.clientX, y: e.clientY, w: 0, h: 0 });
+    // Orbit should pivot around what is on screen, not around wherever the last
+    // frame-selection left the pivot. One probe per drag, down the view axis so
+    // the camera neither moves nor rotates when the pivot is re-anchored.
+    else if (e.button === 0) this.rig.recenterPivot();
     try {
       this.renderer.domElement.setPointerCapture(e.pointerId);
     } catch {
@@ -1550,6 +1720,10 @@ export class LevelRenderer {
       }
     } else if (this.dragButton === 0 && !this.dragMoved) {
       const hit = this.pickAt(e.clientX, e.clientY);
+      // Clicking a surface puts the pivot on it (projected onto the view axis,
+      // so nothing jumps): the wheel step, the pan rate and the next orbit all
+      // then work at the scale of the thing the user just pointed at.
+      if (hit !== null && this.pickPointValid) this.rig.setPivotAtPoint(this.pickPoint);
       this.opts.onSelect(hit === null ? [] : [hit], e.shiftKey);
     }
 
@@ -1559,7 +1733,10 @@ export class LevelRenderer {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    this.rig.dolly(e.deltaY);
+    // Line-mode wheels report ~3 lines where pixel-mode reports ~100 px; without
+    // the conversion a notch would move the camera 0.6% instead of 18%.
+    const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    this.rig.dolly(delta, this.ndc(e.clientX, e.clientY));
   };
 
   private onContextMenu = (e: Event) => e.preventDefault();
@@ -1695,6 +1872,17 @@ export class LevelRenderer {
     const hoveredObj = this.hovered !== null ? this.slots.get(this.hovered) : undefined;
     const selectedObj = this.selection.length ? this.slots.get(this.selection[0]) : undefined;
 
+    // Keep the surface reading live (and the rig's cache warm for the next
+    // orbit or wheel), but only while the camera is actually moving: a probe
+    // costs milliseconds on a dense zone (measured 8.0 ms on savali
+    // tile_c17_art at close range), and a parked camera's cached hit is still
+    // exactly right, so paying 5 Hz for it while nothing moves is pure waste.
+    if (!this.rig.surfaceKnown || !this.camera.position.equals(this.lastHudCamera)) {
+      this.rig.refreshSurfaceProbe();
+    }
+    this.lastHudCamera.copy(this.camera.position);
+    const nav = this.rig.navInfo();
+
     this.opts.onHud({
       fps: Math.round(fps),
       drawCalls: info.calls,
@@ -1718,6 +1906,9 @@ export class LevelRenderer {
       textureSkipped: tex.skipped,
       texturedModels,
       blendedSubmeshes,
+      surfaceDist: nav.surface,
+      moveSpeed: nav.speed,
+      probeMs: nav.probeMs,
     });
   }
 }

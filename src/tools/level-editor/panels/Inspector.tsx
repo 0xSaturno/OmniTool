@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { LuRotateCcw, LuTriangleAlert } from "react-icons/lu";
 import type {
   ActorSheetsDto,
+  PriusSchemaStatus,
   ScriptGraphDto,
   ScriptNodeDetailDto,
   SceneObjectDto,
@@ -507,6 +508,16 @@ export default function Inspector({
     [gameDir, zonePath, tab],
   );
 
+  // Is a DDL type database loaded? A sheet decoded without one still shows
+  // real field names and real values, so nothing LOOKS wrong — the selects
+  // have quietly become text boxes and the labels have gone. See
+  // `api.priusSchemaStatusCached` for the measurement, and `SchemaBanner`
+  // for what the user is told.
+  const schema = useLatest<PriusSchemaStatus>(
+    tab === "props" ? () => api.priusSchemaStatusCached() : null,
+    [tab],
+  );
+
   const planEdit = useCallback(
     async (args: PlanEditArgs) => {
       if (!gameDir || !zonePath) throw new Error("no zone loaded");
@@ -574,12 +585,40 @@ export default function Inspector({
       : null,
     [gameDir, zonePath, node, tab],
   );
+  // A node's own prius, but ONLY when it has one.
+  //
+  // `prius_script_sheet` reads `prius_offset .. +prius_size` out of
+  // `Zone Script Priuses`, so a node whose `priusSize` is 0 can only ever come
+  // back as `prius: read of 4 at 0 past end 0`. That is not rare: of the 40
+  // most-wired nodes in `i29_molonoth_gp.zone`, 14 carry no prius at all
+  // (`ScriptStartedAction`, `ActorControlAction`, …). Asking anyway spent a
+  // round trip per selection to produce an error the panel then threw away,
+  // so the size is checked first and a real failure is now shown instead of
+  // swallowed.
+  const nodeHasPrius = (nodeDetail.data?.node.priusSize ?? 0) > 0;
   const nodePrius = useLatest(
-    gameDir && zonePath && node !== null && tab === "script"
+    gameDir && zonePath && node !== null && tab === "script" && nodeHasPrius
       ? () => api.priusScriptSheet(gameDir, zonePath, node)
       : null,
-    [gameDir, zonePath, node, tab],
+    [gameDir, zonePath, node, tab, nodeHasPrius],
   );
+
+  /** What goes under a selected script node: its prius, or why there is none. */
+  const scriptPriusSlot =
+    node === null ? null : nodeHasPrius ? (
+      <PriusSheet
+        scriptSheet={nodePrius.data}
+        sheets={null}
+        zonePath={zonePath}
+        loading={nodePrius.loading}
+        error={nodePrius.error}
+      />
+    ) : nodeDetail.data ? (
+      <div className={styles.loading}>
+        this node carries no prius — `Zone Script Priuses` reserves 0 bytes for it, so every
+        setting it has is its type&apos;s default
+      </div>
+    ) : null;
 
   // Re-seed the editable fields whenever a different object is selected, or
   // when the matrix changed somewhere else (viewport gizmo, undo, revert).
@@ -649,11 +688,7 @@ export default function Inspector({
             onSelectNode={setNode}
             detail={nodeDetail.data}
             detailLoading={nodeDetail.loading}
-            priusSlot={
-              nodePrius.data ? (
-                <PriusSheet scriptSheet={nodePrius.data} sheets={null} zonePath={zonePath} />
-              ) : null
-            }
+            priusSlot={scriptPriusSlot}
           />
         ) : (
           <>
@@ -887,6 +922,7 @@ export default function Inspector({
 
       {tab === "props" && (
         <>
+          {schema.data && !schema.data.loaded && <SchemaBanner status={schema.data} />}
           {stagedHere.length > 0 && <PendingBanner edits={stagedHere} zonePath={zonePath} />}
 
           {pinnedActor && (
@@ -962,12 +998,66 @@ export default function Inspector({
           onSelectNode={setNode}
           detail={nodeDetail.data}
           detailLoading={nodeDetail.loading}
-          priusSlot={
-            nodePrius.data ? (
-              <PriusSheet scriptSheet={nodePrius.data} sheets={null} zonePath={zonePath} />
-            ) : null
-          }
+          priusSlot={scriptPriusSlot}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The sheet still works without a DDL type database. It just stops being a
+ * property sheet, quietly.
+ *
+ * `prius_zone_summary` and `prius_actor_sheet` decode on the zone's own string
+ * pool when no `rcra_ddl.json` is found, so names and values are real and
+ * nothing looks broken — but the schema is the ONLY source of the designer
+ * label, the `select` member list, and the knowledge that a text field is an
+ * asset path or that a `u8` is a narrowed `float`. Measured over the 45
+ * component priuses / 163 editable leaves of the 24 actors this panel was
+ * proven on (`i29_molonoth_gp.zone`): loading the database takes DDL type
+ * names from 0 to 45/45, designer labels from 0 to 116/163, schema types from
+ * 0 to 87/163 and enum member lists from 0 to 39/163. With none of that the
+ * backend classifies an enum as `string_same_len` rather than
+ * `select_same_len`, so `BobAndSpin.SpinAxis` — a six-member dropdown — renders
+ * as a free-text box that would accept any 8–11 byte string.
+ *
+ * The backend's own default search paths sit next to the executable, so a
+ * normal build finds nothing; `status.searched` is the list to act on, and
+ * `OMNITOOL_DDL_SCHEMA` overrides it.
+ */
+function SchemaBanner({ status }: { status: PriusSchemaStatus }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={styles.pending}>
+      <div className={styles.pendingHead}>
+        <LuTriangleAlert />
+        <span>No type database — this sheet is showing less than it knows</span>
+        <button type="button" className={styles.linkBtn} onClick={() => setOpen((o) => !o)}>
+          {open ? "hide" : "where"}
+        </button>
+      </div>
+      <div className={styles.pendingNote}>
+        Field names and values below are real: they come out of the zone itself. What is missing is
+        everything only <code>rcra_ddl.json</code> knows — designer labels, the members of a
+        dropdown, and which text fields are asset paths rather than free strings. Until it loads, a
+        select is indistinguishable from free text: it renders as a plain box that will take any
+        same-length string, including one that is not a member of the enum.
+      </div>
+      {open && (
+        <div className={styles.pendingList}>
+          <div className={styles.pendingNote}>Put the file at one of these, or set OMNITOOL_DDL_SCHEMA:</div>
+          {status.searched.map((p) => (
+            <div key={p} className={styles.pendingRow}>
+              <span className={styles.path}>{p}</span>
+            </div>
+          ))}
+          {status.searched.length === 0 && (
+            <div className={styles.pendingRow}>
+              <span className={styles.dim}>the backend reported no search paths at all</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

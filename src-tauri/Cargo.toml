@@ -40,6 +40,10 @@ name = "level_check"
 path = "src/bin/level_check.rs"
 
 [[bin]]
+name = "e2e_check"
+path = "src/bin/e2e_check.rs"
+
+[[bin]]
 name = "level_asset_check"
 path = "src/bin/level_asset_check.rs"
 

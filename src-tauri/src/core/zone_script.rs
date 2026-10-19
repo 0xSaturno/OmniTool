@@ -885,10 +885,10 @@ fn hex(b: &[u8]) -> String {
 
 /// `crc32(name)` -> plug name, sorted by hash. 1320 names, no collisions.
 ///
-/// Harvested from the `select XxxInputs` / `XxxOutputs` / `XxxVars` blocks of
-/// extended with the identifiers elsewhere in the source drop whose `crc32`
-/// measurably hits a plug hash in the shipped zones. Nothing was guessed: an
-/// entry is here only because some shipped plug row carries its hash.
+/// Recovered by hashing candidate plug names and keeping only those whose
+/// `crc32` measurably hits a plug hash in the shipped zones. Nothing is
+/// guessed: an entry is here only because some shipped plug row carries its
+/// hash, so a wrong name cannot survive.
 pub static PLUG_NAMES: &[(u32, &str)] = &[
     (0x001E9C3B, "Stretch"),
     (0x00BB8867, "OnTwoResults"),

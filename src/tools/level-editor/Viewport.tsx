@@ -73,7 +73,18 @@ const EMPTY_HUD: HudState = {
   textureSkipped: 0,
   texturedModels: 0,
   blendedSubmeshes: 0,
+  surfaceDist: null,
+  moveSpeed: 0,
+  probeMs: 0,
 };
+
+/** Metres with a sensible number of digits at every scale the tool spans. */
+function metres(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(2)} km`;
+  if (n >= 100) return `${n.toFixed(0)} m`;
+  if (n >= 10) return `${n.toFixed(1)} m`;
+  return `${n.toFixed(2)} m`;
+}
 
 /** Mirrors `hasBlockGeometry` in the renderer — see the note there. */
 function ownsBlockGeometry(o: SceneObjectDto): boolean {
@@ -446,6 +457,26 @@ export default function Viewport(props: ViewportProps) {
           </span>
         </div>
         <div className={styles.hudRow}>
+          <span title="Distance to the surface the camera is pointed at. Every camera rate — fly speed, wheel step, pan — scales with this, not with the orbit pivot.">
+            <span className={styles.hudKey}>surf </span>
+            <span className={styles.hudVal}>
+              {hud.surfaceDist === null ? "—" : metres(hud.surfaceDist)}
+            </span>
+          </span>
+          <span title="Metres per second the WASD+QE fly moves at right now (shift ×6, alt ×0.2)">
+            <span className={styles.hudKey}>spd </span>
+            <span className={styles.hudVal}>
+              {hud.moveSpeed >= 100 ? hud.moveSpeed.toFixed(0) : hud.moveSpeed.toFixed(1)} m/s
+            </span>
+          </span>
+          <span title="Mean cost of one surface probe raycast; it runs at most ~20 times a second however hard the camera is driven">
+            <span className={styles.hudKey}>probe </span>
+            <span className={hud.probeMs > 8 ? styles.hudWarn : styles.hudVal}>
+              {hud.probeMs.toFixed(2)} ms
+            </span>
+          </span>
+        </div>
+        <div className={styles.hudRow}>
           <span className={styles.hudKey}>{hud.hovered ? "hover" : "sel"}</span>
           <span className={styles.hudName}>
             {hud.hovered ??
@@ -458,10 +489,12 @@ export default function Viewport(props: ViewportProps) {
 
       <div className={styles.help}>
         <div>
-          <kbd>LMB</kbd> orbit / pick · <kbd>MMB</kbd>/<kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom
+          <kbd>LMB</kbd> orbit (pivots on what you look at) / pick · <kbd>MMB</kbd>/<kbd>RMB</kbd> pan ·{" "}
+          <kbd>wheel</kbd> zoom to cursor
         </div>
         <div>
-          <kbd>WASD</kbd>+<kbd>QE</kbd> fly · <kbd>shift</kbd> fast · <kbd>ctrl</kbd>+drag box-select · <kbd>N</kbd> shading
+          <kbd>WASD</kbd>+<kbd>QE</kbd> fly · <kbd>shift</kbd> fast · <kbd>alt</kbd> slow ·{" "}
+          <kbd>F</kbd>/<kbd>H</kbd> frame selection / all · <kbd>ctrl</kbd>+drag box-select · <kbd>N</kbd> shading
         </div>
       </div>
 

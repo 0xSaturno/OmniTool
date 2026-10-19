@@ -292,6 +292,48 @@ export async function priusSchemaStatus(): Promise<PriusSchemaStatus> {
   return invoke<PriusSchemaStatus>("prius_schema_status");
 }
 
+/**
+ * {@link priusSchemaStatus}, asked once per process.
+ *
+ * WHY A PANEL HAS TO ASK AT ALL. The decoder works without `rcra_ddl.json` —
+ * field names come out of the zone's own string pool either way — but
+ * everything that makes a property sheet a property sheet comes from the type
+ * database, and a sheet without it looks *plausible* rather than broken, which
+ * is the worst way for a tool to be wrong. MEASURED over the 45 component
+ * priuses (163 editable leaves) of the 24 actors this change was proven on,
+ * in `i29_molonoth_gp.zone`:
+ *
+ * |                              | schema loaded | no schema |
+ * |------------------------------|---------------|-----------|
+ * | priuses naming their DDL type|         45/45 |      0/45 |
+ * | leaves with a designer label |       116/163 |     0/163 |
+ * | leaves with a schema type    |        87/163 |     0/163 |
+ * | leaves with enum members     |        39/163 |     0/163 |
+ *
+ * So without it `SpinAxis` is a text box reading `kZAxisLocal` instead of a
+ * six-member dropdown, and `MovementConfig` is free text instead of an asset
+ * path. {@link PriusSchemaStatus.searched} carries the paths the backend
+ * tried, which is what the user needs to fix it.
+ *
+ * Memoised because the answer cannot change without a `prius_load_schema`
+ * call, and the Properties tab would otherwise ask on every selection.
+ */
+let schemaStatusOnce: Promise<PriusSchemaStatus> | null = null;
+export function priusSchemaStatusCached(): Promise<PriusSchemaStatus> {
+  if (!schemaStatusOnce) {
+    schemaStatusOnce = priusSchemaStatus().catch((e) => {
+      schemaStatusOnce = null;
+      throw e;
+    });
+  }
+  return schemaStatusOnce;
+}
+
+/** Forget the memoised status — call after {@link loadPriusSchema}. */
+export function invalidatePriusSchemaStatus(): void {
+  schemaStatusOnce = null;
+}
+
 export async function loadPriusSchema(path: string): Promise<PriusSchemaStatus> {
   return invoke<PriusSchemaStatus>("prius_load_schema", { path });
 }
