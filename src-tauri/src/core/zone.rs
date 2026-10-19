@@ -27,6 +27,8 @@ pub const TAG_ACTORS: u32 = 0x7068_2CB8;
 pub const TAG_ACTOR_ASSETS: u32 = 0x7868_4035;
 pub const TAG_ASSET_REFS: u32 = 0x30DA_DA09;
 pub const TAG_MODEL_NAMES: u32 = 0xC6A5_905E;
+pub const TAG_MODEL_INSTS: u32 = 0x6987_F172;
+pub const TAG_SCENE_OBJECTS: u32 = 0x06AB_CAB2;
 pub const TAG_SCRIPT_ACTIONS: u32 = 0x5E54_ACCF;
 pub const TAG_SCRIPT_PLUGS: u32 = 0xBEAB_52E7;
 pub const TAG_SCRIPT_PRIUSES: u32 = 0x2300_D240;
@@ -44,6 +46,7 @@ const VAR_LEN: usize = 32;
 const ACTOR_LEN: usize = 32;
 const ACTOR_PRIUS_LEN: usize = 32;
 const ASSET_REF_LEN: usize = 16;
+const MODEL_INST_LEN: usize = 320;
 
 // ---------------------------------------------------------------------------
 // Record views
@@ -306,6 +309,19 @@ pub struct AssetRef {
     pub ext_hash: u32,
 }
 
+/// A static model instance: where it sits, and the bounds its model's Built section gives.
+#[derive(Debug, Clone)]
+pub struct ModelPlacement {
+    /// Index into Zone Model Names, from `Zone::model_slot`.
+    pub model: usize,
+    /// The model's X, Y and Z axes in world space, each times that axis's scale.
+    pub axes: [[f32; 3]; 3],
+    pub position: [f32; 3],
+    /// Object-space bounding sphere: centre, then radius.
+    pub bsphere: [f32; 4],
+    pub half_extents: [f32; 3],
+}
+
 /// A deduplicated DDL blob shared by one or more owners.
 ///
 /// Untouched blobs are written back from `raw` so that saving a zone with no
@@ -347,6 +363,8 @@ pub struct Zone {
     pub actor_asset_ids: Vec<u64>,
     pub actor_asset_paths: Vec<String>,
     pub model_names: Vec<String>,
+    /// Asset ids parallel to `model_names`.
+    pub model_ids: Vec<u64>,
     pub actor_prius_index: Vec<ActorPriusEntry>,
     pub actor_groups: Vec<ActorGroup>,
     pub asset_refs: Vec<AssetRef>,
@@ -412,8 +430,8 @@ impl Zone {
         let actor_groups = read_actor_groups(&dat1);
         let script_types = string_table(&dat1, TAG_SCRIPT_STRINGS);
         let actor_names = string_table(&dat1, TAG_ACTOR_NAMES);
-        let model_names = string_table(&dat1, TAG_MODEL_NAMES);
-        let (actor_asset_ids, actor_asset_paths) = read_actor_assets(&dat1);
+        let (model_ids, model_names) = read_id_names(&dat1, TAG_MODEL_NAMES);
+        let (actor_asset_ids, actor_asset_paths) = read_id_names(&dat1, TAG_ACTOR_ASSETS);
         let script_string_offsets = u32_table(&dat1, TAG_SCRIPT_STRINGS);
 
         let mut zone = Self {
@@ -432,6 +450,7 @@ impl Zone {
             actor_asset_ids,
             actor_asset_paths,
             model_names,
+            model_ids,
             actor_prius_index,
             actor_groups,
             asset_refs,
@@ -702,7 +721,7 @@ impl Zone {
         self.rebuild_script_tables()?;
 
         let actions = self.serialize_actions();
-        self.dat1.set_section_data(TAG_SCRIPT_ACTIONS, actions)?;
+        put(&mut self.dat1, TAG_SCRIPT_ACTIONS, actions)?;
 
         // Actor prius entries store DAT1-absolute offsets, so the section
         // layout has to be settled before they can be written.
@@ -720,7 +739,7 @@ impl Zone {
             }
             e.write(&mut index);
         }
-        self.dat1.set_section_data(TAG_ACTOR_PRIUSES, index)?;
+        put(&mut self.dat1, TAG_ACTOR_PRIUSES, index)?;
 
         let dat1_bytes = self.dat1.save();
 
@@ -744,13 +763,13 @@ impl Zone {
             plugs.extend_from_slice(&p.index.to_le_bytes());
             plugs.extend_from_slice(&p.other_hash.to_le_bytes());
         }
-        self.dat1.set_section_data(TAG_SCRIPT_PLUGS, plugs)?;
+        put(&mut self.dat1, TAG_SCRIPT_PLUGS, plugs)?;
 
         let mut vars = Vec::with_capacity(self.vars.len() * VAR_LEN);
         for v in &self.vars {
             v.write(&mut vars);
         }
-        self.dat1.set_section_data(TAG_SCRIPT_VARS, vars)?;
+        put(&mut self.dat1, TAG_SCRIPT_VARS, vars)?;
 
         // Shipped pools hold duplicate copies of some strings, so existing
         // entries keep their original offsets and only new names are interned.
@@ -766,8 +785,8 @@ impl Zone {
             hashes.extend_from_slice(&crc32::hash(n).to_le_bytes());
         }
         self.script_types = names;
-        self.dat1.set_section_data(TAG_SCRIPT_STRINGS, offsets)?;
-        self.dat1.set_section_data(TAG_SCRIPT_STRING_HASHES, hashes)
+        put(&mut self.dat1, TAG_SCRIPT_STRINGS, offsets)?;
+        put(&mut self.dat1, TAG_SCRIPT_STRING_HASHES, hashes)
     }
 
     fn serialize_actions(&self) -> Vec<u8> {
@@ -799,18 +818,7 @@ impl Zone {
             return Ok(());
         }
 
-        let mut section = Vec::with_capacity(self.actor_asset_ids.len() * 12);
-        for id in &self.actor_asset_ids {
-            section.extend_from_slice(&id.to_le_bytes());
-        }
-        let offsets: Vec<u32> = self
-            .actor_asset_paths
-            .iter()
-            .map(|p| intern(&mut self.dat1, p))
-            .collect();
-        for off in offsets {
-            section.extend_from_slice(&off.to_le_bytes());
-        }
+        let section = id_name_table(&mut self.dat1, &self.actor_asset_ids, &self.actor_asset_paths);
         self.dat1.set_section_data(TAG_ACTOR_ASSETS, section)
     }
 
@@ -821,18 +829,157 @@ impl Zone {
         for (idx, path) in &edits.model_names {
             if let Some(slot) = self.model_names.get_mut(*idx) {
                 *slot = path.trim().to_string();
+                self.model_ids[*idx] = crc64::hash(slot);
             }
         }
-        let offsets: Vec<u32> = self
-            .model_names
-            .iter()
-            .map(|p| intern(&mut self.dat1, p))
-            .collect();
-        let mut section = Vec::with_capacity(offsets.len() * 4);
-        for off in offsets {
-            section.extend_from_slice(&off.to_le_bytes());
-        }
+        let section = id_name_table(&mut self.dat1, &self.model_ids, &self.model_names);
         let _ = self.dat1.set_section_data(TAG_MODEL_NAMES, section);
+    }
+
+    /// Slot of `path` in Zone Model Names, adding it when new.
+    pub fn model_slot(&mut self, path: &str) -> Result<usize> {
+        let id = crc64::hash(path.trim());
+        if let Some(i) = self.model_ids.iter().position(|&x| x == id) {
+            return Ok(i);
+        }
+        self.add_models(&[path.to_string()])?;
+        Ok(self.model_ids.iter().position(|&x| x == id).unwrap_or(0))
+    }
+
+    /// Adds the models Zone Model Names lacks. The table stays in id order, as shipped zones keep
+    /// it, so existing instances are renumbered.
+    pub fn add_models(&mut self, paths: &[String]) -> Result<()> {
+        let old = self.model_ids.clone();
+        let mut all: Vec<(u64, String)> = old.iter().copied().zip(std::mem::take(&mut self.model_names)).collect();
+        let mut known: std::collections::HashSet<u64> = old.iter().copied().collect();
+        for p in paths {
+            let p = p.trim().replace('/', "\\");
+            let id = crc64::hash(&p);
+            if known.insert(id) {
+                all.push((id, p));
+            }
+        }
+        all.sort_by_key(|e| e.0);
+        let slot_of: std::collections::HashMap<u64, i16> = all.iter().enumerate().map(|(i, e)| (e.0, i as i16)).collect();
+        (self.model_ids, self.model_names) = all.into_iter().unzip();
+        let names = id_name_table(&mut self.dat1, &self.model_ids, &self.model_names);
+        self.dat1.set_section_data(TAG_MODEL_NAMES, names)?;
+
+        let mut scene = self.dat1.get_section_data(TAG_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
+        for o in u32_table(&self.dat1, TAG_MODEL_INSTS) {
+            let o = o as usize + 272;
+            if let Some(b) = scene.get_mut(o..o + 2) {
+                let slot = i16::from_le_bytes([b[0], b[1]]);
+                if let Some(new) = old.get(slot as usize).and_then(|id| slot_of.get(id)) {
+                    b.copy_from_slice(&new.to_le_bytes());
+                }
+            }
+        }
+        put(&mut self.dat1, TAG_SCENE_OBJECTS, scene)
+    }
+
+    /// Adds static model instances, each cloned from the zone's first one. They go right after the
+    /// last model instance, so the 320-byte records stay in one run as shipped zones have them.
+    pub fn add_model_instances(&mut self, placements: &[ModelPlacement]) -> Result<()> {
+        if placements.is_empty() {
+            return Ok(());
+        }
+        let bad = |m: &str| ToolkitError::Parse(m.into());
+        let record = |scene: &[u8], o: u32| scene.get(o as usize..o as usize + MODEL_INST_LEN).map(|r| r.to_vec());
+        let mut insts = u32_table(&self.dat1, TAG_MODEL_INSTS);
+        let mut scene = self.dat1.get_section_data(TAG_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
+        let template = insts
+            .first()
+            .and_then(|&o| record(&scene, o))
+            .ok_or_else(|| bad("the zone has no model instance to clone"))?;
+        let at = insts.iter().max().map_or(0, |&o| o as usize + MODEL_INST_LEN);
+        if at > scene.len() {
+            return Err(bad("Zone Model Insts points past Zone Scene Objects"));
+        }
+
+        // Records behind the insertion point move, and only actors are known to point at them.
+        let mut o = at;
+        while o < scene.len() {
+            let size = scene.get(o + 124..o + 128).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) & 0x7FFF_FFFF);
+            if size == 0 || !self.actors.iter().any(|a| a.scene_object_offset as usize == o) {
+                return Err(bad("the zone has scene objects behind its model instances that cannot be moved"));
+            }
+            o += size as usize;
+        }
+
+        let existing: Vec<Vec<u8>> = insts.iter().filter_map(|&o| record(&scene, o)).collect();
+        let id_of = |r: &[u8]| u16::from_le_bytes([r[156], r[157]]);
+        let uid_of = |r: &[u8]| u64::from_le_bytes(r[256..264].try_into().unwrap());
+        let mut ids: std::collections::HashSet<u16> = existing.iter().map(|r| id_of(r)).collect();
+        let mut uids: std::collections::HashSet<u64> = existing.iter().map(|r| uid_of(r)).collect();
+        let (mut id, mut uid) = (id_of(&template), uid_of(&template));
+
+        let mut added = Vec::with_capacity(placements.len() * MODEL_INST_LEN);
+        for p in placements {
+            if p.model >= self.model_ids.len() {
+                return Err(bad("a model instance names a slot Zone Model Names does not have"));
+            }
+            if ids.len() >= 0xFFFF {
+                return Err(bad("a zone holds at most 65535 model instances"));
+            }
+            loop {
+                id = id.wrapping_add(1);
+                if id != 0xFFFF && ids.insert(id) {
+                    break;
+                }
+            }
+            loop {
+                uid = mix64(uid) | ID_FLAG;
+                if uids.insert(uid) {
+                    break;
+                }
+            }
+            let [x, y, z] = p.axes;
+            let scale = p.axes.map(|a| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt());
+            let det = x[0] * (y[1] * z[2] - y[2] * z[1]) - x[1] * (y[0] * z[2] - y[2] * z[0]) + x[2] * (y[0] * z[1] - y[1] * z[0]);
+            let uniform = (scale[0] - scale[1]).abs() < 1e-4 && (scale[1] - scale[2]).abs() < 1e-4;
+            // Static, plus uniform scale and mirrored; the two low bits follow no rule the matrix shows and stay 0.
+            let flags = 0x100u32 | ((uniform as u32) << 4) | (((det < 0.0) as u32) << 2);
+
+            // m_Flags at +128 stay the template's: bit 22 set is what drew in game, clearing it is untested.
+            let mut r = template.clone();
+            let mut floats = |o: usize, v: &[f32]| {
+                for (k, f) in v.iter().enumerate() {
+                    r[o + k * 4..o + k * 4 + 4].copy_from_slice(&f.to_le_bytes());
+                }
+            };
+            floats(0, &[x[0], x[1], x[2], 0.0]);
+            floats(16, &[y[0], y[1], y[2], 0.0]);
+            floats(32, &[z[0], z[1], z[2], 0.0]);
+            floats(48, &[p.position[0], p.position[1], p.position[2], 1.0]);
+            floats(64, &p.bsphere);
+            floats(80, &p.half_extents);
+            floats(112, &scale);
+            r[92..96].copy_from_slice(&flags.to_le_bytes());
+            r[156..158].copy_from_slice(&id.to_le_bytes());
+            r[159] = 0;
+            r[256..264].copy_from_slice(&uid.to_le_bytes());
+            r[264..272].fill(0);
+            r[272..274].copy_from_slice(&(p.model as i16).to_le_bytes());
+            r[274..276].fill(0);
+            r[308..312].copy_from_slice(&(-1i32).to_le_bytes());
+            insts.push((at + added.len()) as u32);
+            added.extend_from_slice(&r);
+        }
+
+        let grew = added.len() as u32;
+        scene.splice(at..at, added);
+        if let Some(mut actors) = self.dat1.get_section_data(TAG_ACTORS).map(|d| d.to_vec()) {
+            for (a, rec) in self.actors.iter_mut().zip(actors.chunks_exact_mut(ACTOR_LEN)) {
+                if a.scene_object_offset != u32::MAX && a.scene_object_offset as usize >= at {
+                    a.scene_object_offset += grew;
+                    rec[8..12].copy_from_slice(&a.scene_object_offset.to_le_bytes());
+                }
+            }
+            self.dat1.set_section_data(TAG_ACTORS, actors)?;
+        }
+        self.dat1.set_section_data(TAG_MODEL_INSTS, insts.iter().flat_map(|o| o.to_le_bytes()).collect())?;
+        self.dat1.set_section_data(TAG_SCENE_OBJECTS, scene)
     }
 
     fn apply_script_var_edits(&mut self, edits: &ZoneEdits) -> Result<()> {
@@ -904,7 +1051,7 @@ impl Zone {
             rebuilt.push(PriusBlob { offset, size, raw: bytes, ..blob });
         }
         self.script_priuses = rebuilt;
-        self.dat1.set_section_data(TAG_SCRIPT_PRIUSES, section)
+        put(&mut self.dat1, TAG_SCRIPT_PRIUSES, section)
     }
 
     fn rebuild_actor_priuses(&mut self) -> Result<()> {
@@ -924,7 +1071,7 @@ impl Zone {
             });
         }
         self.actor_priuses = rebuilt;
-        self.dat1.set_section_data(TAG_ACTOR_PRIUS_DATA, section)
+        put(&mut self.dat1, TAG_ACTOR_PRIUS_DATA, section)
     }
 
     fn blob_bytes(&mut self, blob: &PriusBlob) -> Result<Vec<u8>> {
@@ -2211,9 +2358,9 @@ fn read_actor_groups(dat1: &Dat1) -> Vec<ActorGroup> {
         .collect()
 }
 
-/// `TAG_ACTOR_ASSETS` is `u64 id[n]` followed by `u32 name_offset[n]`.
-fn read_actor_assets(dat1: &Dat1) -> (Vec<u64>, Vec<String>) {
-    let Some(d) = dat1.get_section_data(TAG_ACTOR_ASSETS) else {
+/// Zone Actor Asset Paths and Zone Model Names are `u64 id[n]` followed by `u32 name_offset[n]`.
+fn read_id_names(dat1: &Dat1, tag: u32) -> (Vec<u64>, Vec<String>) {
+    let Some(d) = dat1.get_section_data(tag) else {
         return (Vec::new(), Vec::new());
     };
     let n = d.len() / 12;
@@ -2226,6 +2373,22 @@ fn read_actor_assets(dat1: &Dat1) -> (Vec<u64>, Vec<String>) {
         paths.push(dat1.get_string(off).unwrap_or_default());
     }
     (ids, paths)
+}
+
+fn id_name_table(dat1: &mut Dat1, ids: &[u64], paths: &[String]) -> Vec<u8> {
+    let mut out: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+    for p in paths {
+        out.extend_from_slice(&intern(dat1, p).to_le_bytes());
+    }
+    out
+}
+
+/// Writes a section; a zone that lacks it can only be given nothing.
+fn put(dat1: &mut Dat1, tag: u32, data: Vec<u8>) -> Result<()> {
+    if data.is_empty() && dat1.get_section_data(tag).is_none() {
+        return Ok(());
+    }
+    dat1.set_section_data(tag, data)
 }
 
 fn parse_blob(section: &[u8], offset: u32, size: u32, dat1: &Dat1) -> Result<Value> {

@@ -155,8 +155,8 @@ pub fn stream_bias(
     (bias(mesh.uv_density_u, s.uv_density.0), bias(mesh.uv_density_v, s.uv_density.1))
 }
 
-/// Grows Model Built's bounding sphere and box so they also enclose `vertexes`; never shrinks them.
-pub fn grow_built_bounds(built: &mut [u8], vertexes: &[Vertex], mpu: f32) {
+/// Makes Model Built's bounding sphere and box enclose `vertexes`: exactly with `replace`, otherwise only growing them.
+pub fn fit_built_bounds(built: &mut [u8], vertexes: &[Vertex], mpu: f32, replace: bool) {
     if built.len() < 0x28 || vertexes.is_empty() {
         return;
     }
@@ -164,9 +164,9 @@ pub fn grow_built_bounds(built: &mut [u8], vertexes: &[Vertex], mpu: f32) {
     let c0 = [f(built, 0x00), f(built, 0x04), f(built, 0x08)];
     let r0 = f(built, 0x0C);
     let e0 = [f(built, 0x10), f(built, 0x14), f(built, 0x18)];
-    let mut lo = [0, 1, 2].map(|k| c0[k] - e0[k]);
-    let mut hi = [0, 1, 2].map(|k| c0[k] + e0[k]);
-    let mut grew = false;
+    let mut lo = if replace { [f64::MAX; 3] } else { [0, 1, 2].map(|k| c0[k] - e0[k]) };
+    let mut hi = if replace { [f64::MIN; 3] } else { [0, 1, 2].map(|k| c0[k] + e0[k]) };
+    let mut grew = replace;
     for v in vertexes {
         let p = quantized(v, mpu);
         for k in 0..3 {
@@ -184,7 +184,7 @@ pub fn grow_built_bounds(built: &mut [u8], vertexes: &[Vertex], mpu: f32) {
     let e = if grew { [0, 1, 2].map(|k| (hi[k] - lo[k]) / 2.0) } else { e0 };
     let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
     let reach = vertexes.iter().map(|v| dist(quantized(v, mpu), c)).fold(0.0, f64::max);
-    let r = (dist(c, c0) + r0).max(reach);
+    let r = if replace { reach } else { (dist(c, c0) + r0).max(reach) };
     if !grew && reach <= r0 {
         return;
     }

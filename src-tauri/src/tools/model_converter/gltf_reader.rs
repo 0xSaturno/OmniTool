@@ -2,7 +2,7 @@ use crate::core::error::{Result, ToolkitError};
 use crate::tools::model_converter::layout::plan_blocks;
 use crate::tools::model_converter::model::ModelFile;
 use crate::tools::model_converter::sections::{
-    built::{get_position_scale, get_uv1_scale, get_uv_scale},
+    built::{flags, get_position_scale, get_uv1_scale, get_uv_scale, set_scales, Built},
     geo::{
         ColorsSection, IndexesSection, Uv1Section, Vertex, VertexesSection, DEFAULT_UV_SCALE,
         TAG_COLORS, TAG_INDEXES, TAG_UV1, TAG_VERTEXES,
@@ -69,7 +69,7 @@ pub struct GltfModel {
     pub looks: Vec<usize>,
 }
 
-fn extras_json(x: &gltf::json::Extras) -> Option<serde_json::Value> {
+pub(crate) fn extras_json(x: &gltf::json::Extras) -> Option<serde_json::Value> {
     x.as_ref().and_then(|r| serde_json::from_str(r.get()).ok())
 }
 
@@ -117,7 +117,11 @@ pub fn parse_gltf(path: &str) -> Result<GltfModel> {
             }
             let mut normals: Vec<[f32; 3]> = Vec::new();
             let has_normals = if let Some(iter) = reader.read_normals() {
-                normals.extend(iter);
+                // The packed normal format wraps on anything but unit length.
+                normals.extend(iter.map(|n: [f32; 3]| {
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    if len > 1e-12 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0, 1.0, 0.0] }
+                }));
                 true
             } else {
                 normals.resize(positions.len(), [0.0, 1.0, 0.0]);
@@ -401,6 +405,39 @@ fn update_look_groups(model: &mut ModelFile) -> Result<()> {
     }
     model.dat1.set_section_data(TAG_LOOK, look_sec.save())?;
     crate::tools::model_converter::sections::looks::sync_lod_subset_bits(&mut model.dat1)
+}
+
+/// Doubles `scale` until `max` fits an i16; `None` once it passes `limit`.
+fn grow_scale(mut scale: f32, max: f32, limit: f32) -> Option<f32> {
+    if !(scale > 0.0) {
+        return None;
+    }
+    while (max / scale).round() > i16::MAX as f32 {
+        scale *= 2.0;
+        if scale > limit {
+            return None;
+        }
+    }
+    Some(scale)
+}
+
+/// Vertices of the subsets each look draws once its LODs collapse onto the first one.
+fn shown_vertices(model: &ModelFile, updates: &[MeshUpdate], vertexes: &[Vertex]) -> Result<Vec<Vertex>> {
+    let Some(data) = model.dat1.get_section_data(TAG_LOOK) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for look in &LookSection::parse(data)?.looks {
+        let Some(l) = look.lods.iter().find(|l| l.count > 0) else {
+            continue;
+        };
+        let range = l.start as usize..l.start as usize + l.count as usize;
+        for u in updates.iter().filter(|u| range.contains(&u.mesh_index)) {
+            let (s, n) = (u.vertex_start as usize, u.vertex_count as usize);
+            out.extend_from_slice(vertexes.get(s..s + n).unwrap_or(&[]));
+        }
+    }
+    Ok(out)
 }
 
 struct MeshUpdate {
@@ -698,6 +735,50 @@ fn inject_vertexes(
         .as_deref()
         .map(|d| Uv1Section::parse(d).ok())
         .flatten();
+
+    // Grow the quantisation until the incoming geometry fits; it never shrinks.
+    let (orig_pos_scale, orig_uv1_scale) = (built_pos_scale, built_uv1_scale);
+    let (mut max_pos, mut max_uv, mut max_uv1) = (0f32, 0f32, 0f32);
+    for v in gltf.meshes.iter().flat_map(|m| &m.vertexes) {
+        let (x, y, z) = v.position;
+        if !(x + y + z).is_finite() {
+            return Err(ToolkitError::Parse("the glTF has non-finite vertex positions".into()));
+        }
+        max_pos = max_pos.max(x.abs()).max(y.abs()).max(z.abs());
+        if let Some((u, w)) = v.uv {
+            let (u1, w1) = v.uv1.unwrap_or((u, w));
+            max_uv = max_uv.max(u.abs()).max(w.abs());
+            max_uv1 = max_uv1.max(u1.abs()).max(w1.abs());
+        }
+    }
+    let fit_uv = |scale: f32, max: f32| {
+        grow_scale(scale, max, 2.0)
+            .ok_or_else(|| ToolkitError::Parse(format!("UVs reach {max}; a model holds at most ±65534")))
+    };
+    let built_pos_scale = grow_scale(built_pos_scale, max_pos, f32::MAX)
+        .ok_or_else(|| ToolkitError::Parse(format!("vertex positions reach {max_pos} m; too far to quantise")))?;
+    let built_uv_scale = fit_uv(built_uv_scale, max_uv)?;
+    let built_uv1_scale = if uv1_sec.is_some() { fit_uv(built_uv1_scale, max_uv1)? } else { built_uv1_scale };
+    if built_uv1_scale != orig_uv1_scale {
+        if let Some(uv1) = uv1_sec.as_mut() {
+            let k = orig_uv1_scale / built_uv1_scale;
+            for (u, v) in uv1.uvs.iter_mut() {
+                *u = (*u as f32 * k).round() as i16;
+                *v = (*v as f32 * k).round() as i16;
+            }
+        }
+    }
+    if built_pos_scale != orig_pos_scale {
+        // Subset bounds are stored in position quanta.
+        let k = orig_pos_scale / built_pos_scale;
+        let q = |x: i16| (x as f32 * k).ceil() as i16;
+        let mut rescaled = meshes.clone();
+        for m in &mut rescaled {
+            m.bsphere_radius = q(m.bsphere_radius);
+            m.aabb_extents = m.aabb_extents.map(q);
+        }
+        model.dat1.set_section_data(TAG_MESHES, MeshDefinition::save_all(&rescaled))?;
+    }
 
     // Per-vertex colors, indexed by absolute vertex index like UV1, so they
     // must follow the same relayout or every mesh reads another mesh's colors.
@@ -1404,7 +1485,7 @@ fn inject_vertexes(
             &orig_vertexes_for_raw_w,
             &orig_indices,
             &meshes[u.mesh_index],
-            built_pos_scale,
+            orig_pos_scale,
         );
         u.stats = bounds::subset_stats(
             &vert_sec.vertexes,
@@ -1433,8 +1514,17 @@ fn inject_vertexes(
             vert_sec.vertexes.len() as u32,
             idx_sec.values.len() as u32,
         );
+        set_scales(&mut built, built_pos_scale, built_uv_scale, built_uv1_scale);
         if geometry_changed {
-            bounds::grow_built_bounds(&mut built, &vert_sec.vertexes, built_pos_scale);
+            // A static model's bounds follow what its looks draw; an animated one keeps its authored margin.
+            let animated = meshes.iter().any(|m| m.is_skinned())
+                || Built::parse(&built).is_some_and(|b| b.flags & flags::AMBIENT_ANIMATION != 0);
+            let shown = if animated { Vec::new() } else { shown_vertices(model, &updates, &vert_sec.vertexes)? };
+            if shown.is_empty() {
+                bounds::fit_built_bounds(&mut built, &vert_sec.vertexes, built_pos_scale, false);
+            } else {
+                bounds::fit_built_bounds(&mut built, &shown, built_pos_scale, true);
+            }
         }
         model.dat1.set_section_data(TAG_BUILT, built)?;
     }
@@ -1685,4 +1775,19 @@ fn update_meshes(model: &mut ModelFile, updates: &[MeshUpdate]) -> Result<()> {
         .dat1
         .set_section_data(TAG_MESHES, MeshDefinition::save_all(&meshes))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grow_scale;
+
+    #[test]
+    fn scale_grows_until_the_mesh_fits() {
+        let donor = 1.0 / 4096.0;
+        assert_eq!(grow_scale(donor, 7.9, f32::MAX), Some(donor));
+        assert_eq!(grow_scale(donor, 8.0, f32::MAX), Some(1.0 / 2048.0));
+        assert_eq!(grow_scale(donor, 40.1, f32::MAX), Some(1.0 / 512.0));
+        assert_eq!(grow_scale(1.0 / 16384.0, 70000.0, 2.0), None);
+        assert_eq!(grow_scale(0.0, 1.0, f32::MAX), None);
+    }
 }

@@ -1118,7 +1118,7 @@ fn inject_vertexes(model: &mut ModelFile, ascii: &AsciiModel) -> Result<(Vec<Mes
             idx_sec.values.len() as u32,
         );
         if geometry_changed {
-            bounds::grow_built_bounds(&mut built, &vert_sec.vertexes, built_pos_scale);
+            bounds::fit_built_bounds(&mut built, &vert_sec.vertexes, built_pos_scale, false);
         }
         model.dat1.set_section_data(TAG_BUILT, built)?;
     }

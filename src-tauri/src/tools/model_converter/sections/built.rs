@@ -231,6 +231,18 @@ pub fn get_position_scale(built_data: &[u8]) -> f32 {
     f32::from_le_bytes(raw)
 }
 
+/// Writes the position quantum and the UV0 / UV1 shifts; the UV scales must be ones the getters return.
+pub fn set_scales(built_data: &mut [u8], meters_per_unit: f32, uv_scale: f32, uv1_scale: f32) {
+    if built_data.len() < 0x34 {
+        return;
+    }
+    let shift = |s: f32| (s * 16384.0).log2().round() as u32 & 0xF;
+    let raw = u32::from_le_bytes(built_data[0x30..0x34].try_into().unwrap());
+    let raw = (raw & !0xFF) | shift(uv_scale) | (shift(uv1_scale) << 4);
+    built_data[0x2C..0x30].copy_from_slice(&meters_per_unit.to_le_bytes());
+    built_data[0x30..0x34].copy_from_slice(&raw.to_le_bytes());
+}
+
 /// Writes the total vertex count and index count into the Built section.
 /// reads these as u32 packed into the f32 values array at offsets 0x68 and
 /// 0x64 respectively. The game validates section sizes against these, so

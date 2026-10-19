@@ -895,6 +895,48 @@ pub fn replace_texture(
     Ok(logs)
 }
 
+/// Builds a `.texture` from RGBA pixels on `donor`'s headers: uncompressed sRGB (the format of
+/// the shipped `default_pink_shader_c`), a full mip chain and no HD part.
+pub fn texture_from_rgba(donor: &[u8], image: &RgbaImage) -> Result<Vec<u8>, String> {
+    const TEXTURE_HEADER: u32 = 0x4EDE_3593;
+    const R8G8B8A8_UNORM_SRGB: u16 = 29;
+    let word = |o: usize| donor.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let (Some(TEXTURE_HEADER), Some(offset), Some(44)) = (word(52), word(56), word(60)) else {
+        return Err("the donor is not a .texture with its 36-byte asset header".into());
+    };
+    let start = 36 + offset as usize;
+    let mut out = donor.get(..start + 44).ok_or("the donor texture is truncated")?.to_vec();
+
+    let (w, h) = image.dimensions();
+    if !w.is_power_of_two() || !h.is_power_of_two() || w > 16384 || h > 16384 {
+        return Err(format!("texture is {w}x{h}; sides must be powers of two up to 16384"));
+    }
+    let mut data = image.as_raw().clone();
+    let mut level = image.clone();
+    let mut mips = 1u8;
+    while level.width() > 1 || level.height() > 1 {
+        let (lw, lh) = ((level.width() / 2).max(1), (level.height() / 2).max(1));
+        level = image::imageops::resize(&level, lw, lh, image::imageops::FilterType::Triangle);
+        data.extend_from_slice(level.as_raw());
+        mips += 1;
+    }
+
+    let size = (data.len() as u32).to_le_bytes();
+    out[8..12].copy_from_slice(&size);
+    let t = &mut out[start..];
+    t[0..4].copy_from_slice(&size);
+    t[4..8].fill(0);
+    for o in [8, 12] {
+        t[o..o + 2].copy_from_slice(&(w as u16).to_le_bytes());
+        t[o + 2..o + 4].copy_from_slice(&(h as u16).to_le_bytes());
+    }
+    t[20..22].copy_from_slice(&R8G8B8A8_UNORM_SRGB.to_le_bytes());
+    t[30] = mips;
+    t[32] = 0;
+    out.extend_from_slice(&data);
+    Ok(out)
+}
+
 pub fn get_texture_info(path: &str) -> Result<TextureInfo, String> {
     let tex = SourceTex::read(path, None)?;
     let is_cubemap = tex.dimension == 4;

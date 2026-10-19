@@ -117,13 +117,7 @@ fn write_batch(verts: &[Influences], first_vertex: usize, set: &BTreeSet<u16>, o
             influences += w.1.iter().filter(|&&x| x > 0.0).count();
             encode_vertex(w, joints, &local, out.data);
             if let Some(gpu) = out.gpu.as_deref_mut() {
-                let mut bones = [local(w.0.first().copied().unwrap_or(0)), 0, 0, 0];
-                let mut weights = [255u8, 0, 0, 0];
-                for k in 0..w.0.len().min(4) {
-                    bones[k] = local(w.0[k]);
-                    weights[k] = (w.1.get(k).copied().unwrap_or(0.0) * 256.0).clamp(0.0, 255.0) as u8;
-                }
-                gpu.push(RcraSkinEntry { bones, weights });
+                gpu.push(gpu_entry(w, &local));
             }
         }
     }
@@ -171,6 +165,33 @@ fn encode_vertex(w: &Influences, joints: usize, local: &impl Fn(u16) -> u8, sd: 
         sd.push(ids[k]);
         sd.push(iw[k] as u8);
     }
+}
+
+/// One GPU Skin entry: the vertex's four heaviest joints (repeats merged), weights /256 summing to 256
+/// (255 for a single joint) like shipped entries. The game skins from these, so dropped weight shrinks the vertex.
+fn gpu_entry(w: &Influences, local: &impl Fn(u16) -> u8) -> RcraSkinEntry {
+    let mut top: Vec<(u16, f32)> = Vec::new();
+    for (&j, &x) in w.0.iter().zip(&w.1).filter(|(_, &x)| x > 0.0) {
+        match top.iter_mut().find(|t| t.0 == j) {
+            Some(t) => t.1 += x,
+            None => top.push((j, x)),
+        }
+    }
+    top.sort_by(|a, b| b.1.total_cmp(&a.1));
+    top.truncate(4);
+    let sum: f32 = top.iter().map(|t| t.1).sum();
+    let mut bones = [local(w.0.first().copied().unwrap_or(0)), 0, 0, 0];
+    let mut weights = [255u8, 0, 0, 0];
+    let mut rest = 0u32;
+    for (k, &(j, x)) in top.iter().enumerate() {
+        bones[k] = local(j);
+        if k > 0 {
+            weights[k] = (x / sum * 256.0).round().min(255.0) as u8;
+            rest += weights[k] as u32;
+        }
+    }
+    weights[0] = (256 - rest).min(255) as u8;
+    RcraSkinEntry { bones, weights }
 }
 
 /// Keeps each vertex's joints within a 256-wide index window (heaviest first) and renormalizes.
@@ -268,5 +289,28 @@ mod tests {
         let (batches, back) = roundtrip(&verts, false);
         assert!(batches.iter().all(|b| b.joint_remap_count == 0));
         assert_eq!(back[299][0].0, 299);
+    }
+
+    #[test]
+    fn gpu_entries_use_their_vertex_batch_and_keep_full_weight() {
+        use crate::tools::model_converter::sections::skin::batch_joint;
+        // Six influences with joint j repeated; batches get different bases as j climbs.
+        let joint = |v: usize| 200 + (v / 1000) as u16 * 40 + (v % 10) as u16;
+        let verts: Vec<Influences> = (0..6000)
+            .map(|v| (vec![joint(v) + 1, joint(v), joint(v) + 2, joint(v), joint(v) + 3, joint(v) + 4], vec![0.3, 0.2, 0.15, 0.15, 0.1, 0.1]))
+            .collect();
+        let (mut data, mut batches, mut gpu) = (Vec::new(), Vec::new(), Vec::new());
+        let mut out = SkinOutput { data: &mut data, batches: &mut batches, remap: None, gpu: Some(&mut gpu) };
+        write_subset(&verts, 0, &mut out).unwrap();
+        assert_eq!(gpu.len(), verts.len());
+        assert!(batches.iter().any(|b| b.joint_remap_offset != batches[0].joint_remap_offset));
+        for b in &batches {
+            for v in b.first_vertex as usize..(b.first_vertex + b.vertex_count) as usize {
+                let e = gpu[v];
+                let got: Vec<u16> = e.bones.iter().map(|&l| batch_joint(b, &[], l)).collect();
+                assert_eq!(got, vec![joint(v), joint(v) + 1, joint(v) + 2, joint(v) + 3]);
+                assert_eq!(e.weights, [100, 85, 43, 28]);
+            }
+        }
     }
 }

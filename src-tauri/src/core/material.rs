@@ -50,6 +50,30 @@ pub struct MaterialFile {
     pub dat1: Dat1,
 }
 
+/// How a surface uses its base colour map's alpha.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AlphaKind {
+    Opaque,
+    /// Alpha test threshold.
+    Cutout(f32),
+    Blend,
+}
+
+/// What `MaterialFile::retexture` sets besides the base colour map.
+#[derive(Debug, Clone, Copy)]
+pub struct Surface {
+    pub alpha: AlphaKind,
+    pub double_sided: bool,
+    /// 0 is matte: no gloss and no specular reflectance.
+    pub glossiness: f32,
+    /// Multiplies the base colour map.
+    pub tint: [f32; 3],
+    /// The header's alpha, which scales a blended surface.
+    pub opacity: f32,
+    /// Blended surfaces never cast shadows.
+    pub cast_shadows: bool,
+}
+
 impl MaterialFile {
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 4 {
@@ -98,6 +122,61 @@ impl MaterialFile {
         self.dat1.get_section_data(TAG_MATERIAL_VARIATION).is_some()
     }
 
+    /// Points the base colour map at `texture` and applies `look`. Shipped materials on
+    /// `basic_normal_gloss` differ in exactly these header fields between opaque, cut-out and blended.
+    pub fn retexture(&mut self, texture: &str, look: &Surface) -> Result<()> {
+        const BASE_MAP: u32 = 0xABDA_D780;
+        const GLOSS_MAP: u32 = 0x1576_D848;
+        const GLOSSINESS: u32 = 0x24F4_CA4C;
+        const DIFFUSE_COLOR: u32 = 0x4BAA_D667;
+        const SPEC_REFLECTANCE: u32 = 0xFEAF_9A36;
+        let section = |d: &Dat1, tag: u32| d.get_section_data(tag).map(|s| s.to_vec()).ok_or(ToolkitError::SectionNotFound(tag));
+        let mut serialized = MaterialSerialized::parse(&section(&self.dat1, TAG_MATERIAL_SERIALIZED)?)?;
+        let mut repoint = |hash: u32, path: &str| match serialized.samplers.iter_mut().find(|s| s.name_hash == hash) {
+            Some(s) => Ok(s.path = path.to_string()),
+            None => Err(ToolkitError::Parse(format!("the material has no sampler {hash:08X} to repoint"))),
+        };
+        repoint(BASE_MAP, texture)?;
+        // The donor's gloss map is white, so a matte surface takes the shipped black texture instead.
+        if look.glossiness <= 0.0 {
+            repoint(GLOSS_MAP, "textures/default/default_black_c.texture")?;
+        }
+        for (hash, values) in [
+            (GLOSSINESS, vec![look.glossiness]),
+            (SPEC_REFLECTANCE, vec![0.04 * look.glossiness]),
+            (DIFFUSE_COLOR, look.tint.to_vec()),
+        ] {
+            serialized.constants.retain(|c| c.name_hash != hash);
+            serialized.constants.push(MaterialConstant { name_hash: hash, values });
+        }
+        let mut header = MaterialHeaderSection::parse(&section(&self.dat1, TAG_MATERIAL_HEADER)?)?;
+        header.alpha = look.opacity;
+        match look.alpha {
+            AlphaKind::Opaque => {}
+            AlphaKind::Cutout(threshold) => header.alpha_test = threshold,
+            AlphaKind::Blend => header.flags |= flags::ALPHA_BLEND,
+        }
+        // Skips the shadow pass, as the shipped gbl_gp_transparent_01 does.
+        if !look.cast_shadows || look.alpha == AlphaKind::Blend {
+            header.flags = (header.flags | flags::SKIP_SHADOW_CAST) & !flags::CAST_OPAQUE_SHADOW;
+        }
+        if look.double_sided {
+            header.flags |= flags::DOUBLE_SIDED;
+        }
+        self.dat1.set_section_data(TAG_MATERIAL_SERIALIZED, serialized.build())?;
+        self.dat1.set_section_data(TAG_MATERIAL_HEADER, header.build())
+    }
+
+    /// Points sampler slot `hash` at `texture`.
+    pub fn set_sampler(&mut self, hash: u32, texture: &str) -> Result<()> {
+        let data = self.dat1.get_section_data(TAG_MATERIAL_SERIALIZED).map(|s| s.to_vec()).ok_or(ToolkitError::SectionNotFound(TAG_MATERIAL_SERIALIZED))?;
+        let mut serialized = MaterialSerialized::parse(&data)?;
+        let slot = serialized.samplers.iter_mut().find(|s| s.name_hash == hash)
+            .ok_or_else(|| ToolkitError::Parse(format!("the material has no sampler {hash:08X} to repoint")))?;
+        slot.path = texture.to_string();
+        self.dat1.set_section_data(TAG_MATERIAL_SERIALIZED, serialized.build())
+    }
+
     pub fn save(&mut self) -> Vec<u8> {
         let body = self.dat1.save();
         match &self.wrapper {
@@ -114,7 +193,11 @@ impl MaterialFile {
 
 /// Material header flag bits (`m_Flags`). Bits 25-31 are runtime-only and clear on disk.
 pub mod flags {
+    pub const DOUBLE_SIDED: u32 = 1 << 0;
     pub const ACCURATE_ALPHA_VELOCITY: u32 = 1 << 1;
+    pub const SKIP_SHADOW_CAST: u32 = 1 << 2;
+    pub const CAST_OPAQUE_SHADOW: u32 = 1 << 4;
+    pub const ALPHA_BLEND: u32 = 1 << 8;
     pub const FUR: u32 = 1 << 14;
     pub const WATER: u32 = 1 << 23;
     pub const RUNTIME_MASK: u32 = !0 << 25;

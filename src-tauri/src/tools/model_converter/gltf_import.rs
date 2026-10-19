@@ -381,7 +381,7 @@ fn name_hint(name: &str) -> Option<usize> {
 }
 
 /// `body.001` -> `body`: Blender's suffix for duplicated names.
-fn strip_blender_suffix(name: &str) -> &str {
+pub(crate) fn strip_blender_suffix(name: &str) -> &str {
     match name.rsplit_once('.') {
         Some((base, n)) if n.len() == 3 && n.bytes().all(|c| c.is_ascii_digit()) => base,
         _ => name,
@@ -1234,6 +1234,31 @@ pub fn import_gltf(model: &mut ModelFile, gltf: &GltfModel, opts: &ImportOptions
     if geometry_changed {
         relink_lod_proxies(model)?;
         sync_lod_subset_bits(&mut model.dat1)?;
+        if src.looks.looks.iter().any(|l| l.lods.iter().skip(1).any(|r| r.count > 0 && r.start != l.lods[0].start)) {
+            report.warn("LODs 1-5 now draw the LOD 0 subsets; the model's lower-detail meshes are no longer used".into());
+        }
+    }
+
+    let built = model.dat1.get_section_data(TAG_BUILT);
+    let pos_scale = built.map(get_position_scale).unwrap_or(src.pos_scale);
+    let uv_scale = built.map(get_uv_scale).unwrap_or(src.uv_scale);
+    if pos_scale != src.pos_scale {
+        // Spline CVs are quantised at twice the position quantum and are not rewritten.
+        if !opts.strip_hair.unwrap_or(false) && model.dat1.get_section_data(TAG_SPLINE_CVS).is_some() {
+            return Err(err(format!(
+                "the mesh reaches past this model's ±{} m and its hair strands cannot be rescaled; strip the hair or use another base model",
+                src.pos_scale * 32768.0
+            )));
+        }
+        report.warn(format!(
+            "position range grown from ±{} m to ±{} m; vertices now snap to {:.2} mm",
+            src.pos_scale * 32768.0,
+            pos_scale * 32768.0,
+            pos_scale * 1000.0
+        ));
+    }
+    if uv_scale != src.uv_scale {
+        report.warn(format!("UV range grown from ±{} to ±{}", src.uv_scale * 32768.0, uv_scale * 32768.0));
     }
 
     if let Some(set) = morph_set {
