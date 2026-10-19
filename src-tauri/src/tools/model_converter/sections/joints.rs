@@ -85,6 +85,13 @@ impl JointsTransform {
         Ok(Self { matrixes34: m34, matrixes44: m44 })
     }
 
+    pub fn save(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.matrixes34.iter().flatten().flat_map(|f| f.to_le_bytes()).collect();
+        out.resize(out.len().next_multiple_of(64), 0);
+        out.extend(self.matrixes44.iter().flatten().flat_map(|f| f.to_le_bytes()));
+        out
+    }
+
     pub fn get_scale(&self, index: usize) -> (f32, f32, f32) {
         let m = &self.matrixes34[index];
         (m[0], m[1], m[2])
