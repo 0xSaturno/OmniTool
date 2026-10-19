@@ -14,7 +14,7 @@
 //!
 //!   * the plug array is tiled exactly by the out- and var-plug slices;
 //!   * `+0x04` of every out-plug row is a valid `Zone Script Actions` row, and
-//!     counting inbound edges that way reproduces every node's `in_plug_count`;
+//!     counting inbound edges that way reproduces every node's `in_degree`;
 //!   * `+0x08` of every var-plug row is `crc32("In")` or `crc32("Out")`, and
 //!     (read as the plug on the *variable*, so inverted from the node's point of
 //!   * `Zone Script Vars` divides by 32 and every var-plug index is in range;
@@ -28,10 +28,10 @@
 use byteorder::{ByteOrder, LE};
 use omnitool_lib::core::crc32;
 use omnitool_lib::core::level::{self, LevelIndex};
-use omnitool_lib::core::zone::{Zone, NO_PLUG, T_SCRIPT_ACTIONS, T_SCRIPT_PLUGS, T_SCRIPT_PRIUSES};
+use omnitool_lib::core::zone::{Zone, NO_PLUG, TAG_SCRIPT_ACTIONS, TAG_SCRIPT_PLUGS, TAG_SCRIPT_PRIUSES};
 use omnitool_lib::core::zone_script::{
-    self, ScriptGraph, NODE_PLUGS, PLUG_NAMES, T_SCRIPT_HASHES,
-    T_SCRIPT_STRINGS, T_SCRIPT_STRING_HASHES, T_SCRIPT_VARS, VAR_ROW,
+    self, ScriptGraph, NODE_PLUGS, PLUG_NAMES, TAG_SCRIPT_HASHES,
+    TAG_SCRIPT_STRINGS, TAG_SCRIPT_STRING_HASHES, TAG_SCRIPT_VARS, VAR_ROW,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -133,7 +133,7 @@ fn survey(index: &LevelIndex) -> usize {
     let mut small: Vec<(usize, usize, String)> = Vec::new();
 
     let table: HashMap<&str, ()> = NODE_PLUGS.iter().map(|p| (p.0, ())).collect();
-    // uid vs graph_uid: how prefab instancing shows up in the flattened zone.
+    // uid vs template_id: how prefab instancing shows up in the flattened zone.
     let mut uid_eq_graph = 0usize;
     let mut uid_eq_graph_bit63 = 0usize;
     let mut uid_other = 0usize;
@@ -185,17 +185,17 @@ fn survey(index: &LevelIndex) -> usize {
 
         let mut by_graph: BTreeMap<u64, usize> = BTreeMap::new();
         for n in &g.nodes {
-            *by_graph.entry(n.graph_uid).or_insert(0) += 1;
+            *by_graph.entry(n.template_id).or_insert(0) += 1;
             const B63: u64 = 1 << 63;
-            if n.uid & B63 != 0 {
+            if n.node_id & B63 != 0 {
                 uid_bit63 += 1;
             }
-            if n.graph_uid & B63 != 0 {
+            if n.template_id & B63 != 0 {
                 graph_bit63 += 1;
             }
-            if n.uid == n.graph_uid {
+            if n.node_id == n.template_id {
                 uid_eq_graph += 1;
-            } else if n.uid == n.graph_uid ^ B63 {
+            } else if n.node_id == n.template_id ^ B63 {
                 uid_eq_graph_bit63 += 1;
             } else {
                 uid_other += 1;
@@ -256,14 +256,14 @@ fn survey(index: &LevelIndex) -> usize {
         }
 
         // ---- raw invariants ---------------------------------------------------
-        let act = zone.dat1.get_section_data(T_SCRIPT_ACTIONS).unwrap_or(&[]);
+        let act = zone.dat1.get_section_data(TAG_SCRIPT_ACTIONS).unwrap_or(&[]);
         let n_act = act.len() / 40;
-        let plugs = zone.dat1.get_section_data(T_SCRIPT_PLUGS).unwrap_or(&[]);
+        let plugs = zone.dat1.get_section_data(TAG_SCRIPT_PLUGS).unwrap_or(&[]);
         let n_plug = plugs.len() / 12;
-        let vars = zone.dat1.get_section_data(T_SCRIPT_VARS).unwrap_or(&[]);
+        let vars = zone.dat1.get_section_data(TAG_SCRIPT_VARS).unwrap_or(&[]);
         let n_var = vars.len() / VAR_ROW;
-        let priuses = zone.dat1.get_section_data(T_SCRIPT_PRIUSES).unwrap_or(&[]);
-        if zone.dat1.get_section_data(T_SCRIPT_HASHES).is_some() {
+        let priuses = zone.dat1.get_section_data(TAG_SCRIPT_PRIUSES).unwrap_or(&[]);
+        if zone.dat1.get_section_data(TAG_SCRIPT_HASHES).is_some() {
             zone_script_hashes_present += 1;
         }
         if vars.is_empty() || vars.len() % VAR_ROW == 0 {
@@ -312,10 +312,10 @@ fn survey(index: &LevelIndex) -> usize {
         }
 
         // Zone Script String Hashes parallel to Zone Script Strings
-        let strs = zone.dat1.get_section_data(T_SCRIPT_STRINGS).unwrap_or(&[]);
+        let strs = zone.dat1.get_section_data(TAG_SCRIPT_STRINGS).unwrap_or(&[]);
         let sh = zone
             .dat1
-            .get_section_data(T_SCRIPT_STRING_HASHES)
+            .get_section_data(TAG_SCRIPT_STRING_HASHES)
             .unwrap_or(&[]);
         if sh.len() == strs.len() {
             let table = zone_script::string_table(&zone);
@@ -341,7 +341,7 @@ fn survey(index: &LevelIndex) -> usize {
     println!();
     println!("CONNECTIVITY");
     println!(
-        "  in_plug_count == rebuilt inbound edges   {in_ok}/{} ({:.4}%)  mismatches {in_bad}",
+        "  in_degree == rebuilt inbound edges   {in_ok}/{} ({:.4}%)  mismatches {in_bad}",
         in_ok + in_bad,
         100.0 * in_ok as f64 / (in_ok + in_bad).max(1) as f64
     );
@@ -407,18 +407,18 @@ fn survey(index: &LevelIndex) -> usize {
     println!();
     println!("NODE IDENTITY (uid vs graph uid)");
     println!(
-        "  uid == graph_uid                       {uid_eq_graph}/{nodes} ({:.2}%)",
+        "  uid == template_id                       {uid_eq_graph}/{nodes} ({:.2}%)",
         100.0 * uid_eq_graph as f64 / nodes.max(1) as f64
     );
     println!(
-        "  uid == graph_uid with bit 63 flipped   {uid_eq_graph_bit63}/{nodes} ({:.2}%)",
+        "  uid == template_id with bit 63 flipped   {uid_eq_graph_bit63}/{nodes} ({:.2}%)",
         100.0 * uid_eq_graph_bit63 as f64 / nodes.max(1) as f64
     );
     println!(
         "  unrelated                              {uid_other}/{nodes} ({:.2}%)",
         100.0 * uid_other as f64 / nodes.max(1) as f64
     );
-    println!("  uid has bit 63 (placed) {uid_bit63}/{nodes}, graph_uid has it {graph_bit63}/{nodes}");
+    println!("  uid has bit 63 (placed) {uid_bit63}/{nodes}, template_id has it {graph_bit63}/{nodes}");
     let reuse_1 = graph_reuse.get(&1).copied().unwrap_or(0);
     let reuse_n: usize = graph_reuse.iter().filter(|(k, _)| **k > 1).map(|(_, v)| *v).sum();
     println!(
@@ -451,7 +451,7 @@ fn survey(index: &LevelIndex) -> usize {
     }
 
     if in_bad != 0 {
-        println!("FAIL: {in_bad} nodes whose in_plug_count does not match the rebuilt edges");
+        println!("FAIL: {in_bad} nodes whose in_degree does not match the rebuilt edges");
         fails += 1;
     }
     if dir_bad_word != 0 {
@@ -514,15 +514,15 @@ fn layout(index: &LevelIndex) {
     for z in index.zones.iter() {
         let Ok(raw) = index.extract(z.id) else { continue };
         let Ok(zone) = Zone::parse(&raw) else { continue };
-        let Some(act) = zone.dat1.get_section_data(T_SCRIPT_ACTIONS) else { continue };
+        let Some(act) = zone.dat1.get_section_data(TAG_SCRIPT_ACTIONS) else { continue };
         if act.is_empty() {
             continue;
         }
         zones_with_scripts += 1;
         let n_act = act.len() / 40;
         actions += n_act;
-        let plugs = zone.dat1.get_section_data(T_SCRIPT_PLUGS).unwrap_or(&[]);
-        let vars = zone.dat1.get_section_data(T_SCRIPT_VARS).unwrap_or(&[]);
+        let plugs = zone.dat1.get_section_data(TAG_SCRIPT_PLUGS).unwrap_or(&[]);
+        let vars = zone.dat1.get_section_data(TAG_SCRIPT_VARS).unwrap_or(&[]);
 
         let mut declared = vec![0u32; n_act];
         let mut seen = [vec![0u32; n_act], vec![0u32; n_act], vec![0u32; n_act]];
@@ -586,7 +586,7 @@ fn layout(index: &LevelIndex) {
     for k in 0..3 {
         println!("  +0x{:02X}: {}/{}", k * 4, word_named[k], out_rows);
     }
-    println!("in_plug_count reconstruction, per candidate target-index word");
+    println!("in_degree reconstruction, per candidate target-index word");
     for k in 0..3 {
         println!("  +0x{:02X}: {}/{} ({:.4}%)", k * 4, inplug_match[k], inplug_total,
             100.0 * inplug_match[k] as f64 / inplug_total.max(1) as f64);
@@ -617,7 +617,7 @@ fn orient(index: &LevelIndex) {
         let Ok(raw) = index.extract(z.id) else { continue };
         let Ok(zone) = Zone::parse(&raw) else { continue };
         let Some(g) = ScriptGraph::parse(&zone) else { continue };
-        let vars = zone.dat1.get_section_data(T_SCRIPT_VARS).unwrap_or(&[]);
+        let vars = zone.dat1.get_section_data(TAG_SCRIPT_VARS).unwrap_or(&[]);
 
         for e in &g.edges {
             let src = g.nodes[e.from_node as usize].type_name.as_deref();
@@ -692,17 +692,17 @@ fn varlayout(index: &LevelIndex) {
     for z in index.zones.iter() {
         let Ok(raw) = index.extract(z.id) else { continue };
         let Ok(zone) = Zone::parse(&raw) else { continue };
-        let Some(act) = zone.dat1.get_section_data(T_SCRIPT_ACTIONS) else { continue };
+        let Some(act) = zone.dat1.get_section_data(TAG_SCRIPT_ACTIONS) else { continue };
         if act.is_empty() {
             continue;
         }
-        let vars = zone.dat1.get_section_data(T_SCRIPT_VARS).unwrap_or(&[]);
+        let vars = zone.dat1.get_section_data(TAG_SCRIPT_VARS).unwrap_or(&[]);
         if vars.is_empty() {
             continue;
         }
         let n_str = zone
             .dat1
-            .get_section_data(T_SCRIPT_STRINGS)
+            .get_section_data(TAG_SCRIPT_STRINGS)
             .map(|s| s.len() / 4)
             .unwrap_or(0);
         for row in vars.chunks_exact(VAR_ROW) {

@@ -92,20 +92,20 @@ fn main() {
     // row count has to equal what the header declares.
     let h = &level.built;
     let strides: &[(u32, &str, usize, i32)] = &[
-        (la::T_REGIONS_BUILT, "regions built", la::REGION_STRIDE, h.region_count),
-        (la::T_ZONES_BUILT, "zones built", la::ZONE_STRIDE, h.zone_count),
-        (la::T_LINKS_BUILT, "links built", la::LINK_STRIDE, h.named_link_count),
+        (la::TAG_REGIONS_BUILT, "regions built", la::REGION_STRIDE, h.region_count),
+        (la::TAG_ZONES_BUILT, "zones built", la::ZONE_STRIDE, h.zone_count),
+        (la::TAG_LINKS_BUILT, "links built", la::LINK_STRIDE, h.named_link_count),
         (
-            la::T_REGION_LOD_BUILT,
+            la::TAG_REGION_LOD_BUILT,
             "region LOD controls",
             la::REGION_LOD_STRIDE,
             h.lod_control_count,
         ),
-        (la::T_ZONE_REFERENCES, "zone references", 2, h.zone_ref_count),
-        (la::T_REGION_NAMES, "region names", 4, h.region_count),
-        (la::T_ZONE_NAMES, "zone names", 4, h.zone_count),
-        (la::T_LINK_NAMES, "link names", 4, h.named_link_count),
-        (la::T_REGION_GAME_STRUCT, "game struct table", 16, h.game_data_count),
+        (la::TAG_ZONE_REFERENCES, "zone references", 2, h.zone_ref_count),
+        (la::TAG_REGION_NAMES, "region names", 4, h.region_count),
+        (la::TAG_ZONE_NAMES, "zone names", 4, h.zone_count),
+        (la::TAG_LINK_NAMES, "link names", 4, h.named_link_count),
+        (la::TAG_REGION_GAME_STRUCT, "game struct table", 16, h.game_data_count),
     ];
     println!("\n== record strides vs the header counts ==");
     for (tag, name, stride, want) in strides {
@@ -441,15 +441,15 @@ fn main() {
     // -------------------------------------------------------- region game data
     println!("\n== region game data ==");
     match (
-        level.dat1.get_section_data(la::T_REGION_GAME_STRUCT),
-        level.dat1.get_section_data(la::T_REGION_GAME_DATA),
+        level.dat1.get_section_data(la::TAG_REGION_GAME_STRUCT),
+        level.dat1.get_section_data(la::TAG_REGION_GAME_DATA),
     ) {
         (Some(t), Some(p)) => {
             let payload_off = level
                 .dat1
                 .sections
                 .iter()
-                .find(|s| s.tag == la::T_REGION_GAME_DATA)
+                .find(|s| s.tag == la::TAG_REGION_GAME_DATA)
                 .map(|s| s.offset)
                 .unwrap_or(0);
             println!(
@@ -595,7 +595,7 @@ fn main() {
     }
     let raw_len = level
         .dat1
-        .get_section_data(la::T_HIBERNATE_RAW_DATA)
+        .get_section_data(la::TAG_HIBERNATE_RAW_DATA)
         .map(|s| s.len())
         .unwrap_or(0);
     let model_objs: usize = level.hibernate_zones.iter().map(|z| z.model_objects.len()).sum();
@@ -1011,21 +1011,21 @@ fn heuristic_region_key(path: &str) -> String {
 
 fn section_role(tag: u32) -> Option<&'static str> {
     Some(match tag {
-        la::T_LEVEL_BUILT => "Level Built",
-        la::T_REGIONS_BUILT => "Level Regions Built",
-        la::T_ZONES_BUILT => "Level Zones Built",
-        la::T_LINKS_BUILT => "links built (role fixed by size)",
-        la::T_REGION_LOD_BUILT => "region LOD controls (role fixed by size)",
-        la::T_ZONE_REFERENCES => "zone references (role fixed by size)",
-        la::T_REGION_NAMES => "Level Region Names",
-        la::T_ZONE_NAMES => "Level Zone Names",
-        la::T_LINK_NAMES => "Level Link Names",
-        la::T_REGION_GAME_STRUCT => "game struct table (role fixed by size)",
-        la::T_REGION_GAME_DATA => "game struct payload (role fixed by size)",
-        la::T_HIBERNATE_MODEL_NAMES => "Level Hibernate Model Names",
-        la::T_HIBERNATE_VFX_NAMES => "Level Hibernate VFX Names",
-        la::T_HIBERNATE_RAW_DATA => "Level Hibernate Raw Data",
-        la::T_HIBERNATE_DATA_DESC => "Level Hibernate Data Desc",
+        la::TAG_LEVEL_BUILT => "Level Built",
+        la::TAG_REGIONS_BUILT => "Level Regions Built",
+        la::TAG_ZONES_BUILT => "Level Zones Built",
+        la::TAG_LINKS_BUILT => "links built (role fixed by size)",
+        la::TAG_REGION_LOD_BUILT => "region LOD controls (role fixed by size)",
+        la::TAG_ZONE_REFERENCES => "zone references (role fixed by size)",
+        la::TAG_REGION_NAMES => "Level Region Names",
+        la::TAG_ZONE_NAMES => "Level Zone Names",
+        la::TAG_LINK_NAMES => "Level Link Names",
+        la::TAG_REGION_GAME_STRUCT => "game struct table (role fixed by size)",
+        la::TAG_REGION_GAME_DATA => "game struct payload (role fixed by size)",
+        la::TAG_HIBERNATE_MODEL_NAMES => "Level Hibernate Model Names",
+        la::TAG_HIBERNATE_VFX_NAMES => "Level Hibernate VFX Names",
+        la::TAG_HIBERNATE_RAW_DATA => "Level Hibernate Raw Data",
+        la::TAG_HIBERNATE_DATA_DESC => "Level Hibernate Data Desc",
         _ => return None,
     })
 }

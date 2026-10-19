@@ -34,8 +34,8 @@ use crate::core::ddl_schema::{self, SchemaDb};
 use crate::core::error::ToolkitError;
 use crate::core::level::{self, LevelIndex};
 use crate::core::prius::{
-    self, Edit, NameCtx, PValue, PriusBlob, PriusTable, PriusView, T_ACTOR_PRIUS_POOL,
-    T_SCRIPT_PRIUSES,
+    self, Edit, NameCtx, PValue, PriusBlob, PriusTable, PriusView, TAG_ACTOR_PRIUS_POOL,
+    TAG_SCRIPT_PRIUSES,
 };
 use crate::core::zone::Zone;
 
@@ -207,7 +207,7 @@ pub async fn prius_zone_summary(
         pool_bytes: table.pool.len(),
         script_prius_bytes: zone
             .dat1
-            .get_section_data(T_SCRIPT_PRIUSES)
+            .get_section_data(TAG_SCRIPT_PRIUSES)
             .map(|s| s.len())
             .unwrap_or(0),
         components,
@@ -324,7 +324,7 @@ pub async fn prius_script_sheet(
     })?;
     let pool = zone
         .dat1
-        .get_section_data(T_SCRIPT_PRIUSES)
+        .get_section_data(TAG_SCRIPT_PRIUSES)
         .ok_or_else(|| ToolkitError::Parse("zone has no Zone Script Priuses".into()))?;
     let lo = a.prius_offset as usize;
     let hi = lo
@@ -339,16 +339,16 @@ pub async fn prius_script_sheet(
         row: action_index,
         blob_offset: lo,
         blob_size: hi - lo,
-        view: prius::view(&action, a.uid, (hi - lo) as u32, &b.tree),
+        view: prius::view(&action, a.node_id, (hi - lo) as u32, &b.tree),
     })
 }
 
 /// `Zone Script Strings`: a `u32[]` of string offsets the action rows index.
-const T_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
+const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
 
 fn script_action_name(zone: &Zone, a: &crate::core::zone::ScriptAction) -> String {
-    let strings = zone.dat1.get_section_data(T_SCRIPT_STRINGS).unwrap_or(&[]);
-    let i = a.action_name_index as usize;
+    let strings = zone.dat1.get_section_data(TAG_SCRIPT_STRINGS).unwrap_or(&[]);
+    let i = a.type_index as usize;
     if i * 4 + 4 <= strings.len() {
         let so = u32::from_le_bytes(strings[i * 4..i * 4 + 4].try_into().unwrap());
         zone.dat1.get_string(so).unwrap_or_default()
@@ -429,7 +429,7 @@ pub async fn prius_plan_edit(
         let Some(a) = zone.actions.get(row) else {
             return Ok(fail(format!("no script action {row}")));
         };
-        let Some(pool) = zone.dat1.get_section_data(T_SCRIPT_PRIUSES) else {
+        let Some(pool) = zone.dat1.get_section_data(TAG_SCRIPT_PRIUSES) else {
             return Ok(fail("zone has no Zone Script Priuses"));
         };
         let lo = a.prius_offset as usize;
@@ -440,7 +440,7 @@ pub async fn prius_plan_edit(
         (
             pool[lo..hi].to_vec(),
             lo,
-            T_SCRIPT_PRIUSES,
+            TAG_SCRIPT_PRIUSES,
             script_action_name(&zone, a),
             0u64,
         )
@@ -455,7 +455,7 @@ pub async fn prius_plan_edit(
         (
             bytes.to_vec(),
             table.blob_at(row).unwrap_or(0),
-            T_ACTOR_PRIUS_POOL,
+            TAG_ACTOR_PRIUS_POOL,
             r.component.clone(),
             r.type_uid,
         )

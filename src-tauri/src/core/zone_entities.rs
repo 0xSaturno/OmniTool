@@ -34,18 +34,18 @@ use crate::core::zone::{GeoRef, Zone};
 
 // Section tags used here. All five are hash-verified names in
 // `crate::core::section_names`.
-pub const T_SCENE_OBJECTS: u32 = 0x06AB_CAB2;
-pub const T_VOLUMES: u32 = 0xBDAB_2B0D;
-pub const T_DECALS: u32 = 0xBCF4_3558;
-pub const T_VFX_INSTS: u32 = 0x927C_4EC3;
-pub const T_VFX_NAMES: u32 = 0x3D5E_2FEF;
+pub const TAG_SCENE_OBJECTS: u32 = 0x06AB_CAB2;
+pub const TAG_VOLUMES: u32 = 0xBDAB_2B0D;
+pub const TAG_DECALS: u32 = 0xBCF4_3558;
+pub const TAG_VFX_INSTS: u32 = 0x927C_4EC3;
+pub const TAG_VFX_NAMES: u32 = 0x3D5E_2FEF;
 
 /// `Zone Nav Built Container` — only ever in a `containernavdata.zone`.
-pub const T_NAV_CONTAINER: u32 = 0x04C1_9E69;
+pub const TAG_NAV_CONTAINER: u32 = 0x04C1_9E69;
 /// `Zone Nav Built Tile Cache` — the Detour `dtTileCache` layer blobs.
-pub const T_NAV_TILECACHE: u32 = 0xA903_D8F1;
+pub const TAG_NAV_TILECACHE: u32 = 0xA903_D8F1;
 /// `Zone Nav Built Unit` — the group grid and the walkable triangle meshes.
-pub const T_NAV_UNIT: u32 = 0xD124_430B;
+pub const TAG_NAV_UNIT: u32 = 0xD124_430B;
 
 const BASE: usize = 0x80;
 
@@ -130,7 +130,7 @@ fn owner(zone: &Zone, scene_offset: u32) -> (i32, String, String) {
 }
 
 fn scene(zone: &Zone) -> &[u8] {
-    zone.dat1.get_section_data(T_SCENE_OBJECTS).unwrap_or(&[])
+    zone.dat1.get_section_data(TAG_SCENE_OBJECTS).unwrap_or(&[])
 }
 
 /// The object-space bounding sphere every scene object carries at +0x40.
@@ -641,7 +641,7 @@ pub struct VfxEntity {
 
 /// `Zone Visual Effect Names`, a struct-of-arrays `{u64 id[n]}{u32 strofs[n]}`.
 pub fn vfx_names(zone: &Zone) -> (Vec<u64>, Vec<String>) {
-    let Some(sec) = zone.dat1.get_section_data(T_VFX_NAMES) else {
+    let Some(sec) = zone.dat1.get_section_data(TAG_VFX_NAMES) else {
         return (Vec::new(), Vec::new());
     };
     let n = sec.len() / 12;
@@ -887,7 +887,7 @@ pub struct NavContainer {
 }
 
 pub fn nav_container(zone: &Zone) -> Option<NavContainer> {
-    let c = zone.dat1.get_section_data(T_NAV_CONTAINER)?;
+    let c = zone.dat1.get_section_data(TAG_NAV_CONTAINER)?;
     if c.len() < 0x20 {
         return None;
     }
@@ -1040,7 +1040,7 @@ pub struct NavMesh {
 }
 
 pub fn nav_unit(zone: &Zone) -> Option<NavUnit> {
-    let u = zone.dat1.get_section_data(T_NAV_UNIT)?;
+    let u = zone.dat1.get_section_data(TAG_NAV_UNIT)?;
     if u.len() < 0x20 {
         return None;
     }
@@ -1124,7 +1124,7 @@ pub fn nav_unit(zone: &Zone) -> Option<NavUnit> {
 /// Build one merged walkable mesh from a unit. `layer` selects a nav layer, or
 /// `None` merges them all.
 pub fn nav_mesh(zone: &Zone, unit: &NavUnit, layer: Option<usize>) -> NavMesh {
-    let Some(u) = zone.dat1.get_section_data(T_NAV_UNIT) else {
+    let Some(u) = zone.dat1.get_section_data(TAG_NAV_UNIT) else {
         return NavMesh::default();
     };
     let mut out = NavMesh::default();
@@ -1203,7 +1203,7 @@ const TC_HEADER: usize = 56;
 /// Walk the tile cache. Returns the tiles and the number of layer terminators,
 /// which equals the unit's nav layer count.
 pub fn nav_tiles(zone: &Zone) -> (Vec<NavTile>, usize) {
-    let Some(tc) = zone.dat1.get_section_data(T_NAV_TILECACHE) else {
+    let Some(tc) = zone.dat1.get_section_data(TAG_NAV_TILECACHE) else {
         return (Vec::new(), 0);
     };
     let mut out = Vec::new();
@@ -1248,8 +1248,8 @@ pub fn nav_tiles(zone: &Zone) -> (Vec<NavTile>, usize) {
 
 /// Does this zone hold navigation data rather than scene objects?
 pub fn has_nav(zone: &Zone) -> bool {
-    zone.dat1.get_section_data(T_NAV_UNIT).is_some()
-        || zone.dat1.get_section_data(T_NAV_CONTAINER).is_some()
+    zone.dat1.get_section_data(TAG_NAV_UNIT).is_some()
+        || zone.dat1.get_section_data(TAG_NAV_CONTAINER).is_some()
 }
 
 // ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ use std::sync::Mutex;
 
 use omnitool_lib::core::crc32;
 use omnitool_lib::core::level;
-use omnitool_lib::core::zone::{Zone, T_SCENE_OBJECTS};
+use omnitool_lib::core::zone::{Zone, TAG_SCENE_OBJECTS};
 use omnitool_lib::core::zone_lighting as zl;
 use rayon::prelude::*;
 
@@ -490,7 +490,7 @@ fn main() {
                 }
             }
 
-            let scene = zone.dat1.get_section_data(T_SCENE_OBJECTS).unwrap_or(&[]);
+            let scene = zone.dat1.get_section_data(TAG_SCENE_OBJECTS).unwrap_or(&[]);
             let lights = zl::read_zone_lights(&zone);
             if !lights.is_empty() {
                 acc.zones_with_lights += 1;
@@ -509,7 +509,7 @@ fn main() {
             // Raw offsets, so a decode that was rejected still gets counted.
             let raw_offsets: Vec<u32> = zone
                 .dat1
-                .get_section_data(zl::T_LIGHTS)
+                .get_section_data(zl::TAG_LIGHTS)
                 .map(|s| {
                     s.chunks_exact(4)
                         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -631,9 +631,9 @@ fn main() {
 
             // ---- lighting-condition blocks --------------------------------
             for tag in [
-                zl::T_ATMOSPHERE_NAME,
-                zl::T_LEVEL_LIGHT_NAME,
-                zl::T_LIGHT_BIN_ASSET,
+                zl::TAG_ATMOSPHERE_NAME,
+                zl::TAG_LEVEL_LIGHT_NAME,
+                zl::TAG_LIGHT_BIN_ASSET,
             ] {
                 if let Some(b) = zl::read_condition_block(&zone.dat1, tag, 1) {
                     *acc.cond_blocks.entry((tag, b.condition_count)).or_default() += 1;
@@ -642,7 +642,7 @@ fn main() {
                         h.copy_from_slice(&b.condition_hashes);
                         acc.cond_hashes.entry(tag).or_insert(h);
                     }
-                    if tag == zl::T_ATMOSPHERE_NAME {
+                    if tag == zl::TAG_ATMOSPHERE_NAME {
                         if b.uniform {
                             acc.atmos_uniform += 1;
                         } else {
@@ -709,7 +709,7 @@ fn main() {
                             }
                         }
                     }
-                    if tag == zl::T_LIGHT_BIN_ASSET && acc.lightbin_examples.len() < 10 {
+                    if tag == zl::TAG_LIGHT_BIN_ASSET && acc.lightbin_examples.len() < 10 {
                         let names: Vec<String> = b
                             .per_condition
                             .iter()
@@ -729,7 +729,7 @@ fn main() {
             if !probes.is_empty() {
                 acc.envprobe_zones += 1;
                 acc.envprobes += probes.len();
-                if let Some(sec) = zone.dat1.get_section_data(zl::T_ENVPROBE_LIST) {
+                if let Some(sec) = zone.dat1.get_section_data(zl::TAG_ENVPROBE_LIST) {
                     acc.envprobe_list_tail += sec.len() % zl::ENV_PROBE_ROW_LEN;
                 }
                 let assets = zl::read_env_probe_assets(&zone.dat1);
@@ -769,11 +769,11 @@ fn main() {
                 }
                 if let Some(b) = assets {
                     *acc.cond_blocks
-                        .entry((zl::T_ENVPROBE_ASSETS, b.per_condition.condition_count))
+                        .entry((zl::TAG_ENVPROBE_ASSETS, b.per_condition.condition_count))
                         .or_default() += 1;
                 }
             }
-            if zone.dat1.get_section_data(zl::T_LIGHT_GRID_POSITIONS).is_some() {
+            if zone.dat1.get_section_data(zl::TAG_LIGHT_GRID_POSITIONS).is_some() {
                 acc.lgpos_zones += 1;
             }
         }
@@ -1223,7 +1223,7 @@ fn zonelightbin_pass(idx: &level::LevelIndex, limit: usize) {
             *tag_hist.entry(s.tag).or_default() += 1;
         }
         let rows_hint = dat1
-            .get_section_data(zl::T_LIGHT_BIN_UNNAMED)
+            .get_section_data(zl::TAG_LIGHT_BIN_UNNAMED)
             .map(|t| t.len() / 12)
             .unwrap_or(0);
         // The sample data lives in a SECOND DAT1 further into the file; the
@@ -1282,7 +1282,7 @@ fn zonelightbin_pass(idx: &level::LevelIndex, limit: usize) {
 "));
         }
         // Per-block offsets, when the file carries them.
-        if let Some((_, o, sz)) = sec2.iter().find(|(t, _, _)| *t == zl::T_LIGHT_GRID_DATA_OFFSETS) {
+        if let Some((_, o, sz)) = sec2.iter().find(|(t, _, _)| *t == zl::TAG_LIGHT_GRID_DATA_OFFSETS) {
             let a = sec2_at + *o as usize;
             let b = (a + *sz as usize).min(body.len());
             if a < b {
@@ -1290,7 +1290,7 @@ fn zonelightbin_pass(idx: &level::LevelIndex, limit: usize) {
             }
         }
         if header_dump.is_none() {
-            if let Some(h) = dat1.get_section_data(zl::T_LIGHT_BIN_HEADER_DATA) {
+            if let Some(h) = dat1.get_section_data(zl::TAG_LIGHT_BIN_HEADER_DATA) {
                 let take = h.len().min(96);
                 let hex: Vec<String> = h[..take].iter().map(|b| format!("{b:02X}")).collect();
                 header_dump = Some(format!(
@@ -1304,7 +1304,7 @@ fn zonelightbin_pass(idx: &level::LevelIndex, limit: usize) {
         }
         let Some((_, so, ssz)) = sec2
             .iter()
-            .find(|(t, _, _)| *t == zl::T_LIGHT_GRID_SAMPLE_DATA)
+            .find(|(t, _, _)| *t == zl::TAG_LIGHT_GRID_SAMPLE_DATA)
             .copied()
         else {
             continue;
@@ -1443,7 +1443,7 @@ fn zonelightbin_pass(idx: &level::LevelIndex, limit: usize) {
         let Ok(d) = omnitool_lib::core::dat1::Dat1::parse(&raw[36..36 + b0]) else {
             continue;
         };
-        let Some(tbl) = d.get_section_data(zl::T_LIGHT_BIN_UNNAMED) else {
+        let Some(tbl) = d.get_section_data(zl::TAG_LIGHT_BIN_UNNAMED) else {
             continue;
         };
         if tbl.len() % 12 == 0 {

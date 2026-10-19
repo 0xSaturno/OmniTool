@@ -42,7 +42,7 @@
 //! 1. **Which word is the target node index.** `+0x04` is `< action row count`
 //!    on **254 172 of 254 172** out-plug rows; `+0x00` and `+0x08` on 0.
 //!    Stronger still, counting inbound edges per node with `+0x04` as the target
-//!    reproduces each node's own `in_plug_count` on **247 073 of 247 073**
+//!    reproduces each node's own `in_degree` on **247 073 of 247 073**
 //!    actions; using `+0x00` or `+0x08` instead matches only 53 294 (the nodes
 //!    whose in-count is 0). This is the connectivity, and it is derived, not
 //!    assumed: nothing in the file stores an inbound list.
@@ -106,8 +106,8 @@
 //!
 //! # Names
 //!
-//! A node's **type name** is stored in the zone: `action_name_index` indexes
-//! `Zone Script Strings` and `crc32` of that string equals `action_name_hash` on
+//! A node's **type name** is stored in the zone: `type_index` indexes
+//! `Zone Script Strings` and `crc32` of that string equals `type_hash` on
 //! 215 041 / 215 041 rows (measured in [`crate::core::zone`]) — so type names
 //! resolve at 100 % with no external list. 475 distinct type names ship.
 //!
@@ -129,16 +129,16 @@
 //! …). [`NODE_PLUGS`] has per-type plug tables for 396 of the 475 shipped type
 //! names, covering 182 438 / 247 073 nodes (73.84 %).
 //!
-//! # Node identity: `uid` vs `graph_uid`
+//! # Node identity: `uid` vs `template_id`
 //!
 //! Measured over all 247 073 nodes:
 //!
 //! * every node's `uid` has bit 63 set (247 073 / 247 073) — the engine's
-//! * `graph_uid` has bit 63 on only 127 058 (51.4 %);
-//! * `uid == graph_uid` on 30 523 (12.35 %), `uid == graph_uid ^ (1 << 63)` on
+//! * `template_id` has bit 63 on only 127 058 (51.4 %);
+//! * `uid == template_id` on 30 523 (12.35 %), `uid == template_id ^ (1 << 63)` on
 //!   28 669 (11.60 %), and they are unrelated on the remaining 187 881
-//!   (76.04 %). So `graph_uid` is a *separate* id, not a masked copy of the uid;
-//! * inside one zone, 92 759 `graph_uid`s are used by exactly one node and
+//!   (76.04 %). So `template_id` is a *separate* id, not a masked copy of the uid;
+//! * inside one zone, 92 759 `template_id`s are used by exactly one node and
 //!   20 584 by more than one — those are the repeated prefab placements. The
 //!   heaviest is one source node placed 305 times in
 //!   `i29_molonoth_gp.zone`.
@@ -154,20 +154,20 @@
 //! `prius_offset` / `prius_size` and leaves the DDL decode to the prius work.
 
 use crate::core::crc32;
-use crate::core::zone::{Zone, NO_PLUG, T_SCRIPT_ACTIONS, T_SCRIPT_PLUGS, T_SCRIPT_PRIUSES};
+use crate::core::zone::{Zone, NO_PLUG, TAG_SCRIPT_ACTIONS, TAG_SCRIPT_PLUGS, TAG_SCRIPT_PRIUSES};
 use byteorder::{ByteOrder, LE};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-/// `u32[]` of string-pool offsets; `action_name_index` and the var rows index it.
-pub const T_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
-/// `u32[]` of `crc32(string)`, parallel to [`T_SCRIPT_STRINGS`].
-pub const T_SCRIPT_STRING_HASHES: u32 = 0x80D2_9828;
+/// `u32[]` of string-pool offsets; `type_index` and the var rows index it.
+pub const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
+/// `u32[]` of `crc32(string)`, parallel to [`TAG_SCRIPT_STRINGS`].
+pub const TAG_SCRIPT_STRING_HASHES: u32 = 0x80D2_9828;
 /// 32-byte `ScriptVarBuilt` rows.
-pub const T_SCRIPT_VARS: u32 = 0xD86A_7934;
+pub const TAG_SCRIPT_VARS: u32 = 0xD86A_7934;
 /// In the engine's section-tag list but absent from every shipped zone.
-pub const T_SCRIPT_HASHES: u32 = 0xD266_157E;
+pub const TAG_SCRIPT_HASHES: u32 = 0xD266_157E;
 
 pub const ACTION_ROW: usize = 40;
 pub const PLUG_ROW: usize = 12;
@@ -325,18 +325,18 @@ pub struct ScriptEdge {
 pub struct ScriptNode {
     pub index: u32,
     #[serde(serialize_with = "ser_u64_str")]
-    pub uid: u64,
+    pub node_id: u64,
     /// The id of the node inside the source `.scriptgraph`, shared by every
     /// placement of the same prefab.
     #[serde(serialize_with = "ser_u64_str")]
-    pub graph_uid: u64,
+    pub template_id: u64,
     /// The node's type, e.g. `GateAction`. Its parameter struct is
     /// `<type_name>Prius`.
     pub type_name: Option<String>,
     pub type_name_hash: u32,
     /// Stored inbound-edge count; [`ScriptGraph::parse`] checks it against the
     /// edges it reconstructs.
-    pub in_plug_count: u16,
+    pub in_degree: u16,
     /// Indices into [`ScriptGraph::edges`] of this node's outgoing edges.
     pub out_edges: Vec<u32>,
     /// Indices into [`ScriptGraph::edges`] of the edges that fire into it.
@@ -382,7 +382,7 @@ pub struct ScriptStats {
     pub var_rows: usize,
     pub var_bindings: usize,
     pub subgraphs: usize,
-    /// Nodes whose stored `in_plug_count` equals the inbound edges rebuilt.
+    /// Nodes whose stored `in_degree` equals the inbound edges rebuilt.
     pub in_count_match: usize,
     pub in_count_mismatch: usize,
     pub type_names_resolved: usize,
@@ -422,14 +422,14 @@ pub fn authored_var_direction(ty: &str, var: &str) -> Option<&'static str> {
 impl ScriptGraph {
     /// Parse a zone's script sections. `None` when the zone has no nodes.
     pub fn parse(zone: &Zone) -> Option<ScriptGraph> {
-        let actions = zone.dat1.get_section_data(T_SCRIPT_ACTIONS)?;
+        let actions = zone.dat1.get_section_data(TAG_SCRIPT_ACTIONS)?;
         if actions.len() < ACTION_ROW {
             return None;
         }
         let n_act = actions.len() / ACTION_ROW;
-        let plugs = zone.dat1.get_section_data(T_SCRIPT_PLUGS).unwrap_or(&[]);
+        let plugs = zone.dat1.get_section_data(TAG_SCRIPT_PLUGS).unwrap_or(&[]);
         let n_plug = plugs.len() / PLUG_ROW;
-        let var_rows = zone.dat1.get_section_data(T_SCRIPT_VARS).unwrap_or(&[]);
+        let var_rows = zone.dat1.get_section_data(TAG_SCRIPT_VARS).unwrap_or(&[]);
         let n_var = var_rows.len() / VAR_ROW;
         let strings = string_table(zone);
 
@@ -523,11 +523,11 @@ impl ScriptGraph {
             }
             nodes.push(ScriptNode {
                 index: i as u32,
-                uid: LE::read_u64(&r[0..8]),
-                graph_uid: LE::read_u64(&r[8..16]),
+                node_id: LE::read_u64(&r[0..8]),
+                template_id: LE::read_u64(&r[8..16]),
                 type_name,
                 type_name_hash: name_h,
-                in_plug_count: LE::read_u16(&r[16..18]),
+                in_degree: LE::read_u16(&r[16..18]),
                 out_edges: Vec::new(),
                 in_edges: Vec::new(),
                 vars: Vec::new(),
@@ -634,7 +634,7 @@ impl ScriptGraph {
         }
 
         for n in &nodes {
-            if n.in_plug_count as usize == n.in_edges.len() {
+            if n.in_degree as usize == n.in_edges.len() {
                 stats.in_count_match += 1;
             } else {
                 stats.in_count_mismatch += 1;
@@ -694,7 +694,7 @@ impl ScriptGraph {
         );
         let _ = writeln!(
             s,
-            "in_plug_count reconstructed on {}/{} nodes",
+            "in_degree reconstructed on {}/{} nodes",
             self.stats.in_count_match, self.stats.nodes
         );
         for sg in 0..self.stats.subgraphs as u32 {
@@ -718,8 +718,8 @@ impl ScriptGraph {
                     s,
                     "  {}  uid {:016X}  graph {:016X}{prius}",
                     self.label(i),
-                    n.uid,
-                    n.graph_uid
+                    n.node_id,
+                    n.template_id
                 );
                 for &e in &n.out_edges {
                     let ed = &self.edges[e as usize];
@@ -810,7 +810,7 @@ pub fn describe_var(v: &ScriptVar) -> String {
 /// The zone's `Zone Script Strings` table, resolved through the DAT1 pool.
 pub fn string_table(zone: &Zone) -> Vec<String> {
     zone.dat1
-        .get_section_data(T_SCRIPT_STRINGS)
+        .get_section_data(TAG_SCRIPT_STRINGS)
         .map(|s| {
             s.chunks_exact(4)
                 .map(|b| zone.dat1.get_string(LE::read_u32(b)).unwrap_or_default())
@@ -821,7 +821,7 @@ pub fn string_table(zone: &Zone) -> Vec<String> {
 
 /// The `Zone Script Priuses` blob of one node.
 pub fn prius_blob<'a>(zone: &'a Zone, node: &ScriptNode) -> Option<&'a [u8]> {
-    let sec = zone.dat1.get_section_data(T_SCRIPT_PRIUSES)?;
+    let sec = zone.dat1.get_section_data(TAG_SCRIPT_PRIUSES)?;
     let a = node.prius_offset as usize;
     let b = a.checked_add(node.prius_size as usize)?;
     sec.get(a..b)

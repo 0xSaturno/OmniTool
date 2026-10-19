@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use omnitool_lib::core::level;
-use omnitool_lib::core::zone::{Zone, KIND_DECAL, T_DECAL_GEOMETRY, T_DECALS, T_SCENE_OBJECTS};
+use omnitool_lib::core::zone::{Zone, KIND_DECAL, TAG_DECAL_GEOMETRY, TAG_DECALS, TAG_SCENE_OBJECTS};
 
 fn main() {
     let game = std::env::args()
@@ -42,18 +42,18 @@ fn main() {
     for (path, id) in &picks {
         let Ok(raw) = index.extract(*id) else { continue };
         let Ok(zone) = Zone::parse(&raw) else { continue };
-        let Some(heap) = zone.dat1.get_section_data(T_SCENE_OBJECTS).map(<[u8]>::to_vec) else {
+        let Some(heap) = zone.dat1.get_section_data(TAG_SCENE_OBJECTS).map(<[u8]>::to_vec) else {
             continue;
         };
         let geo = zone
             .dat1
-            .get_section_data(T_DECAL_GEOMETRY)
+            .get_section_data(TAG_DECAL_GEOMETRY)
             .unwrap_or(&[])
             .to_vec();
         let rows = geo.len() / 88;
         let list: Vec<u32> = zone
             .dat1
-            .get_section_data(T_DECALS)
+            .get_section_data(TAG_DECALS)
             .unwrap_or(&[])
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))

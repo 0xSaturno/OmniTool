@@ -21,14 +21,14 @@ use std::collections::BTreeMap;
 use omnitool_lib::core::ddl_schema::SchemaDb;
 use omnitool_lib::core::level;
 use omnitool_lib::core::prius::{
-    self, Edit, NameCtx, PObject, PValue, PriusBlob, PriusTable, T_SCRIPT_PRIUSES,
+    self, Edit, NameCtx, PObject, PValue, PriusBlob, PriusTable, TAG_SCRIPT_PRIUSES,
 };
 use omnitool_lib::core::zone::Zone;
 
 const HASHES: &str = r"E:\RCRALevelEditorViewer\refs\RCRA-Forge\hashes.txt";
 const DEFAULT_SCHEMA: &str = r"E:\RCRALevelEditorViewer\refs\rivet\docs\ddl\rcra_ddl.json";
 /// `Zone Script Strings`: a `u32[]` of string offsets the action rows index.
-const T_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
+const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
 
 fn schema() -> Option<SchemaDb> {
     let p = std::env::var("OMNITOOL_DDL_SCHEMA").unwrap_or_else(|_| DEFAULT_SCHEMA.into());
@@ -996,9 +996,9 @@ fn script(idx: &level::LevelIndex, db: Option<&SchemaDb>) {
     for z in &idx.zones {
         let Ok(raw) = idx.extract(z.id) else { continue };
         let Ok(zone) = Zone::parse(&raw) else { continue };
-        let Some(pool) = zone.dat1.get_section_data(T_SCRIPT_PRIUSES) else { continue };
+        let Some(pool) = zone.dat1.get_section_data(TAG_SCRIPT_PRIUSES) else { continue };
         let pool = pool.to_vec();
-        let strings = zone.dat1.get_section_data(T_SCRIPT_STRINGS).unwrap_or(&[]).to_vec();
+        let strings = zone.dat1.get_section_data(TAG_SCRIPT_STRINGS).unwrap_or(&[]).to_vec();
         let ctx = NameCtx::new(Some(&zone.dat1), db);
         for a in &zone.actions {
             if a.prius_size < 16 {
@@ -1010,7 +1010,7 @@ fn script(idx: &level::LevelIndex, db: Option<&SchemaDb>) {
                 continue;
             }
             blobs += 1;
-            let i = a.action_name_index as usize;
+            let i = a.type_index as usize;
             let action = if i * 4 + 4 <= strings.len() {
                 let so = u32::from_le_bytes(strings[i * 4..i * 4 + 4].try_into().unwrap());
                 zone.dat1.get_string(so).unwrap_or_default()

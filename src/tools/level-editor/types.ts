@@ -172,6 +172,13 @@ export interface ZoneScene {
   objects: SceneObjectDto[];
   actors: ZoneActorRow[];
   sections: ZoneSection[];
+  /**
+   * What the zone would not fully decode. Empty on every shipped zone but
+   * `i29_blizar_startingarea_gp.zone`, whose script prius pool holds one blob
+   * the DDL reader will not read. Shown so a partial read is never presented
+   * as a complete one.
+   */
+  warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -806,15 +813,15 @@ export interface ScriptVarBindingDto {
 export interface ScriptNodeDto {
   index: number;
   /** Hex, no `0x`. */
-  uid: string;
-  graphUid: string;
+  nodeId: string;
+  templateId: string;
   typeName: string | null;
   typeNameHash: string;
   priusType: string | null;
   priusOffset: number;
   priusSize: number;
   subgraph: number;
-  inPlugCount: number;
+  inDegree: number;
   /**
    * Indices into the graph's FULL edge array. `level_zone_script_graph`
    * filters `edges` when a subgraph or a node limit trims the node list, so

@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use omnitool_lib::core::level::{
     self, decode_model_mesh, parse_model_asset, LevelIndex, ModelBuilt, MODEL_FLAG_NAMES,
 };
-use omnitool_lib::core::zone::{Zone, T_SCENE_OBJECTS};
+use omnitool_lib::core::zone::{Zone, TAG_SCENE_OBJECTS};
 use omnitool_lib::tools::model_converter::sections::built::{Built, TAG_BUILT};
 use omnitool_lib::tools::model_converter::sections::look::{LookSection, TAG_LOOK};
 use omnitool_lib::tools::model_converter::sections::meshes::{MeshDefinition, TAG_MESHES};
@@ -564,7 +564,7 @@ fn main() {
         };
         let scene = zone
             .dat1
-            .get_section_data(T_SCENE_OBJECTS)
+            .get_section_data(TAG_SCENE_OBJECTS)
             .map(|s| s.to_vec())
             .unwrap_or_default();
         let heap = walk_heap(&scene);

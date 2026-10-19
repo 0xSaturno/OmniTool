@@ -411,6 +411,9 @@ export default function LevelEditor() {
           "success",
           `${path.split("/").pop()} — ${scene.objects.length.toLocaleString()} objects, ${scene.models.length.toLocaleString()} models`,
         );
+        for (const w of scene.warnings ?? []) {
+          pushLog("warning", `${path.split("/").pop()} — ${w}`);
+        }
       } catch (e) {
         pushLog("error", `Could not load ${path}: ${e}`);
       } finally {
@@ -488,6 +491,9 @@ export default function LevelEditor() {
       let done = 0;
       let failed = 0;
       let objects = 0;
+      // Zones that loaded but would not decode in full; only the first few are
+      // logged individually, the rest are counted in the summary line.
+      let partial = 0;
       let batch: { path: string; scene: ZoneScene }[] = [];
 
       const flush = () => {
@@ -518,6 +524,10 @@ export default function LevelEditor() {
             const scene = await api.loadZone(gameDir, entry.path);
             batch.push({ path: entry.path, scene });
             objects += scene.objects.length;
+            for (const w of scene.warnings ?? []) {
+              partial++;
+              if (partial <= 5) pushLog("warning", `${entry.path} — ${w}`);
+            }
           } catch (e) {
             failed++;
             pushLog("error", `Could not load ${entry.path}: ${e}`);
@@ -540,6 +550,7 @@ export default function LevelEditor() {
       const parts = [`${ok.toLocaleString()} of ${queue.length.toLocaleString()} ${what}`];
       if (objects > 0) parts.push(`${objects.toLocaleString()} objects`);
       if (failed > 0) parts.push(`${failed.toLocaleString()} failed`);
+      if (partial > 0) parts.push(`${partial.toLocaleString()} only partly decoded`);
       pushLog(
         cancelled || failed > 0 ? "warning" : "success",
         `${cancelled ? "Cancelled — loaded" : "Loaded"} ${parts.join(", ")}.`,

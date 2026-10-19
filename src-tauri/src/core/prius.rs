@@ -124,11 +124,11 @@ use crate::core::ddl_schema::{EnumDef, SchemaDb};
 use crate::core::error::{Result, ToolkitError};
 
 /// Zone Actor Priuses — 32-byte rows.
-pub const T_ACTOR_PRIUSES: u32 = 0x50ED_C53D;
+pub const TAG_ACTOR_PRIUSES: u32 = 0x50ED_C53D;
 /// Zone Actor Prius Data — the blob pool the rows address.
-pub const T_ACTOR_PRIUS_POOL: u32 = 0x8199_9057;
+pub const TAG_ACTOR_PRIUS_POOL: u32 = 0x8199_9057;
 /// Zone Script Priuses — blobs addressed by script action rows.
-pub const T_SCRIPT_PRIUSES: u32 = 0x2300_D240;
+pub const TAG_SCRIPT_PRIUSES: u32 = 0x2300_D240;
 
 pub const PRIUS_ROW_LEN: usize = 32;
 
@@ -971,12 +971,12 @@ impl PriusTable {
         let pool_offset = dat1
             .sections
             .iter()
-            .find(|s| s.tag == T_ACTOR_PRIUS_POOL)
+            .find(|s| s.tag == TAG_ACTOR_PRIUS_POOL)
             .map(|s| s.offset)
             .unwrap_or(0);
-        let pool = dat1.get_section_data(T_ACTOR_PRIUS_POOL).unwrap_or(&[]).to_vec();
+        let pool = dat1.get_section_data(TAG_ACTOR_PRIUS_POOL).unwrap_or(&[]).to_vec();
         let mut rows = Vec::new();
-        if let Some(data) = dat1.get_section_data(T_ACTOR_PRIUSES) {
+        if let Some(data) = dat1.get_section_data(TAG_ACTOR_PRIUSES) {
             for r in data.chunks_exact(PRIUS_ROW_LEN) {
                 let name_offset = LE::read_u32(&r[8..12]);
                 rows.push(PriusRow {

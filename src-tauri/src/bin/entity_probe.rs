@@ -139,7 +139,7 @@ fn audit(idx: &level::LevelIndex, want: &str, only: &str) {
         let curs = if only == "all" || only == "curves" { ent::curves(&zone) } else { Vec::new() };
         let vfxs = if only == "all" || only == "vfx" { ent::vfx_instances(&zone) } else { Vec::new() };
         let decs = if only == "all" || only == "decals" { ent::decals(&zone) } else { Vec::new() };
-        let scene = zone.dat1.get_section_data(ent::T_SCENE_OBJECTS).unwrap_or(&[]);
+        let scene = zone.dat1.get_section_data(ent::TAG_SCENE_OBJECTS).unwrap_or(&[]);
 
         let mut a = t.lock().unwrap();
         a.zones_read += 1;
@@ -463,7 +463,7 @@ fn nav(idx: &level::LevelIndex, want: &str) {
         if !ent::has_nav(&zone) {
             return;
         }
-        let u_sec = zone.dat1.get_section_data(ent::T_NAV_UNIT).map(<[u8]>::to_vec);
+        let u_sec = zone.dat1.get_section_data(ent::TAG_NAV_UNIT).map(<[u8]>::to_vec);
         let container = ent::nav_container(&zone);
         let unit = ent::nav_unit(&zone);
         let (tiles, terms) = ent::nav_tiles(&zone);
@@ -732,7 +732,7 @@ fn raw(idx: &level::LevelIndex, want: &str, kind_s: &str) {
         println!("no zone matching {want:?} holds a kind-{kind} entry");
         return;
     };
-    let scene = zone.dat1.get_section_data(ent::T_SCENE_OBJECTS).unwrap_or(&[]);
+    let scene = zone.dat1.get_section_data(ent::TAG_SCENE_OBJECTS).unwrap_or(&[]);
     println!("{}  {} scene objects", path, zone.scene_objects.len());
     for o in zone.scene_objects.iter().filter(|o| o.kind == kind).take(3) {
         println!("\n-- offset {:#x} size {:#x} flags {:08X} actor={}", o.offset, o.size, o.flags, o.actor_index);

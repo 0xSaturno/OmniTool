@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use omnitool_lib::core::level::{self, MeshOut};
-use omnitool_lib::core::zone::{Zone, KIND_DECAL, KIND_IMPOSTOR, KIND_MODEL, T_DECAL_GEOMETRY};
+use omnitool_lib::core::zone::{Zone, KIND_DECAL, KIND_IMPOSTOR, KIND_MODEL, TAG_DECAL_GEOMETRY};
 
 // ---------------------------------------------------------------------------
 // geometry measurements (written from scratch here on purpose)
@@ -336,12 +336,12 @@ fn main() {
         // Sphere keyed by the row index the entry itself names at +0x2BC.
         let heap = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_SCENE_OBJECTS)
+            .get_section_data(omnitool_lib::core::zone::TAG_SCENE_OBJECTS)
             .unwrap_or(&[])
             .to_vec();
         let geo_sec = zone
             .dat1
-            .get_section_data(T_DECAL_GEOMETRY)
+            .get_section_data(TAG_DECAL_GEOMETRY)
             .unwrap_or(&[])
             .to_vec();
         let mut decal_spheres: HashMap<u32, ([f64; 3], f64, u32, u32)> = HashMap::new();

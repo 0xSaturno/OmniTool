@@ -16,7 +16,7 @@
 //!   A  Zone Actor Prius row +0x00 is crc64(lowercase(component + "Prius")),
 //!      and is not an actor uid.
 //!   B  Zone Script Plug +0x04 is a target action row index: inbound edge
-//!      counts must reproduce every action's own in_plug_count.
+//!      counts must reproduce every action's own in_degree.
 //!   C  The scene-object entry size at +0x7C: how wide is it really? Two
 //!      modules disagree (24 bits vs 31 bits). Plus: does anything in the
 //!      scene heap go unreferenced, i.e. can the editor miss an object?
@@ -364,7 +364,7 @@ fn main() {
             b_actions_total += na as u64;
 
             // Per-action declared in-plug count, and its out-plug slice.
-            // Row layout from core::zone: uid, graph_uid, then the u16 counts.
+            // Row layout from core::zone: uid, template_id, then the u16 counts.
             // Read them by position rather than trusting a struct.
             let mut declared = vec![0u16; na];
             let mut out_slices: Vec<(usize, usize)> = Vec::with_capacity(na);
@@ -499,7 +499,7 @@ fn main() {
     println!("\nB  Zone Script Plugs +0x04 is the target action row index");
     println!("  action rows                                                {b_actions_total}");
     pass &= b_target_in_range.show("out-plug +0x04 < action row count");
-    pass &= b_incount.show("inbound count from +0x04 == action in_plug_count");
+    pass &= b_incount.show("inbound count from +0x04 == action in_degree");
     println!("  same test using +0x00 as the target                        {b_incount_alt0}");
     println!("  same test using +0x08 as the target                        {b_incount_alt8}");
 

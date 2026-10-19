@@ -659,7 +659,7 @@ fn main() {
         };
         let scene = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_SCENE_OBJECTS)
+            .get_section_data(omnitool_lib::core::zone::TAG_SCENE_OBJECTS)
             .map(<[u8]>::to_vec)
             .unwrap_or_default();
         let found = walk_heap(&scene);

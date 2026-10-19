@@ -17,23 +17,23 @@
 //!   * the placed bit (63) on actor uids and scene-object instance ids
 //!   * actor-group slices: members in range, ranges chaining, no orphan slot
 //!   * script-action plug slices tiling Zone Script Plugs, prius blobs in range,
-//!     and `crc32(action name) == action_name_hash`
+//!     and `crc32(action name) == type_hash`
 //!   * vertex-paint rows: uid resolves to a model instance, count equals that
 //!     model's vertex count, runs tile the colour section
 
 use omnitool_lib::core::level::{self, LevelIndex};
 use omnitool_lib::core::toc::Toc;
 use omnitool_lib::core::zone::{
-    actor_flag_names, kind_name, Zone, ACTOR_FLAG_NAMES, KIND_MODEL, T_ACTORS,
-    NO_PLUG, T_ACTOR_GROUP_DATA, T_ACTOR_GROUP_NAMES, T_SCRIPT_ACTIONS, T_SCRIPT_PLUGS,
-    T_SCRIPT_PRIUSES,
+    actor_flag_names, kind_name, Zone, ACTOR_FLAG_NAMES, KIND_MODEL, TAG_ACTORS,
+    NO_PLUG, TAG_ACTOR_GROUP_MEMBERS, TAG_ACTOR_GROUP_NAMES, TAG_SCRIPT_ACTIONS, TAG_SCRIPT_PLUGS,
+    TAG_SCRIPT_PRIUSES,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 const HASHES: &str = r"E:\RCRALevelEditorViewer\refs\RCRA-Forge\hashes.txt";
 /// `Zone Script Strings`: a `u32[]` of string offsets the action rows index.
-const T_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
+const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
 
 const ZONES: &[&str] = &[
     "levels/i29/openarea/sargasso/tile_n19/tile_n19_art.zone",
@@ -334,27 +334,27 @@ fn survey(index: &LevelIndex) -> usize {
         // ---- actors ----------------------------------------------------------------
         let actor_rows = zone
             .dat1
-            .get_section_data(T_ACTORS)
+            .get_section_data(TAG_ACTORS)
             .map(|a| a.len() / 32)
             .unwrap_or(0);
         let name_count = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_ACTOR_NAMES)
+            .get_section_data(omnitool_lib::core::zone::TAG_ACTOR_NAMES)
             .map(|a| a.len() / 4)
             .unwrap_or(0);
         let asset_count = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_ACTOR_REFS)
+            .get_section_data(omnitool_lib::core::zone::TAG_ACTOR_ASSETS)
             .map(|a| a.len() / 12)
             .unwrap_or(0);
         let prius_rows = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_ACTOR_PRIUSES)
+            .get_section_data(omnitool_lib::core::zone::TAG_ACTOR_PRIUSES)
             .map(|a| a.len() / 32)
             .unwrap_or(0);
         let scene_len = zone
             .dat1
-            .get_section_data(omnitool_lib::core::zone::T_SCENE_OBJECTS)
+            .get_section_data(omnitool_lib::core::zone::TAG_SCENE_OBJECTS)
             .map(<[u8]>::len)
             .unwrap_or(0);
         for a in &zone.actors {
@@ -414,12 +414,12 @@ fn survey(index: &LevelIndex) -> usize {
             s.zones_with_groups += 1;
             let data_len = zone
                 .dat1
-                .get_section_data(T_ACTOR_GROUP_DATA)
+                .get_section_data(TAG_ACTOR_GROUP_MEMBERS)
                 .map(|d| d.len() / 2)
                 .unwrap_or(0);
             let name_count = zone
                 .dat1
-                .get_section_data(T_ACTOR_GROUP_NAMES)
+                .get_section_data(TAG_ACTOR_GROUP_NAMES)
                 .map(|d| d.len() / 4)
                 .unwrap_or(0);
             let mut claimed = vec![false; data_len];
@@ -472,7 +472,7 @@ fn survey(index: &LevelIndex) -> usize {
                     println!(
                         "      [{}] name_index {} {:?} first {} count {} global {} color {:#010X} uid {:#018X} members {:?}",
                         g.index, g.name_index, g.name, g.first_actor_index, g.actor_count,
-                        g.is_global, g.debug_color, g.uid,
+                        g.is_global, g.debug_color, g.id,
                         &g.members[..g.members.len().min(8)]
                     );
                 }
@@ -484,17 +484,17 @@ fn survey(index: &LevelIndex) -> usize {
             s.zones_with_scripts += 1;
             let plug_rows = zone
                 .dat1
-                .get_section_data(T_SCRIPT_PLUGS)
+                .get_section_data(TAG_SCRIPT_PLUGS)
                 .map(|d| d.len() / 12)
                 .unwrap_or(0);
             let prius_len = zone
                 .dat1
-                .get_section_data(T_SCRIPT_PRIUSES)
+                .get_section_data(TAG_SCRIPT_PRIUSES)
                 .map(<[u8]>::len)
                 .unwrap_or(0);
             let strings = zone
                 .dat1
-                .get_section_data(T_SCRIPT_STRINGS)
+                .get_section_data(TAG_SCRIPT_STRINGS)
                 .map(u32s)
                 .unwrap_or_default();
             // Out and var plugs are slices of ONE array: they interleave, so the
@@ -502,10 +502,10 @@ fn survey(index: &LevelIndex) -> usize {
             let mut claimed = vec![false; plug_rows];
             for a in &zone.actions {
                 s.actions += 1;
-                *s.action_in_hist.entry(a.in_plug_count).or_default() += 1;
+                *s.action_in_hist.entry(a.in_degree).or_default() += 1;
                 for (slice, index, count) in [
-                    (a.out_plugs(), a.out_plug_index, a.out_plug_count),
-                    (a.var_plugs(), a.var_plug_index, a.var_plug_count),
+                    (a.link_plugs(), a.link_start, a.link_count),
+                    (a.param_plugs(), a.param_start, a.param_count),
                 ] {
                     if index == NO_PLUG {
                         s.action_plug_none += 1;
@@ -532,12 +532,12 @@ fn survey(index: &LevelIndex) -> usize {
                 if a.prius_offset as usize + a.prius_size as usize > prius_len {
                     s.action_prius_oob += 1;
                 }
-                if (a.action_name_index as usize) < strings.len() {
-                    if let Some(name) = zone.dat1.get_string(strings[a.action_name_index as usize]) {
+                if (a.type_index as usize) < strings.len() {
+                    if let Some(name) = zone.dat1.get_string(strings[a.type_index as usize]) {
                         s.action_name_hash_checked += 1;
                         let h = omnitool_lib::core::crc32::hash(&name);
                         let hl = omnitool_lib::core::crc32::hash(&name.to_lowercase());
-                        if h == a.action_name_hash || hl == a.action_name_hash {
+                        if h == a.type_hash || hl == a.type_hash {
                             s.action_name_hash_ok += 1;
                         }
                     }
@@ -549,18 +549,18 @@ fn survey(index: &LevelIndex) -> usize {
             s.plug_unclaimed += claimed.iter().filter(|c| !**c).count();
             if !shown_action {
                 shown_action = true;
-                let raw = zone.dat1.get_section_data(T_SCRIPT_ACTIONS).unwrap();
+                let raw = zone.dat1.get_section_data(TAG_SCRIPT_ACTIONS).unwrap();
                 println!("   script actions sample from {} ({} strings, {} plug rows)", z.path, strings.len(), plug_rows);
                 for (i, a) in zone.actions.iter().take(6).enumerate() {
                     let words = u16s(&raw[i * 40 + 16..i * 40 + 28]);
                     let name = strings
-                        .get(a.action_name_index as usize)
+                        .get(a.type_index as usize)
                         .and_then(|&o| zone.dat1.get_string(o))
                         .unwrap_or_default();
                     println!(
                         "      [{}] uid {:#018X} graph {:#018X} u16s {:?} hash {:#010X} prius {}+{} name[{}] {:?}",
-                        a.index, a.uid, a.graph_uid, words, a.action_name_hash,
-                        a.prius_offset, a.prius_size, a.action_name_index, name
+                        a.index, a.node_id, a.template_id, words, a.type_hash,
+                        a.prius_offset, a.prius_size, a.type_index, name
                     );
                 }
             }
@@ -713,7 +713,7 @@ fn survey(index: &LevelIndex) -> usize {
         .take(8)
         .map(|(v, n)| format!("{v}x{n}"))
         .collect();
-    println!("   in_plug_count: {}", ins.join(" "));
+    println!("   in_degree: {}", ins.join(" "));
     println!(
         "vertex paint: {} rows ({} actor) in {} zones, uid matches a scene object {} ({} a model instance), span out of range {}, {} painted vertices, {}/{} colour bytes covered; count == the model's own vertex count on {} rows ({} mismatches)",
         s.paint_rows, s.paint_actor_rows, s.zones_with_paint, s.paint_uid_matched,

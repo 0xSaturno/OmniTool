@@ -114,7 +114,7 @@ pub fn build_graph(zone: &Zone) -> ArenaGraph {
         .filter_map(|a| Some((a.instance_id, zone.actor_names.get(a.name_index as usize)?.as_str())))
         .collect();
     let group_names: HashMap<u64, &str> =
-        zone.actor_groups.iter().map(|g| (g.uid, g.name.as_str())).collect();
+        zone.actor_groups.iter().map(|g| (g.id, g.name.as_str())).collect();
 
     let mut links = Vec::new();
     let mut in_degree = vec![0usize; n];
@@ -198,8 +198,8 @@ pub fn build_graph(zone: &Zone) -> ArenaGraph {
             signal: None,
             params,
             section: usize::MAX,
-            node_id: format!("{:016X}", action.uid),
-            template_id: format!("{:016X}", action.graph_uid),
+            node_id: format!("{:016X}", action.node_id),
+            template_id: format!("{:016X}", action.template_id),
         });
     }
 

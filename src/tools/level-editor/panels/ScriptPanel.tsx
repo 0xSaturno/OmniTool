@@ -117,14 +117,14 @@ function NodeList({
               className={`${styles.nodeRow} ${selected === n.index ? styles.nodeRowOn : ""}`}
               style={{ top }}
               onClick={() => onSelect(n.index)}
-              title={`uid ${n.uid} · subgraph ${n.subgraph} · prius ${n.priusSize} B`}
+              title={`node id ${n.nodeId} · subgraph ${n.subgraph} · prius ${n.priusSize} B`}
             >
               <span className={styles.nodeIndex}>{n.index}</span>
               <span className={styles.nodeType}>
                 {n.typeName ?? <span className={styles.unresolved}>#{n.typeNameHash}</span>}
               </span>
               <span className={styles.plugCounts}>
-                <span title={`${n.inPlugCount} inbound signals`}>{n.inPlugCount}</span>
+                <span title={`${n.inDegree} inbound signals`}>{n.inDegree}</span>
                 <span className={styles.arrow}>→</span>
                 <span title={`${n.outEdges.length} outbound signals`}>{n.outEdges.length}</span>
               </span>
@@ -262,11 +262,11 @@ function NodeDetail({
         <span className={styles.detailType}>{n.typeName ?? `#${n.typeNameHash}`}</span>
       </div>
       <div className={styles.kvGrid}>
-        <span className={styles.k}>uid</span>
-        <span className={styles.v}>{n.uid}</span>
-        <span className={styles.k}>graph uid</span>
+        <span className={styles.k}>node id</span>
+        <span className={styles.v}>{n.nodeId}</span>
+        <span className={styles.k}>template id</span>
         <span className={styles.v} title="the node's id inside the source .scriptgraph, shared by every placement of the same prefab">
-          {n.graphUid}
+          {n.templateId}
         </span>
         <span className={styles.k}>subgraph</span>
         <span className={styles.v}>{n.subgraph}</span>
@@ -380,7 +380,7 @@ export default function ScriptPanel({
       (n) =>
         (n.typeName ?? "").toLowerCase().includes(q) ||
         String(n.index) === q ||
-        n.uid.toLowerCase().includes(q),
+        n.nodeId.toLowerCase().includes(q),
     );
   }, [graph, query]);
 
@@ -439,7 +439,7 @@ export default function ScriptPanel({
           <LuSearch />
           <input
             className={styles.search}
-            placeholder="type name, index or uid"
+            placeholder="type name, index or node id"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />

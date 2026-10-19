@@ -160,10 +160,10 @@ use crate::core::dat1::Dat1;
 use crate::core::zone::{Zone, KIND_LIGHT};
 /// `Zone Lights` — `u32[]` of scene-object byte offsets, re-exported so lighting
 /// callers do not have to reach into [`crate::core::zone`].
-pub use crate::core::zone::T_LIGHTS;
+pub use crate::core::zone::TAG_LIGHTS;
 
 /// `Zone Atmosphere Name` — one atmosphere asset reference per lighting condition.
-pub const T_ATMOSPHERE_NAME: u32 = 0xB6A0_B72A;
+pub const TAG_ATMOSPHERE_NAME: u32 = 0xB6A0_B72A;
 /// `Zone LevelLight Name` — the `.levellight` asset reference, per condition.
 ///
 /// The 534-name candidate list offers `Zone Level Light Name` = `0x7A6075BE`,
@@ -171,15 +171,15 @@ pub const T_ATMOSPHERE_NAME: u32 = 0xB6A0_B72A;
 /// writes is `0x1951BA1F`, recovered by inverting the hash:
 /// `crc32("Zone LevelLight Name") == 0x1951BA1F` (no space in `LevelLight`).
 /// Measured on 6 zones; `0x7A6075BE` on 0 of 9 046.
-pub const T_LEVEL_LIGHT_NAME: u32 = 0x1951_BA1F;
+pub const TAG_LEVEL_LIGHT_NAME: u32 = 0x1951_BA1F;
 /// The unused candidate spelling, kept so a reader recognises it.
-pub const T_LEVEL_LIGHT_NAME_UNUSED: u32 = 0x7A60_75BE;
+pub const TAG_LEVEL_LIGHT_NAME_UNUSED: u32 = 0x7A60_75BE;
 /// `Zone EnvProbe Assets` — env-probe texture references, `probe_count` per condition.
-pub const T_ENVPROBE_ASSETS: u32 = 0x0277_95C5;
+pub const TAG_ENVPROBE_ASSETS: u32 = 0x0277_95C5;
 /// `Zone EnvProbe List` — 128-byte `EnvProbeBuilt` rows.
-pub const T_ENVPROBE_LIST: u32 = 0x5570_13E9;
+pub const TAG_ENVPROBE_LIST: u32 = 0x5570_13E9;
 /// `Zone Env Probe Draw Lists` — cached per-face model-inst tuid lists.
-pub const T_ENVPROBE_DRAW_LISTS: u32 = 0xDA9E_4CDF;
+pub const TAG_ENVPROBE_DRAW_LISTS: u32 = 0xDA9E_4CDF;
 /// `Zone LightBin Asset` — the `.zonelightbin` reference, per condition.
 ///
 /// Same story as the level-light block: the candidate list's
@@ -187,13 +187,13 @@ pub const T_ENVPROBE_DRAW_LISTS: u32 = 0xDA9E_4CDF;
 /// while `crc32("Zone LightBin Asset") == 0xEDFA607D` appears in 714 of them
 /// (668 with `condition_count == 5`, 46 condition-independent) — the same 714
 /// zones that carry `Zone Light Grid Positions`.
-pub const T_LIGHT_BIN_ASSET: u32 = 0xEDFA_607D;
+pub const TAG_LIGHT_BIN_ASSET: u32 = 0xEDFA_607D;
 /// The unused candidate spelling.
-pub const T_LIGHT_BIN_ASSET_UNUSED: u32 = 0xE14D_4601;
+pub const TAG_LIGHT_BIN_ASSET_UNUSED: u32 = 0xE14D_4601;
 /// `Zone Light Grid Positions` — `u32[]` position hashes for shared open-world grids.
-pub const T_LIGHT_GRID_POSITIONS: u32 = 0x57D2_5F50;
+pub const TAG_LIGHT_GRID_POSITIONS: u32 = 0x57D2_5F50;
 /// `Lighting Condition References`, seen on level/region assets.
-pub const T_LIGHTING_CONDITION_REFS: u32 = 0x1999_D0E3;
+pub const TAG_LIGHTING_CONDITION_REFS: u32 = 0x1999_D0E3;
 
 const OFF_BODY: usize = 0x80;
 pub const LIGHT_BODY_LEN: usize = 0x70;
@@ -685,10 +685,10 @@ pub fn read_zone_lights(zone: &Zone) -> Vec<ZoneLight> {
 }
 
 pub fn read_zone_lights_from_dat1(dat1: &Dat1) -> Vec<ZoneLight> {
-    let Some(scene) = dat1.get_section_data(crate::core::zone::T_SCENE_OBJECTS) else {
+    let Some(scene) = dat1.get_section_data(crate::core::zone::TAG_SCENE_OBJECTS) else {
         return Vec::new();
     };
-    let Some(list) = dat1.get_section_data(T_LIGHTS) else {
+    let Some(list) = dat1.get_section_data(TAG_LIGHTS) else {
         return Vec::new();
     };
     list.chunks_exact(4)
@@ -905,7 +905,7 @@ pub struct EnvProbeAssets {
 }
 
 pub fn read_env_probe_assets(dat1: &Dat1) -> Option<EnvProbeAssets> {
-    let sec = dat1.get_section_data(T_ENVPROBE_ASSETS)?;
+    let sec = dat1.get_section_data(TAG_ENVPROBE_ASSETS)?;
     if sec.len() < 8 {
         return None;
     }
@@ -924,7 +924,7 @@ pub fn read_env_probe_assets(dat1: &Dat1) -> Option<EnvProbeAssets> {
         overrides.push(read_asset_ref(dat1, sec, o));
     }
     p += override_texture_count * ASSET_REF_LEN;
-    let per_condition = decode_condition_block(dat1, T_ENVPROBE_ASSETS, &sec[p..], probe_asset_count.max(1))?;
+    let per_condition = decode_condition_block(dat1, TAG_ENVPROBE_ASSETS, &sec[p..], probe_asset_count.max(1))?;
     Some(EnvProbeAssets {
         override_texture_count,
         probe_asset_count,
@@ -982,7 +982,7 @@ pub const ENV_PROBE_ROW_LEN: usize = 0x80;
 pub const ENV_PROBE_FLAG_DIFFUSE_CONTRIBUTION: u8 = 1 << 0;
 
 pub fn read_env_probes(dat1: &Dat1) -> Vec<EnvProbeRow> {
-    let Some(sec) = dat1.get_section_data(T_ENVPROBE_LIST) else {
+    let Some(sec) = dat1.get_section_data(TAG_ENVPROBE_LIST) else {
         return Vec::new();
     };
     sec.chunks_exact(ENV_PROBE_ROW_LEN)
@@ -1058,12 +1058,12 @@ pub const LIGHT_GRID_MAX_PER_ZONE: usize = 65535;
 /// step of that pipeline, not the first.
 ///
 /// `.zonelightbin` DAT1 section tags, with the names the engine's tag list gives.
-pub const T_LIGHT_BIN_HEADER_DATA: u32 = 0x101A_2196; // "Light Bin Header Data"
-pub const T_LIGHT_GRID_SAMPLE_DATA: u32 = 0x13F4_AF3B; // "Light Grid Sample Data"
-pub const T_LIGHT_GRID_DATA_OFFSETS: u32 = 0xC72A_514C; // "Light Grid Data Offsets"
+pub const TAG_LIGHT_BIN_HEADER_DATA: u32 = 0x101A_2196; // "Light Bin Header Data"
+pub const TAG_LIGHT_GRID_SAMPLE_DATA: u32 = 0x13F4_AF3B; // "Light Grid Sample Data"
+pub const TAG_LIGHT_GRID_DATA_OFFSETS: u32 = 0xC72A_514C; // "Light Grid Data Offsets"
 /// Present in the first DAT1 of every shipped `.zonelightbin`; not in the
 /// 534-name candidate list.
-pub const T_LIGHT_BIN_UNNAMED: u32 = 0x2720_4B67;
+pub const TAG_LIGHT_BIN_UNNAMED: u32 = 0x2720_4B67;
 
 /// The six cardinal directions a light-grid sample stores radiance for, in the
 pub const LIGHT_GRID_CARDINALS: [[f32; 3]; 6] = [
@@ -1287,9 +1287,9 @@ pub fn report_zone_lighting(zone: &Zone, zone_path: &str) -> ZoneLightingReport 
     let env_probes = read_env_probes(&zone.dat1);
     let mut notes = Vec::new();
 
-    let atmosphere = read_condition_block(&zone.dat1, T_ATMOSPHERE_NAME, 1);
-    let level_light = read_condition_block(&zone.dat1, T_LEVEL_LIGHT_NAME, 1);
-    let light_bin = read_condition_block(&zone.dat1, T_LIGHT_BIN_ASSET, 1);
+    let atmosphere = read_condition_block(&zone.dat1, TAG_ATMOSPHERE_NAME, 1);
+    let level_light = read_condition_block(&zone.dat1, TAG_LEVEL_LIGHT_NAME, 1);
+    let light_bin = read_condition_block(&zone.dat1, TAG_LIGHT_BIN_ASSET, 1);
     let env_probe_assets = read_env_probe_assets(&zone.dat1);
 
     if atmosphere.is_none() {
@@ -1297,7 +1297,7 @@ pub fn report_zone_lighting(zone: &Zone, zone_path: &str) -> ZoneLightingReport 
     }
     let light_grid_positions = zone
         .dat1
-        .get_section_data(T_LIGHT_GRID_POSITIONS)
+        .get_section_data(TAG_LIGHT_GRID_POSITIONS)
         .map(|s| {
             s.chunks_exact(4)
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))

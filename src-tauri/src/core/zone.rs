@@ -100,49 +100,49 @@ use crate::core::error::{Result, ToolkitError};
 pub const ZONE_TYPE_ID: u32 = 0x1F390AA0;
 pub const ASSET_HEADER_LEN: usize = 36;
 
-pub const T_SCENE_OBJECTS: u32 = 0x06AB_CAB2;
-pub const T_MODEL_INSTS: u32 = 0x6987_F172;
-pub const T_MODEL_NAMES: u32 = 0xC6A5_905E;
-pub const T_ACTORS: u32 = 0x7068_2CB8;
-pub const T_ACTOR_NAMES: u32 = 0xDC62_5B3D;
-pub const T_ACTOR_REFS: u32 = 0x7868_4035;
-pub const T_ACTOR_PRIUSES: u32 = 0x50ED_C53D;
+pub const TAG_SCENE_OBJECTS: u32 = 0x06AB_CAB2;
+pub const TAG_MODEL_INSTS: u32 = 0x6987_F172;
+pub const TAG_MODEL_NAMES: u32 = 0xC6A5_905E;
+pub const TAG_ACTORS: u32 = 0x7068_2CB8;
+pub const TAG_ACTOR_NAMES: u32 = 0xDC62_5B3D;
+pub const TAG_ACTOR_ASSETS: u32 = 0x7868_4035;
+pub const TAG_ACTOR_PRIUSES: u32 = 0x50ED_C53D;
 /// 24-byte `ActorGroupBuilt` rows.
-pub const T_ACTOR_GROUPS: u32 = 0x0CF5_8A6E;
+pub const TAG_ACTOR_GROUPS: u32 = 0x0CF5_8A6E;
 /// `u16[]` of actor-row indices; groups take a `(first, count)` slice of it.
-pub const T_ACTOR_GROUP_DATA: u32 = 0x0410_71EF;
+pub const TAG_ACTOR_GROUP_MEMBERS: u32 = 0x0410_71EF;
 /// `u32[]` string offsets, one per named group.
-pub const T_ACTOR_GROUP_NAMES: u32 = 0xC496_8A44;
+pub const TAG_ACTOR_GROUP_NAMES: u32 = 0xC496_8A44;
 /// 40-byte `ScriptActionBuilt` rows.
-pub const T_SCRIPT_ACTIONS: u32 = 0x5E54_ACCF;
+pub const TAG_SCRIPT_ACTIONS: u32 = 0x5E54_ACCF;
 /// 12-byte plug rows that the action rows slice by index/count.
-pub const T_SCRIPT_PLUGS: u32 = 0xBEAB_52E7;
+pub const TAG_SCRIPT_PLUGS: u32 = 0xBEAB_52E7;
 /// DDL blob store addressed by `ScriptAction::prius_offset/prius_size`.
-pub const T_SCRIPT_PRIUSES: u32 = 0x2300_D240;
+pub const TAG_SCRIPT_PRIUSES: u32 = 0x2300_D240;
 /// 16-byte vertex-paint index rows for model instances, and their colour store.
-pub const T_VERTEX_PAINT_INFO: u32 = 0x5736_A46F;
-pub const T_VERTEX_PAINT_COLOR: u32 = 0x9CCA_A06F;
+pub const TAG_VERTEX_PAINT_INFO: u32 = 0x5736_A46F;
+pub const TAG_VERTEX_PAINT_COLOR: u32 = 0x9CCA_A06F;
 /// The same pair for actor-owned instances.
-pub const T_ACTOR_VERTEX_PAINT_INFO: u32 = 0x758B_AFBD;
-pub const T_ACTOR_VERTEX_PAINT_COLOR: u32 = 0xF435_AE9C;
-pub const T_LIGHTS: u32 = 0x97FF_6EB5;
-pub const T_VOLUMES: u32 = 0xBDAB_2B0D;
-pub const T_DECALS: u32 = 0xBCF4_3558;
-pub const T_VFX_INSTS: u32 = 0x927C_4EC3;
-pub const T_IMPOSTORS: u32 = 0xDC31_1FC3;
-pub const T_DECAL_GEOMETRY: u32 = 0x6575_12BB;
+pub const TAG_ACTOR_VERTEX_PAINT_INFO: u32 = 0x758B_AFBD;
+pub const TAG_ACTOR_VERTEX_PAINT_COLOR: u32 = 0xF435_AE9C;
+pub const TAG_LIGHTS: u32 = 0x97FF_6EB5;
+pub const TAG_VOLUMES: u32 = 0xBDAB_2B0D;
+pub const TAG_DECALS: u32 = 0xBCF4_3558;
+pub const TAG_VFX_INSTS: u32 = 0x927C_4EC3;
+pub const TAG_IMPOSTORS: u32 = 0xDC31_1FC3;
+pub const TAG_DECAL_GEOMETRY: u32 = 0x6575_12BB;
 
 /// `Zone Script Vars` — 32-byte rows.
-pub const T_SCRIPT_VARS: u32 = 0xD86A_7934;
+pub const TAG_SCRIPT_VARS: u32 = 0xD86A_7934;
 /// `Zone Script Strings` — `u32[]` string offsets, the script graph's own pool.
-pub const T_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
+pub const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
 /// `Zone Script String Hashes` — `crc32` of each Zone Script Strings entry.
-pub const T_SCRIPT_STRING_HASHES: u32 = 0x80D2_9828;
+pub const TAG_SCRIPT_STRING_HASHES: u32 = 0x80D2_9828;
 /// `Zone Actor Prius Data` — the DDL blobs the actor prius index addresses.
-pub const T_ACTOR_PRIUS_DATA: u32 = 0x8199_9057;
+pub const TAG_ACTOR_PRIUS_DATA: u32 = 0x8199_9057;
 /// `Zone Asset References`. The measured reader, the id families and the
 /// grow/repoint planner live in [`crate::core::zone_refs`].
-pub const T_ZONE_ASSET_REFS: u32 = crate::core::zone_refs::T_ZONE_ASSET_REFS;
+pub const TAG_ZONE_ASSET_REFS: u32 = crate::core::zone_refs::TAG_ZONE_ASSET_REFS;
 
 /// Bytes per row of the fixed-size tables.
 const GROUP_LEN: usize = 24;
@@ -339,8 +339,8 @@ impl SceneObject {
 /// A 32-byte row of Zone Actors.
 ///
 /// ```text
-///   +0x00 i32 name_index      -> Zone Actor Names
-///   +0x04 i32 asset_index     -> Zone Actor Asset Paths
+///   +0x00 u32 name_index      -> Zone Actor Names
+///   +0x04 u32 asset_index     -> Zone Actor Asset Paths
 ///   +0x08 u32 scene_offset    -> Zone Scene Objects heap
 ///   +0x0C i32 prius_index     first row in Zone Actor Priuses, -1 when none
 ///   +0x10 i32 prius_count
@@ -356,10 +356,10 @@ impl SceneObject {
 pub struct ActorRow {
     /// Row ordinal inside Zone Actors.
     pub index: u32,
-    /// Index into Zone Actor Names.
-    pub name_index: i32,
-    /// Index into Zone Actor Asset Paths.
-    pub asset_index: i32,
+    /// Index into Zone Actor Names. Never negative on any shipped row.
+    pub name_index: u32,
+    /// Index into Zone Actor Asset Paths. Never negative on any shipped row.
+    pub asset_index: u32,
     pub scene_offset: u32,
     /// First row in Zone Actor Priuses, or -1.
     pub prius_index: i32,
@@ -435,7 +435,7 @@ pub struct ActorGroup {
     /// ARGB debug colour the authoring tool drew the group with.
     pub debug_color: u32,
     #[serde(serialize_with = "ser_u64_str")]
-    pub uid: u64,
+    pub id: u64,
     pub is_placed: bool,
     /// The group's members, as Zone Actors row indices.
     pub members: Vec<u16>,
@@ -445,14 +445,14 @@ pub struct ActorGroup {
 ///
 /// ```text
 ///   +0x00 u64 uid
-///   +0x08 u64 graph_uid          the script graph this action belongs to
-///   +0x10 u16 in_plug_count
-///   +0x12 u16 out_plug_index     -> Zone Script Plugs (12-byte rows)
-///   +0x14 u16 out_plug_count
-///   +0x16 u16 var_plug_index
-///   +0x18 u16 var_plug_count
-///   +0x1A u16 action_name_index
-///   +0x1C u32 action_name_hash
+///   +0x08 u64 template_id          the script graph this action belongs to
+///   +0x10 u16 in_degree
+///   +0x12 u16 link_start     -> Zone Script Plugs (12-byte rows)
+///   +0x14 u16 link_count
+///   +0x16 u16 param_start
+///   +0x18 u16 param_count
+///   +0x1A u16 type_index
+///   +0x1C u32 type_hash
 ///   +0x20 u32 prius_offset       -> Zone Script Priuses
 ///   +0x24 u32 prius_size
 /// ```
@@ -462,8 +462,8 @@ pub struct ActorGroup {
 ///
 /// Measured over 215 041 action rows in 620 of 4 063 shipped zones:
 ///
-/// * `crc32(name)` of the string `action_name_index` selects out of Zone Script
-///   Strings equals `action_name_hash` on **215 041 of 215 041** rows, which
+/// * `crc32(name)` of the string `type_index` selects out of Zone Script
+///   Strings equals `type_hash` on **215 041 of 215 041** rows, which
 ///   pins both fields to these offsets;
 /// * out-plug and var-plug slices are slices of the *same* Zone Script Plugs
 ///   array — together they tile all 465 730 plug rows with **0 overlaps and 0
@@ -472,23 +472,23 @@ pub struct ActorGroup {
 ///   [`NO_PLUG`] with a zero count;
 /// * every `prius_offset + prius_size` stays inside Zone Script Priuses.
 ///
-/// `in_plug_count` has no index of its own: in-plugs are named by the *other*
+/// `in_degree` has no index of its own: in-plugs are named by the *other*
 /// actions' out-plug rows. It is 0 on 43 521 rows and 1 on 132 124.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptAction {
     pub index: u32,
     #[serde(serialize_with = "ser_u64_str")]
-    pub uid: u64,
+    pub node_id: u64,
     #[serde(serialize_with = "ser_u64_str")]
-    pub graph_uid: u64,
-    pub in_plug_count: u16,
-    pub out_plug_index: u16,
-    pub out_plug_count: u16,
-    pub var_plug_index: u16,
-    pub var_plug_count: u16,
-    pub action_name_index: u16,
-    pub action_name_hash: u32,
+    pub template_id: u64,
+    pub in_degree: u16,
+    pub link_start: u16,
+    pub link_count: u16,
+    pub param_start: u16,
+    pub param_count: u16,
+    pub type_index: u16,
+    pub type_hash: u32,
     pub prius_offset: u32,
     pub prius_size: u32,
 }
@@ -502,15 +502,15 @@ impl ScriptAction {
     fn read(index: u32, b: &[u8]) -> Self {
         Self {
             index,
-            uid: LE::read_u64(&b[0..8]),
-            graph_uid: LE::read_u64(&b[8..16]),
-            in_plug_count: LE::read_u16(&b[16..18]),
-            out_plug_index: LE::read_u16(&b[18..20]),
-            out_plug_count: LE::read_u16(&b[20..22]),
-            var_plug_index: LE::read_u16(&b[22..24]),
-            var_plug_count: LE::read_u16(&b[24..26]),
-            action_name_index: LE::read_u16(&b[26..28]),
-            action_name_hash: LE::read_u32(&b[28..32]),
+            node_id: LE::read_u64(&b[0..8]),
+            template_id: LE::read_u64(&b[8..16]),
+            in_degree: LE::read_u16(&b[16..18]),
+            link_start: LE::read_u16(&b[18..20]),
+            link_count: LE::read_u16(&b[20..22]),
+            param_start: LE::read_u16(&b[22..24]),
+            param_count: LE::read_u16(&b[24..26]),
+            type_index: LE::read_u16(&b[26..28]),
+            type_hash: LE::read_u32(&b[28..32]),
             prius_offset: LE::read_u32(&b[32..36]),
             prius_size: LE::read_u32(&b[36..40]),
         }
@@ -519,19 +519,19 @@ impl ScriptAction {
     /// Write the row back at the same 40 bytes. `index` is this row's own
     /// ordinal and is not stored in the file.
     fn write(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.uid.to_le_bytes());
-        out.extend_from_slice(&self.graph_uid.to_le_bytes());
+        out.extend_from_slice(&self.node_id.to_le_bytes());
+        out.extend_from_slice(&self.template_id.to_le_bytes());
         for v in [
-            self.in_plug_count,
-            self.out_plug_index,
-            self.out_plug_count,
-            self.var_plug_index,
-            self.var_plug_count,
-            self.action_name_index,
+            self.in_degree,
+            self.link_start,
+            self.link_count,
+            self.param_start,
+            self.param_count,
+            self.type_index,
         ] {
             out.extend_from_slice(&v.to_le_bytes());
         }
-        out.extend_from_slice(&self.action_name_hash.to_le_bytes());
+        out.extend_from_slice(&self.type_hash.to_le_bytes());
         out.extend_from_slice(&self.prius_offset.to_le_bytes());
         out.extend_from_slice(&self.prius_size.to_le_bytes());
     }
@@ -545,41 +545,41 @@ impl ScriptAction {
     }
 
     /// The out-plug rows as a (possibly empty) range, for slicing with `get`.
-    pub fn out_plug_range(&self) -> std::ops::Range<usize> {
-        Self::span(self.out_plug_index, self.out_plug_count)
+    pub fn link_range(&self) -> std::ops::Range<usize> {
+        Self::span(self.link_start, self.link_count)
     }
 
     /// The var-plug rows as a (possibly empty) range.
-    pub fn var_plug_range(&self) -> std::ops::Range<usize> {
-        Self::span(self.var_plug_index, self.var_plug_count)
+    pub fn param_range(&self) -> std::ops::Range<usize> {
+        Self::span(self.param_start, self.param_count)
     }
 
     /// The action's out-plug rows inside Zone Script Plugs, if it has any.
     ///
     /// The range comes straight from the file, so it is only as trustworthy as
-    /// the asset. Slice with [`Self::out_plugs_within`] instead whenever the row
+    /// the asset. Slice with [`Self::link_plugs_within`] instead whenever the row
     /// count is to hand — a hand-edited or truncated zone would otherwise panic
     /// the caller rather than fail the parse.
-    pub fn out_plugs(&self) -> Option<std::ops::Range<usize>> {
-        plug_range(self.out_plug_index, self.out_plug_count)
+    pub fn link_plugs(&self) -> Option<std::ops::Range<usize>> {
+        plug_range(self.link_start, self.link_count)
     }
 
     /// The action's var-plug rows inside Zone Script Plugs, if it has any.
     ///
-    /// Unchecked, like [`Self::out_plugs`]; prefer [`Self::var_plugs_within`].
-    pub fn var_plugs(&self) -> Option<std::ops::Range<usize>> {
-        plug_range(self.var_plug_index, self.var_plug_count)
+    /// Unchecked, like [`Self::link_plugs`]; prefer [`Self::param_plugs_within`].
+    pub fn param_plugs(&self) -> Option<std::ops::Range<usize>> {
+        plug_range(self.param_start, self.param_count)
     }
 
-    /// [`Self::out_plugs`] bounded by the number of plug rows the zone actually
+    /// [`Self::link_plugs`] bounded by the number of plug rows the zone actually
     /// has. `None` when the action owns no slice or the slice leaves the section.
-    pub fn out_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
-        bounded(self.out_plugs(), rows)
+    pub fn link_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
+        bounded(self.link_plugs(), rows)
     }
 
-    /// [`Self::var_plugs`] bounded by the number of plug rows the zone has.
-    pub fn var_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
-        bounded(self.var_plugs(), rows)
+    /// [`Self::param_plugs`] bounded by the number of plug rows the zone has.
+    pub fn param_plugs_within(&self, rows: usize) -> Option<std::ops::Range<usize>> {
+        bounded(self.param_plugs(), rows)
     }
 }
 
@@ -771,6 +771,15 @@ pub struct PriusBlob {
     pub owners: Vec<usize>,
     pub raw: Vec<u8>,
     pub dirty: bool,
+    /// Why the DDL inside this blob could not be read, when it could not.
+    ///
+    /// One shipped zone out of the 3 597 that carry objects
+    /// (`i29_blizar_startingarea_gp.zone`) holds a script prius blob the DDL
+    /// reader will not decode, and a zone the editor cannot open at all is a
+    /// worse answer than a zone with one unreadable sheet. `json` is `Null` on
+    /// such a blob and [`Zone::blob_bytes`] refuses to re-serialize it, so it
+    /// is written back from `raw` and the file still round-trips byte for byte.
+    pub error: Option<String>,
 }
 
 /// A 16-byte row of Zone Vertex Paint Info (`ZoneVertexPaintInfo`).
@@ -782,8 +791,8 @@ pub struct PriusBlob {
 /// ```
 ///
 /// Two independent pairs exist: model instances use
-/// [`T_VERTEX_PAINT_INFO`] / [`T_VERTEX_PAINT_COLOR`], actor-owned instances
-/// use [`T_ACTOR_VERTEX_PAINT_INFO`] / [`T_ACTOR_VERTEX_PAINT_COLOR`].
+/// [`TAG_VERTEX_PAINT_INFO`] / [`TAG_VERTEX_PAINT_COLOR`], actor-owned instances
+/// use [`TAG_ACTOR_VERTEX_PAINT_INFO`] / [`TAG_ACTOR_VERTEX_PAINT_COLOR`].
 ///
 /// Measured over 4 300 rows (128 of them in the actor table) in 68 of 4 063
 /// shipped zones:
@@ -908,6 +917,19 @@ fn read_soa_table(dat1: &Dat1, tag: u32) -> (Vec<u64>, Vec<String>) {
     (ids, paths)
 }
 
+/// The first byte past the last entry of a run of heap offsets.
+///
+/// Every entry's length comes from its own `+0x7C` word, so a run holding an
+/// entry with extra records ends later than `offset + MODEL_INST_LEN` would
+/// say. `None` when an offset does not address an entry that fits.
+fn heap_run_end(scene: &[u8], offsets: &[u32]) -> Option<usize> {
+    let mut end = 0usize;
+    for &o in offsets {
+        end = end.max(o as usize + Zone::entry_len(scene, o as usize)?);
+    }
+    Some(end)
+}
+
 /// A stored asset path, as the UI and the hash lookups want it.
 pub fn display_path(stored: &str) -> String {
     stored.replace('\\', "/")
@@ -986,21 +1008,21 @@ impl Zone {
 
     /// The fixed-size script-graph tables and the outbound reference table.
     fn read_script_graph(&mut self) {
-        self.plugs = slice_records(&self.dat1, T_SCRIPT_PLUGS, PLUG_LEN, |b| ScriptPlug {
+        self.plugs = slice_records(&self.dat1, TAG_SCRIPT_PLUGS, PLUG_LEN, |b| ScriptPlug {
             name_hash: LE::read_u32(&b[0..4]),
             index: LE::read_u32(&b[4..8]),
             other_hash: LE::read_u32(&b[8..12]),
         });
-        self.vars = slice_records(&self.dat1, T_SCRIPT_VARS, VAR_LEN, ScriptVar::read);
-        self.script_types = string_table(&self.dat1, T_SCRIPT_STRINGS);
-        self.script_string_offsets = u32_table(&self.dat1, T_SCRIPT_STRINGS);
+        self.vars = slice_records(&self.dat1, TAG_SCRIPT_VARS, VAR_LEN, ScriptVar::read);
+        self.script_types = string_table(&self.dat1, TAG_SCRIPT_STRINGS);
+        self.script_string_offsets = u32_table(&self.dat1, TAG_SCRIPT_STRINGS);
         self.actor_prius_index = slice_records(
             &self.dat1,
-            T_ACTOR_PRIUSES,
+            TAG_ACTOR_PRIUSES,
             ACTOR_PRIUS_LEN,
             ActorPriusEntry::read,
         );
-        self.asset_refs = slice_records(&self.dat1, T_ZONE_ASSET_REFS, ASSET_REF_LEN, |b| AssetRef {
+        self.asset_refs = slice_records(&self.dat1, TAG_ZONE_ASSET_REFS, ASSET_REF_LEN, |b| AssetRef {
             asset_id: LE::read_u64(&b[0..8]),
             name_offset: LE::read_u32(&b[8..12]),
             ext_hash: LE::read_u32(&b[12..16]),
@@ -1026,27 +1048,27 @@ impl Zone {
     }
 
     fn build_index(&mut self) {
-        let scene = match self.dat1.get_section_data(T_SCENE_OBJECTS) {
+        let scene = match self.dat1.get_section_data(TAG_SCENE_OBJECTS) {
             Some(s) => s.to_vec(),
             None => return,
         };
 
         // Zone Model Names is { u64 id[n] }{ u32 string_offset[n] }, not a flat u64 array.
-        let (ids, paths) = read_soa_table(&self.dat1, T_MODEL_NAMES);
+        let (ids, paths) = read_soa_table(&self.dat1, TAG_MODEL_NAMES);
         self.model_ids = ids;
         self.model_names = paths;
 
         let mut offsets: Vec<u32> = Vec::new();
         for tag in [
-            T_MODEL_INSTS,
-            T_LIGHTS,
-            T_VOLUMES,
-            T_DECALS,
-            T_VFX_INSTS,
+            TAG_MODEL_INSTS,
+            TAG_LIGHTS,
+            TAG_VOLUMES,
+            TAG_DECALS,
+            TAG_VFX_INSTS,
             // Without this table every kind-6 entry is invisible, and an
             // impostor zone (645 of them ship, 456 on megalopolis alone)
             // parses to zero scene objects.
-            T_IMPOSTORS,
+            TAG_IMPOSTORS,
         ] {
             if let Some(sec) = self.dat1.get_section_data(tag) {
                 offsets.extend(sec.chunks_exact(4).map(LE::read_u32));
@@ -1071,8 +1093,8 @@ impl Zone {
         // leaves no row unclaimed.
         let mut decal_geo: HashMap<u32, GeoRef> = HashMap::new();
         if let (Some(list), Some(geo)) = (
-            self.dat1.get_section_data(T_DECALS).map(<[u8]>::to_vec),
-            self.dat1.get_section_data(T_DECAL_GEOMETRY).map(<[u8]>::to_vec),
+            self.dat1.get_section_data(TAG_DECALS).map(<[u8]>::to_vec),
+            self.dat1.get_section_data(TAG_DECAL_GEOMETRY).map(<[u8]>::to_vec),
         ) {
             const ROW: usize = 88;
             for off in list.chunks_exact(4).map(LE::read_u32) {
@@ -1107,11 +1129,11 @@ impl Zone {
         // Zone Actors: 32-byte `ActorBuilt` rows, see [`ActorRow`].
         let raw_rows: Vec<[u8; 32]> = self
             .dat1
-            .get_section_data(T_ACTORS)
+            .get_section_data(TAG_ACTORS)
             .map(|a| {
-                a.chunks_exact(32)
+                a.chunks_exact(ACTOR_LEN)
                     .map(|r| {
-                        let mut b = [0u8; 32];
+                        let mut b = [0u8; ACTOR_LEN];
                         b.copy_from_slice(r);
                         b
                     })
@@ -1122,11 +1144,11 @@ impl Zone {
         // Zone Actor Names is a plain u32[] of string offsets.
         let name_offsets: Vec<u32> = self
             .dat1
-            .get_section_data(T_ACTOR_NAMES)
+            .get_section_data(TAG_ACTOR_NAMES)
             .map(|n| n.chunks_exact(4).map(LE::read_u32).collect())
             .unwrap_or_default();
         // Zone Actor Asset Paths is a struct-of-arrays table like Zone Model Names.
-        let (actor_ids, actor_paths) = read_soa_table(&self.dat1, T_ACTOR_REFS);
+        let (actor_ids, actor_paths) = read_soa_table(&self.dat1, TAG_ACTOR_ASSETS);
         self.actor_names = name_offsets
             .iter()
             .map(|&o| self.dat1.get_string(o).unwrap_or_default())
@@ -1135,8 +1157,8 @@ impl Zone {
         self.actor_asset_paths = actor_paths.clone();
 
         for (i, r) in raw_rows.iter().enumerate() {
-            let name_index = LE::read_i32(&r[0..4]);
-            let asset_index = LE::read_i32(&r[4..8]);
+            let name_index = LE::read_u32(&r[0..4]);
+            let asset_index = LE::read_u32(&r[4..8]);
             let scene_offset = LE::read_u32(&r[8..12]);
             let prius_index = LE::read_i32(&r[12..16]);
             let prius_count = LE::read_i32(&r[16..20]);
@@ -1144,15 +1166,14 @@ impl Zone {
             let pad = LE::read_u16(&r[22..24]);
             let instance_id = LE::read_u64(&r[24..32]);
 
-            let name = usize::try_from(name_index)
-                .ok()
-                .and_then(|n| name_offsets.get(n))
+            let name = name_offsets
+                .get(name_index as usize)
                 .and_then(|&o| self.dat1.get_string(o))
                 .unwrap_or_default();
-            let ai = usize::try_from(asset_index).ok();
-            let asset_id = ai.and_then(|n| actor_ids.get(n)).copied().unwrap_or(0);
-            let asset_path = ai
-                .and_then(|n| actor_paths.get(n))
+            let ai = asset_index as usize;
+            let asset_id = actor_ids.get(ai).copied().unwrap_or(0);
+            let asset_path = actor_paths
+                .get(ai)
                 .map(|p| display_path(p))
                 .unwrap_or_default();
 
@@ -1198,27 +1219,27 @@ impl Zone {
 
     /// Zone Actor Groups + Group Data + Group Names.
     fn read_actor_groups(&mut self) {
-        let Some(rows) = self.dat1.get_section_data(T_ACTOR_GROUPS).map(<[u8]>::to_vec) else {
+        let Some(rows) = self.dat1.get_section_data(TAG_ACTOR_GROUPS).map(<[u8]>::to_vec) else {
             return;
         };
         let members: Vec<u16> = self
             .dat1
-            .get_section_data(T_ACTOR_GROUP_DATA)
+            .get_section_data(TAG_ACTOR_GROUP_MEMBERS)
             .map(|d| d.chunks_exact(2).map(LE::read_u16).collect())
             .unwrap_or_default();
         let name_offsets: Vec<u32> = self
             .dat1
-            .get_section_data(T_ACTOR_GROUP_NAMES)
+            .get_section_data(TAG_ACTOR_GROUP_NAMES)
             .map(|n| n.chunks_exact(4).map(LE::read_u32).collect())
             .unwrap_or_default();
 
-        for (i, r) in rows.chunks_exact(24).enumerate() {
+        for (i, r) in rows.chunks_exact(GROUP_LEN).enumerate() {
             let name_index = LE::read_i32(&r[0..4]);
             let first_actor_index = LE::read_i32(&r[4..8]);
             let actor_count = LE::read_u16(&r[8..10]);
             let is_global = LE::read_u16(&r[10..12]) != 0;
             let debug_color = LE::read_u32(&r[12..16]);
-            let uid = LE::read_u64(&r[16..24]);
+            let id = LE::read_u64(&r[16..24]);
 
             let name = usize::try_from(name_index)
                 .ok()
@@ -1239,8 +1260,8 @@ impl Zone {
                 actor_count,
                 is_global,
                 debug_color,
-                uid,
-                is_placed: is_placed(uid),
+                id,
+                is_placed: is_placed(id),
                 members: slice.to_vec(),
             });
         }
@@ -1248,7 +1269,7 @@ impl Zone {
 
     /// Zone Script Actions, 40-byte rows.
     fn read_script_actions(&mut self) {
-        let Some(rows) = self.dat1.get_section_data(T_SCRIPT_ACTIONS).map(<[u8]>::to_vec) else {
+        let Some(rows) = self.dat1.get_section_data(TAG_SCRIPT_ACTIONS).map(<[u8]>::to_vec) else {
             return;
         };
         for (i, r) in rows.chunks_exact(ACTION_LEN).enumerate() {
@@ -1259,8 +1280,8 @@ impl Zone {
     /// Both Vertex Paint Info tables, 16-byte rows.
     fn read_vertex_paint(&mut self) {
         for (tag, actor) in [
-            (T_VERTEX_PAINT_INFO, false),
-            (T_ACTOR_VERTEX_PAINT_INFO, true),
+            (TAG_VERTEX_PAINT_INFO, false),
+            (TAG_ACTOR_VERTEX_PAINT_INFO, true),
         ] {
             let Some(rows) = self.dat1.get_section_data(tag).map(<[u8]>::to_vec) else {
                 continue;
@@ -1409,9 +1430,9 @@ impl Zone {
     /// `u32`s starting at `data_offset`, one per vertex of the painted model.
     pub fn vertex_paint_colors(&self, actor: bool) -> Option<&[u8]> {
         self.dat1.get_section_data(if actor {
-            T_ACTOR_VERTEX_PAINT_COLOR
+            TAG_ACTOR_VERTEX_PAINT_COLOR
         } else {
-            T_VERTEX_PAINT_COLOR
+            TAG_VERTEX_PAINT_COLOR
         })
     }
 
@@ -1454,8 +1475,8 @@ impl Zone {
     fn patch(&mut self, obj_offset: u32, field: usize, bytes: &[u8], what: &str) -> Result<()> {
         let mut scene = self
             .dat1
-            .get_section_data(T_SCENE_OBJECTS)
-            .ok_or(ToolkitError::SectionNotFound(T_SCENE_OBJECTS))?
+            .get_section_data(TAG_SCENE_OBJECTS)
+            .ok_or(ToolkitError::SectionNotFound(TAG_SCENE_OBJECTS))?
             .to_vec();
         let at = obj_offset as usize + field;
         if at + bytes.len() > scene.len() {
@@ -1469,9 +1490,9 @@ impl Zone {
             return Ok(());
         }
         scene[at..at + bytes.len()].copy_from_slice(bytes);
-        self.dat1.set_section_data(T_SCENE_OBJECTS, scene)?;
+        self.dat1.set_section_data(TAG_SCENE_OBJECTS, scene)?;
         self.edits.push(ZoneEdit {
-            section: T_SCENE_OBJECTS,
+            section: TAG_SCENE_OBJECTS,
             offset: at,
             old,
             new: bytes.to_vec(),
@@ -1490,7 +1511,7 @@ impl Zone {
         }
         let refreshed = self
             .dat1
-            .get_section_data(T_SCENE_OBJECTS)
+            .get_section_data(TAG_SCENE_OBJECTS)
             .map(|s| s.to_vec())
             .unwrap_or_default();
         for i in 0..self.scene_objects.len() {
@@ -1544,7 +1565,7 @@ impl Zone {
     /// Node type label for an action, resolved through the script string table.
     pub fn action_type(&self, action: &ScriptAction) -> &str {
         self.script_types
-            .get(action.action_name_index as usize)
+            .get(action.type_index as usize)
             .map(String::as_str)
             .unwrap_or("<unknown>")
     }
@@ -1552,7 +1573,7 @@ impl Zone {
     fn collect_script_priuses(&self) -> Result<Vec<PriusBlob>> {
         let section = self
             .dat1
-            .get_section_data(T_SCRIPT_PRIUSES)
+            .get_section_data(TAG_SCRIPT_PRIUSES)
             .unwrap_or(&[])
             .to_vec();
 
@@ -1566,7 +1587,10 @@ impl Zone {
 
         let mut out = Vec::with_capacity(by_key.len());
         for ((offset, size), owners) in by_key {
-            let json = parse_blob(&section, offset, size, &self.dat1)?;
+            let (json, error) = match parse_blob(&section, offset, size, &self.dat1) {
+                Ok(v) => (v, None),
+                Err(e) => (Value::Null, Some(e.to_string())),
+            };
             out.push(PriusBlob {
                 offset,
                 size,
@@ -1574,6 +1598,7 @@ impl Zone {
                 owners,
                 raw: raw_slice(&section, offset, size),
                 dirty: false,
+                error,
             });
         }
         Ok(out)
@@ -1582,10 +1607,10 @@ impl Zone {
     /// Index entries with identical data share one blob in the pool, so the
     /// blobs are deduplicated by (offset, size) exactly like script priuses.
     fn collect_actor_priuses(&self) -> Result<(Vec<PriusBlob>, Vec<usize>)> {
-        let base = self.section_offset(T_ACTOR_PRIUS_DATA).unwrap_or(0);
+        let base = self.section_offset(TAG_ACTOR_PRIUS_DATA).unwrap_or(0);
         let section = self
             .dat1
-            .get_section_data(T_ACTOR_PRIUS_DATA)
+            .get_section_data(TAG_ACTOR_PRIUS_DATA)
             .unwrap_or(&[])
             .to_vec();
 
@@ -1598,7 +1623,10 @@ impl Zone {
         let mut blobs = Vec::with_capacity(by_key.len());
         let mut mapping = vec![0usize; self.actor_prius_index.len()];
         for ((offset, size), owners) in by_key {
-            let json = parse_blob(&section, offset, size, &self.dat1)?;
+            let (json, error) = match parse_blob(&section, offset, size, &self.dat1) {
+                Ok(v) => (v, None),
+                Err(e) => (Value::Null, Some(e.to_string())),
+            };
             for o in &owners {
                 mapping[*o] = blobs.len();
             }
@@ -1609,6 +1637,7 @@ impl Zone {
                 owners,
                 raw: raw_slice(&section, offset, size),
                 dirty: false,
+                error,
             });
         }
         Ok((blobs, mapping))
@@ -1622,7 +1651,7 @@ impl Zone {
     pub fn instances_of_asset(&self, asset_index: u32) -> Vec<&str> {
         self.actors
             .iter()
-            .filter(|a| a.asset_index == asset_index as i32)
+            .filter(|a| a.asset_index == asset_index)
             .filter_map(|a| self.actor_names.get(a.name_index as usize).map(String::as_str))
             .collect()
     }
@@ -1666,7 +1695,7 @@ impl Zone {
     pub fn param(&self, action: &ScriptAction, name: &str) -> Option<&ScriptPlug> {
         let hash = crc32::hash(name);
         self.plugs
-            .get(action.var_plug_range())?
+            .get(action.param_range())?
             .iter()
             .find(|p| p.name_hash == hash)
     }
@@ -1676,7 +1705,7 @@ impl Zone {
         let write = crc32::hash("In");
         self.actions.iter().position(|a| {
             self.plugs
-                .get(a.var_plug_range())
+                .get(a.param_range())
                 .is_some_and(|ps| {
                     ps.iter()
                         .any(|p| p.index as usize == var_index && p.other_hash == write)
@@ -1690,8 +1719,8 @@ impl Zone {
         self.actions
             .iter()
             .map(|a| NodePlugs {
-                links: self.plugs.get(a.out_plug_range()).unwrap_or(&[]).to_vec(),
-                params: self.plugs.get(a.var_plug_range()).unwrap_or(&[]).to_vec(),
+                links: self.plugs.get(a.link_range()).unwrap_or(&[]).to_vec(),
+                params: self.plugs.get(a.param_range()).unwrap_or(&[]).to_vec(),
             })
             .collect()
     }
@@ -1705,34 +1734,34 @@ impl Zone {
                 continue;
             };
             let start = flat.len();
-            action.out_plug_index = if np.links.is_empty() {
+            action.link_start = if np.links.is_empty() {
                 u16::MAX
             } else {
                 start as u16
             };
-            action.out_plug_count = np.links.len() as u16;
+            action.link_count = np.links.len() as u16;
             flat.extend_from_slice(&np.links);
 
             let pstart = flat.len();
-            action.var_plug_index = if np.params.is_empty() {
+            action.param_start = if np.params.is_empty() {
                 u16::MAX
             } else {
                 pstart as u16
             };
-            action.var_plug_count = np.params.len() as u16;
+            action.param_count = np.params.len() as u16;
             flat.extend_from_slice(&np.params);
         }
 
-        let mut in_plug_count = vec![0u16; self.actions.len()];
+        let mut in_degree = vec![0u16; self.actions.len()];
         for np in per_node {
             for p in &np.links {
-                if let Some(slot) = in_plug_count.get_mut(p.index as usize) {
+                if let Some(slot) = in_degree.get_mut(p.index as usize) {
                     *slot += 1;
                 }
             }
         }
-        for (a, d) in self.actions.iter_mut().zip(in_plug_count) {
-            a.in_plug_count = d;
+        for (a, d) in self.actions.iter_mut().zip(in_degree) {
+            a.in_degree = d;
         }
         self.plugs = flat;
     }
@@ -1782,7 +1811,7 @@ impl Zone {
         }
         // Heals zones written by earlier clone code, which could drop the flag.
         for a in &mut self.actions {
-            a.uid |= ID_FLAG;
+            a.node_id |= ID_FLAG;
         }
         for v in &mut self.vars {
             v.id |= ID_FLAG;
@@ -1797,12 +1826,12 @@ impl Zone {
         self.rebuild_script_tables()?;
 
         let actions = self.serialize_actions();
-        put(&mut self.dat1, T_SCRIPT_ACTIONS, actions)?;
+        put(&mut self.dat1, TAG_SCRIPT_ACTIONS, actions)?;
 
         // Actor prius entries store DAT1-absolute offsets, so the section
         // layout has to be settled before they can be written.
         self.dat1.recalculate_section_headers();
-        let base = self.section_offset(T_ACTOR_PRIUS_DATA).unwrap_or(0);
+        let base = self.section_offset(TAG_ACTOR_PRIUS_DATA).unwrap_or(0);
         let mut index = Vec::with_capacity(self.actor_prius_index.len() * ACTOR_PRIUS_LEN);
         for (i, e) in self.actor_prius_index.iter_mut().enumerate() {
             let blob = self
@@ -1815,7 +1844,7 @@ impl Zone {
             }
             e.write(&mut index);
         }
-        put(&mut self.dat1, T_ACTOR_PRIUSES, index)?;
+        put(&mut self.dat1, TAG_ACTOR_PRIUSES, index)?;
 
         // [`Zone::to_bytes`] re-emits the 36-byte asset header with word 0 --
         // the length of block 0 -- fixed up and every trailing block byte for
@@ -1834,13 +1863,13 @@ impl Zone {
             plugs.extend_from_slice(&p.index.to_le_bytes());
             plugs.extend_from_slice(&p.other_hash.to_le_bytes());
         }
-        put(&mut self.dat1, T_SCRIPT_PLUGS, plugs)?;
+        put(&mut self.dat1, TAG_SCRIPT_PLUGS, plugs)?;
 
         let mut vars = Vec::with_capacity(self.vars.len() * VAR_LEN);
         for v in &self.vars {
             v.write(&mut vars);
         }
-        put(&mut self.dat1, T_SCRIPT_VARS, vars)?;
+        put(&mut self.dat1, TAG_SCRIPT_VARS, vars)?;
 
         // Shipped pools hold duplicate copies of some strings, so existing
         // entries keep their original offsets and only new names are interned.
@@ -1856,8 +1885,8 @@ impl Zone {
             hashes.extend_from_slice(&crc32::hash(n).to_le_bytes());
         }
         self.script_types = names;
-        put(&mut self.dat1, T_SCRIPT_STRINGS, offsets)?;
-        put(&mut self.dat1, T_SCRIPT_STRING_HASHES, hashes)
+        put(&mut self.dat1, TAG_SCRIPT_STRINGS, offsets)?;
+        put(&mut self.dat1, TAG_SCRIPT_STRING_HASHES, hashes)
     }
 
     fn serialize_actions(&self) -> Vec<u8> {
@@ -1890,7 +1919,7 @@ impl Zone {
         }
 
         let section = id_name_table(&mut self.dat1, &self.actor_asset_ids, &self.actor_asset_paths);
-        self.dat1.set_section_data(T_ACTOR_REFS, section)
+        self.dat1.set_section_data(TAG_ACTOR_ASSETS, section)
     }
 
     fn apply_model_name_edits(&mut self, edits: &ZoneEdits) {
@@ -1904,7 +1933,7 @@ impl Zone {
             }
         }
         let section = id_name_table(&mut self.dat1, &self.model_ids, &self.model_names);
-        let _ = self.dat1.set_section_data(T_MODEL_NAMES, section);
+        let _ = self.dat1.set_section_data(TAG_MODEL_NAMES, section);
     }
 
     /// Slot of `path` in Zone Model Names, adding it when new.
@@ -1934,12 +1963,12 @@ impl Zone {
         let slot_of: std::collections::HashMap<u64, u16> = all.iter().enumerate().map(|(i, e)| (e.0, i as u16)).collect();
         (self.model_ids, self.model_names) = all.into_iter().unzip();
         let names = id_name_table(&mut self.dat1, &self.model_ids, &self.model_names);
-        self.dat1.set_section_data(T_MODEL_NAMES, names)?;
+        self.dat1.set_section_data(TAG_MODEL_NAMES, names)?;
 
-        let mut scene = self.dat1.get_section_data(T_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
+        let mut scene = self.dat1.get_section_data(TAG_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
         // +0x110 is a u16 model index (0xFFFF when the entry names no model)
         // and +0x112 is the extra-record count, so only two bytes may move.
-        for o in u32_table(&self.dat1, T_MODEL_INSTS) {
+        for o in u32_table(&self.dat1, TAG_MODEL_INSTS) {
             let o = o as usize + OFF_MODEL_INDEX;
             if let Some(b) = scene.get_mut(o..o + 2) {
                 let slot = u16::from_le_bytes([b[0], b[1]]);
@@ -1951,7 +1980,7 @@ impl Zone {
                 }
             }
         }
-        put(&mut self.dat1, T_SCENE_OBJECTS, scene)
+        put(&mut self.dat1, TAG_SCENE_OBJECTS, scene)
     }
 
     /// Adds static model instances, each cloned from the zone's first one. They go right after the
@@ -1961,8 +1990,8 @@ impl Zone {
             return Ok(());
         }
         let bad = |m: &str| ToolkitError::Parse(m.into());
-        let mut insts = u32_table(&self.dat1, T_MODEL_INSTS);
-        let mut scene = self.dat1.get_section_data(T_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
+        let mut insts = u32_table(&self.dat1, TAG_MODEL_INSTS);
+        let mut scene = self.dat1.get_section_data(TAG_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
 
         // Every offset here comes out of the heap's own length field
         // ([`Zone::entry_len`]). A kind-0 entry is MODEL_INST_LEN bytes *plus*
@@ -1979,12 +2008,8 @@ impl Zone {
             .and_then(|&o| record(&scene, o))
             .filter(|r| r.len() == MODEL_INST_LEN)
             .ok_or_else(|| bad("the zone has no model instance to clone"))?;
-        let mut at = 0usize;
-        for &o in &insts {
-            let len = Self::entry_len(&scene, o as usize)
-                .ok_or_else(|| bad("Zone Model Insts points past Zone Scene Objects"))?;
-            at = at.max(o as usize + len);
-        }
+        let at = heap_run_end(&scene, &insts)
+            .ok_or_else(|| bad("Zone Model Insts points past Zone Scene Objects"))?;
 
         // Records behind the insertion point move, and only actors are known to point at them.
         let mut o = at;
@@ -2066,17 +2091,17 @@ impl Zone {
 
         let grew = added.len() as u32;
         scene.splice(at..at, added);
-        if let Some(mut actors) = self.dat1.get_section_data(T_ACTORS).map(|d| d.to_vec()) {
+        if let Some(mut actors) = self.dat1.get_section_data(TAG_ACTORS).map(|d| d.to_vec()) {
             for (a, rec) in self.actors.iter_mut().zip(actors.chunks_exact_mut(ACTOR_LEN)) {
                 if a.scene_offset != u32::MAX && a.scene_offset as usize >= at {
                     a.scene_offset += grew;
                     rec[8..12].copy_from_slice(&a.scene_offset.to_le_bytes());
                 }
             }
-            self.dat1.set_section_data(T_ACTORS, actors)?;
+            self.dat1.set_section_data(TAG_ACTORS, actors)?;
         }
-        self.dat1.set_section_data(T_MODEL_INSTS, insts.iter().flat_map(|o| o.to_le_bytes()).collect())?;
-        self.dat1.set_section_data(T_SCENE_OBJECTS, scene)
+        self.dat1.set_section_data(TAG_MODEL_INSTS, insts.iter().flat_map(|o| o.to_le_bytes()).collect())?;
+        self.dat1.set_section_data(TAG_SCENE_OBJECTS, scene)
     }
 
     fn apply_script_var_edits(&mut self, edits: &ZoneEdits) -> Result<()> {
@@ -2112,7 +2137,7 @@ impl Zone {
         for v in &self.vars {
             v.write(&mut section);
         }
-        self.dat1.set_section_data(T_SCRIPT_VARS, section)
+        self.dat1.set_section_data(TAG_SCRIPT_VARS, section)
     }
 
     fn apply_prius_edits(&mut self, edits: &ZoneEdits) -> Result<()> {
@@ -2148,7 +2173,7 @@ impl Zone {
             rebuilt.push(PriusBlob { offset, size, raw: bytes, ..blob });
         }
         self.script_priuses = rebuilt;
-        put(&mut self.dat1, T_SCRIPT_PRIUSES, section)
+        put(&mut self.dat1, TAG_SCRIPT_PRIUSES, section)
     }
 
     fn rebuild_actor_priuses(&mut self) -> Result<()> {
@@ -2168,15 +2193,30 @@ impl Zone {
             });
         }
         self.actor_priuses = rebuilt;
-        put(&mut self.dat1, T_ACTOR_PRIUS_DATA, section)
+        put(&mut self.dat1, TAG_ACTOR_PRIUS_DATA, section)
     }
 
     fn blob_bytes(&mut self, blob: &PriusBlob) -> Result<Vec<u8>> {
-        if blob.dirty {
-            serialize_blob(&blob.json, &mut self.dat1)
-        } else {
-            Ok(blob.raw.clone())
+        match (&blob.error, blob.dirty) {
+            // Its `json` is Null, so serializing it would write an empty blob
+            // over whatever the game shipped. Nothing may mark it dirty, but if
+            // anything ever does, say so rather than silently truncating it.
+            (Some(why), true) => Err(ToolkitError::Parse(format!(
+                "prius blob at {} was never decoded ({why}), so it cannot be rewritten",
+                blob.offset
+            ))),
+            (_, true) => serialize_blob(&blob.json, &mut self.dat1),
+            (_, false) => Ok(blob.raw.clone()),
         }
+    }
+
+    /// The prius blobs whose DDL would not decode, as `(offset, reason)`.
+    pub fn undecoded_priuses(&self) -> Vec<(u32, &str)> {
+        self.script_priuses
+            .iter()
+            .chain(self.actor_priuses.iter())
+            .filter_map(|b| b.error.as_deref().map(|e| (b.offset, e)))
+            .collect()
     }
 
     /// Every path-like string currently reachable from a prius blob.
@@ -2235,7 +2275,7 @@ impl Zone {
             section.extend_from_slice(&r.name_offset.to_le_bytes());
             section.extend_from_slice(&r.ext_hash.to_le_bytes());
         }
-        let _ = self.dat1.set_section_data(T_ZONE_ASSET_REFS, section);
+        let _ = self.dat1.set_section_data(TAG_ZONE_ASSET_REFS, section);
     }
 }
 
@@ -2521,17 +2561,17 @@ impl Zone {
             let mut action = self.actions[*n].clone();
             // Authored nodes get their own template id; prefab nodes stay on
             // theirs and move to a new instance, as a second placement would.
-            let key = (action.uid ^ action.graph_uid) & !ID_FLAG;
+            let key = (action.node_id ^ action.template_id) & !ID_FLAG;
             if key == 0 {
-                let id = ids.fresh(action.uid);
-                action.graph_uid = (id & !ID_FLAG) | (action.graph_uid & ID_FLAG);
-                action.uid = id;
+                let id = ids.fresh(action.node_id);
+                action.template_id = (id & !ID_FLAG) | (action.template_id & ID_FLAG);
+                action.node_id = id;
             } else {
                 let new_key = *instance_keys
                     .entry(key)
                     .or_insert_with(|| ids.fresh(key) & !ID_FLAG);
-                let id = (action.graph_uid ^ new_key) | ID_FLAG;
-                action.uid = if ids.claim(id) { id } else { ids.fresh(id) };
+                let id = (action.template_id ^ new_key) | ID_FLAG;
+                action.node_id = if ids.claim(id) { id } else { ids.fresh(id) };
             }
             action.prius_offset = 0;
             action.prius_size = 0;
@@ -2543,6 +2583,9 @@ impl Zone {
                     None => {
                         let mut json = self.script_priuses[src].json.clone();
                         rename_wave_strings(&mut json, &old_tag, &new_tag);
+                        // Carried over so a copy of a blob that never decoded
+                        // cannot be written back as an empty one.
+                        let error = self.script_priuses[src].error.clone();
                         self.script_priuses.push(PriusBlob {
                             offset: 0,
                             size: 0,
@@ -2550,6 +2593,7 @@ impl Zone {
                             owners: vec![new_index],
                             raw: Vec::new(),
                             dirty: true,
+                            error,
                         });
                         blob_map.insert(src, self.script_priuses.len() - 1);
                         priuses_added += 1;
@@ -2846,18 +2890,18 @@ impl Zone {
         }
 
         let id = ids.fresh(seed);
-        let action_name_index = self.intern_script_string(HUD_MESSAGE_TYPE);
+        let type_index = self.intern_script_string(HUD_MESSAGE_TYPE);
         self.actions.push(ScriptAction {
             index: self.actions.len() as u32,
-            uid: id,
-            graph_uid: id,
-            in_plug_count: 0,
-            out_plug_index: u16::MAX,
-            out_plug_count: 0,
-            var_plug_index: u16::MAX,
-            var_plug_count: 0,
-            action_name_index,
-            action_name_hash: crc32::hash(HUD_MESSAGE_TYPE),
+            node_id: id,
+            template_id: id,
+            in_degree: 0,
+            link_start: u16::MAX,
+            link_count: 0,
+            param_start: u16::MAX,
+            param_count: 0,
+            type_index,
+            type_hash: crc32::hash(HUD_MESSAGE_TYPE),
             prius_offset: 0,
             prius_size: 0,
         });
@@ -2875,6 +2919,7 @@ impl Zone {
             owners: vec![node],
             raw: Vec::new(),
             dirty: true,
+            error: None,
         });
     }
 
@@ -2923,19 +2968,19 @@ impl Zone {
             value,
         });
         let id = ids.fresh(seed);
-        let action_name_index = self.intern_script_string(DELAY_TYPE);
+        let type_index = self.intern_script_string(DELAY_TYPE);
         let node = self.actions.len();
         self.actions.push(ScriptAction {
             index: self.actions.len() as u32,
-            uid: id,
-            graph_uid: id,
-            in_plug_count: 0,
-            out_plug_index: u16::MAX,
-            out_plug_count: 0,
-            var_plug_index: u16::MAX,
-            var_plug_count: 0,
-            action_name_index,
-            action_name_hash: crc32::hash(DELAY_TYPE),
+            node_id: id,
+            template_id: id,
+            in_degree: 0,
+            link_start: u16::MAX,
+            link_count: 0,
+            param_start: u16::MAX,
+            param_count: 0,
+            type_index,
+            type_hash: crc32::hash(DELAY_TYPE),
             prius_offset: 0,
             prius_size: 0,
         });
@@ -3164,8 +3209,8 @@ impl IdAllocator {
     fn new(zone: &Zone, salt: u64) -> Self {
         let mut taken = std::collections::HashSet::new();
         for a in &zone.actions {
-            taken.insert(a.uid & !ID_FLAG);
-            taken.insert(a.graph_uid & !ID_FLAG);
+            taken.insert(a.node_id & !ID_FLAG);
+            taken.insert(a.template_id & !ID_FLAG);
         }
         for v in &zone.vars {
             taken.insert(v.id & !ID_FLAG);
@@ -3685,6 +3730,61 @@ mod tests {
         assert_eq!(kind_name(KIND_MODEL), "model");
         assert_eq!(kind_name(KIND_ACTOR), "actor");
         assert_eq!(kind_name(KIND_IMPOSTOR), "impostor");
+    }
+
+    /// A heap of kind-0 entries with the given lengths, laid out the way the
+    /// shipped section does it.
+    fn heap(lens: &[usize]) -> (Vec<u8>, Vec<u32>) {
+        let mut scene = Vec::new();
+        let mut offsets = Vec::new();
+        for (i, len) in lens.iter().enumerate() {
+            offsets.push(scene.len() as u32);
+            let mut e = vec![0u8; *len];
+            // The high byte of the length word is 0x80 on every shipped entry.
+            LE::write_u32(&mut e[OFF_SIZE..OFF_SIZE + 4], 0x8000_0000 | *len as u32);
+            let extras = ((*len - MODEL_INST_LEN) / 0x20) as u16;
+            LE::write_u16(&mut e[OFF_MODEL_INDEX..OFF_MODEL_INDEX + 2], i as u16);
+            LE::write_u16(&mut e[OFF_MODEL_INDEX + 2..OFF_MODEL_INDEX + 4], extras);
+            scene.extend_from_slice(&e);
+        }
+        (scene, offsets)
+    }
+
+    #[test]
+    fn entry_len_reads_the_heap_entry_s_own_length() {
+        // The middle entry carries two extra records.
+        let (scene, offsets) = heap(&[MODEL_INST_LEN, MODEL_INST_LEN + 0x40, MODEL_INST_LEN]);
+        assert_eq!(Zone::entry_len(&scene, offsets[0] as usize), Some(MODEL_INST_LEN));
+        assert_eq!(
+            Zone::entry_len(&scene, offsets[1] as usize),
+            Some(MODEL_INST_LEN + 0x40)
+        );
+        // The entry with extras declares the count the length implies.
+        let at = offsets[1] as usize + OFF_MODEL_INDEX + 2;
+        assert_eq!(LE::read_u16(&scene[at..at + 2]), 2);
+        // An entry that would run past the section is rejected, not clamped.
+        assert_eq!(Zone::entry_len(&scene[..scene.len() - 4], offsets[2] as usize), None);
+        assert_eq!(Zone::entry_len(&scene, scene.len()), None);
+    }
+
+    /// The bug a fixed 320-byte stride produces: the insertion point lands
+    /// inside the last entry whenever anything in the run carries extras.
+    #[test]
+    fn heap_run_end_follows_the_declared_lengths() {
+        // The last entry of the run is the one with extras, which is where a
+        // fixed stride does its damage: it puts the end of the run 0x40 bytes
+        // inside that entry, so an insertion there would cut it in half.
+        let (scene, offsets) = heap(&[MODEL_INST_LEN, MODEL_INST_LEN, MODEL_INST_LEN + 0x40]);
+        assert_eq!(heap_run_end(&scene, &offsets), Some(scene.len()));
+        let fixed_stride = offsets.iter().map(|&o| o as usize + MODEL_INST_LEN).max();
+        assert_eq!(fixed_stride, Some(scene.len() - 0x40));
+
+        // Extras anywhere else still move every later offset along.
+        let (scene, offsets) = heap(&[MODEL_INST_LEN + 0x20, MODEL_INST_LEN]);
+        assert_eq!(offsets, vec![0, MODEL_INST_LEN as u32 + 0x20]);
+        assert_eq!(heap_run_end(&scene, &offsets), Some(scene.len()));
+
+        assert!(heap_run_end(&scene, &[scene.len() as u32]).is_none());
     }
 
     #[test]

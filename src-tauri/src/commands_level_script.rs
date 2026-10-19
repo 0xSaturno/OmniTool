@@ -68,15 +68,15 @@ pub struct SubgraphEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NodeDto {
     pub index: u32,
-    pub uid: String,
-    pub graph_uid: String,
+    pub node_id: String,
+    pub template_id: String,
     pub type_name: Option<String>,
     pub type_name_hash: String,
     pub prius_type: Option<String>,
     pub prius_offset: u32,
     pub prius_size: u32,
     pub subgraph: u32,
-    pub in_plug_count: u16,
+    pub in_degree: u16,
     pub in_edges: Vec<u32>,
     pub out_edges: Vec<u32>,
     pub vars: Vec<VarBindingDto>,
@@ -130,15 +130,15 @@ fn node_dto(g: &ScriptGraph, i: usize) -> NodeDto {
     let (di, do_, dv) = n.declared_plugs().unwrap_or((&[], &[], &[]));
     NodeDto {
         index: n.index,
-        uid: format!("{:016X}", n.uid),
-        graph_uid: format!("{:016X}", n.graph_uid),
+        node_id: format!("{:016X}", n.node_id),
+        template_id: format!("{:016X}", n.template_id),
         type_name: n.type_name.clone(),
         type_name_hash: format!("{:08X}", n.type_name_hash),
         prius_type: n.prius_type(),
         prius_offset: n.prius_offset,
         prius_size: n.prius_size,
         subgraph: n.subgraph,
-        in_plug_count: n.in_plug_count,
+        in_degree: n.in_degree,
         in_edges: n.in_edges.clone(),
         out_edges: n.out_edges.clone(),
         vars: n

@@ -94,7 +94,7 @@ use byteorder::{ByteOrder, LE};
 use serde::Serialize;
 
 /// `Zone Asset References` — the tag's CRC-32 preimage, from `section_names`.
-pub const T_ZONE_ASSET_REFS: u32 = 0x30DA_DA09;
+pub const TAG_ZONE_ASSET_REFS: u32 = 0x30DA_DA09;
 /// Bytes per row.
 pub const ROW: usize = 16;
 
@@ -233,7 +233,7 @@ pub struct ZoneRefs {
 impl ZoneRefs {
     /// Decode the section, or `None` when the zone does not carry one.
     pub fn read(dat1: &Dat1) -> Option<Self> {
-        let sec = dat1.get_section_data(T_ZONE_ASSET_REFS)?;
+        let sec = dat1.get_section_data(TAG_ZONE_ASSET_REFS)?;
         let n = sec.len() / ROW;
         let mut rows = Vec::with_capacity(n);
         for i in 0..n {
@@ -409,7 +409,7 @@ pub fn add_reference(zone: &mut Zone, name: &str, type_tag: u32) -> Result<RefPl
 
     let existing = ZoneRefs::read(&zone.dat1)
         .ok_or_else(|| ToolkitError::Parse(format!(
-            "this zone has no Zone Asset References section ({T_ZONE_ASSET_REFS:#010X}); \
+            "this zone has no Zone Asset References section ({TAG_ZONE_ASSET_REFS:#010X}); \
              adding one would add a DAT1 section header and move every string offset in the file"
         )))?;
     if let Some(r) = existing.rows.iter().find(|r| r.asset_id == asset_id) {
@@ -422,7 +422,7 @@ pub fn add_reference(zone: &mut Zone, name: &str, type_tag: u32) -> Result<RefPl
     let header_end_before = zone.dat1.header_end();
     let old_section = zone
         .dat1
-        .get_section_data(T_ZONE_ASSET_REFS)
+        .get_section_data(TAG_ZONE_ASSET_REFS)
         .map(<[u8]>::to_vec)
         .unwrap_or_default();
 
@@ -441,10 +441,10 @@ pub fn add_reference(zone: &mut Zone, name: &str, type_tag: u32) -> Result<RefPl
         row_bytes(asset_id, name_offset, type_tag),
     );
     let new_section = section.clone();
-    zone.dat1.set_section_data(T_ZONE_ASSET_REFS, section)?;
+    zone.dat1.set_section_data(TAG_ZONE_ASSET_REFS, section)?;
 
     zone.edits.push(ZoneEdit {
-        section: T_ZONE_ASSET_REFS,
+        section: TAG_ZONE_ASSET_REFS,
         offset: at * ROW,
         old: old_section,
         new: new_section,
@@ -489,7 +489,7 @@ pub fn repoint_reference(
     let asset_id = asset_id_for(&spelling, type_tag);
 
     let existing = ZoneRefs::read(&zone.dat1).ok_or(ToolkitError::SectionNotFound(
-        T_ZONE_ASSET_REFS,
+        TAG_ZONE_ASSET_REFS,
     ))?;
     if row_index >= existing.rows.len() {
         return Err(ToolkitError::Parse(format!(
@@ -515,17 +515,17 @@ pub fn repoint_reference(
 
     let mut section = zone
         .dat1
-        .get_section_data(T_ZONE_ASSET_REFS)
+        .get_section_data(TAG_ZONE_ASSET_REFS)
         .map(<[u8]>::to_vec)
-        .ok_or(ToolkitError::SectionNotFound(T_ZONE_ASSET_REFS))?;
+        .ok_or(ToolkitError::SectionNotFound(TAG_ZONE_ASSET_REFS))?;
     let at = row_index * ROW;
     let old = section[at..at + ROW].to_vec();
     let new = row_bytes(asset_id, name_offset, type_tag).to_vec();
     section[at..at + ROW].copy_from_slice(&new);
-    zone.dat1.set_section_data(T_ZONE_ASSET_REFS, section)?;
+    zone.dat1.set_section_data(TAG_ZONE_ASSET_REFS, section)?;
 
     zone.edits.push(ZoneEdit {
-        section: T_ZONE_ASSET_REFS,
+        section: TAG_ZONE_ASSET_REFS,
         offset: at,
         old,
         new,
@@ -717,7 +717,7 @@ pub fn verify_grown(original: &[u8], grown: &[u8], expect_id: u64, expect_name: 
             differing.push(format!("{:08X} ({} -> {} bytes)", sh.tag, b.len(), a.len()));
         }
     }
-    let only_refs = differing.len() == 1 && differing[0].starts_with(&format!("{T_ZONE_ASSET_REFS:08X}"));
+    let only_refs = differing.len() == 1 && differing[0].starts_with(&format!("{TAG_ZONE_ASSET_REFS:08X}"));
     checks.push(Check::new(
         "only the reference section changed",
         only_refs,
@@ -738,8 +738,8 @@ pub fn verify_grown(original: &[u8], grown: &[u8], expect_id: u64, expect_name: 
     ));
 
     // --- the reference table ---------------------------------------------
-    let rb = before.dat1.get_section_data(T_ZONE_ASSET_REFS).unwrap_or(&[]);
-    let ra = after.dat1.get_section_data(T_ZONE_ASSET_REFS).unwrap_or(&[]);
+    let rb = before.dat1.get_section_data(TAG_ZONE_ASSET_REFS).unwrap_or(&[]);
+    let ra = after.dat1.get_section_data(TAG_ZONE_ASSET_REFS).unwrap_or(&[]);
     checks.push(Check::new(
         "reference section grew by exactly one row",
         ra.len() == rb.len() + ROW,

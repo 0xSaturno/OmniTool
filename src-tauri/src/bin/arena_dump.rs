@@ -12,7 +12,7 @@ fn describe_binding(zone: &Zone, var: usize, depth: u8) -> String {
                     .unwrap_or_default()
             );
         }
-        if let Some(g) = zone.actor_groups.iter().find(|g| g.uid == id) {
+        if let Some(g) = zone.actor_groups.iter().find(|g| g.id == id) {
             return format!("var{var}=group:{}[{}]", g.name, g.members.len());
         }
     }
@@ -65,7 +65,7 @@ fn main() {
             .and_then(|v| zone.vars.get(v).map(|x| (v, x.as_number())));
         let groups: Vec<&str> = zone
             .plugs
-            .get(a.var_plug_range())
+            .get(a.param_range())
             .map(|ps| {
                 ps.iter()
                     .filter(|p| p.name_hash == omnitool_lib::core::zone::name_hash("SpawnIntoGroup"))
@@ -90,7 +90,7 @@ fn main() {
             .unwrap_or(a);
         let locs: Vec<String> = zone
             .plugs
-            .get(holder.var_plug_range())
+            .get(holder.param_range())
             .map(|ps| {
                 ps.iter()
                     .filter(|p| {
@@ -356,7 +356,7 @@ fn main() {
                         .is_some_and(|p| p.to_ascii_lowercase().contains("spawn_volume"))
                 })
             })
-            .map(|g| g.uid);
+            .map(|g| g.id);
         let volume_actor = zone
             .actors
             .iter()
@@ -369,7 +369,7 @@ fn main() {
         let portal_group_var = zone.vars.iter().position(|v| {
             volume_group.is_some()
                 && zone.actor_groups.iter().any(|g| {
-                    g.uid == v.id_value()
+                    g.id == v.id_value()
                         && g.members.iter().any(|m| {
                             zone.actors
                                 .get(*m as usize)

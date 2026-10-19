@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use omnitool_lib::core::level;
 use omnitool_lib::core::zone::Zone;
-use omnitool_lib::core::zone_refs::{self, ZoneRefs, T_ZONE_ASSET_REFS};
+use omnitool_lib::core::zone_refs::{self, ZoneRefs, TAG_ZONE_ASSET_REFS};
 
 /// FNV-1 32 (multiply first, then xor) over the lowercased bytes -- the hash
 /// the Wwise event ids in this table are built with.
@@ -157,7 +157,7 @@ fn census(game: &str) {
         }
     }
 
-    println!("\n=== Zone Asset References (0x{T_ZONE_ASSET_REFS:08X}) census ===");
+    println!("\n=== Zone Asset References (0x{TAG_ZONE_ASSET_REFS:08X}) census ===");
     println!("zones carrying the section : {zones_with} of {}", idx.zones.len());
     println!("rows                       : {rows_total}");
     println!(
@@ -285,7 +285,7 @@ fn grow(game: &str, zone_path: Option<String>) {
                     .ok()
                     .and_then(|b| Zone::parse(&b).ok())
                     .map(|zz| {
-                        zz.dat1.get_section_data(T_ZONE_ASSET_REFS).is_some()
+                        zz.dat1.get_section_data(TAG_ZONE_ASSET_REFS).is_some()
                             && !zz.model_ids.is_empty()
                     })
                     .unwrap_or(false)

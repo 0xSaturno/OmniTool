@@ -1168,6 +1168,124 @@ fn main() {
         }
     });
 
+    // The row is read as `{u32 name_index, u32 asset_index, u32 scene_offset,
+    // i32 prius_index, i32 prius_count, u16 flags, u16 pad, u64 uid}`. Which of
+    // those words are signed is not a matter of taste: a word read as `u32`
+    // that really carries -1 silently becomes 4 294 967 295 and indexes
+    // nothing. Measured over all 3 597 loadable zones of the build (144 414
+    // rows): name_index, asset_index and prius_count are never negative,
+    // prius_index is -1 on 103 053 rows (71.4 %), and the half-word after the
+    // flags is zero on every row. This check re-measures the same four claims
+    // from the raw section bytes over a spread of regions, so the struct's own
+    // types cannot be what makes it pass.
+    // A zone the editor cannot open at all is a worse answer than a zone with
+    // one unreadable prius sheet, so an undecodable DDL blob is recorded on the
+    // blob and reported in `warnings` instead of failing the parse. This is the
+    // one shipped zone where that happens, and it is checked by name: the zone
+    // must load, the bad blob must be named, and the other 237 blobs of the
+    // same zone must decode.
+    r.check("zone_partial_prius_decode", |c| {
+        const ZONE: &str =
+            "levels/i29/overlay/storymission/mis_blizar/i29_blizar_startingarea_gp.zone";
+        let scene = match block_on(ed::level_load_zone(game.clone(), ZONE.into(), h())) {
+            Ok(v) => v,
+            Err(e) => return c.err(format!("{ZONE} will not load at all: {e}")),
+        };
+        c.ok(scene.objects.len() > 100, format!("only {} scene objects", scene.objects.len()));
+        c.ok(
+            scene.warnings.len() == 1,
+            format!("expected exactly 1 warning, got {:?}", scene.warnings),
+        );
+        c.ok(
+            scene.warnings.iter().any(|w| w.contains("did not decode")),
+            "the warning does not say what went wrong",
+        );
+        let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
+            Ok(i) => i,
+            Err(e) => return c.err(e),
+        };
+        let Some(rec) = idx.zones.iter().find(|z| z.path == ZONE) else {
+            return c.err(format!("{ZONE} is not in this build"));
+        };
+        let Ok(raw) = idx.extract(rec.id) else { return c.err("extract failed") };
+        let Ok(mut z) = omnitool_lib::core::zone::Zone::parse(&raw) else {
+            return c.err("Zone::parse failed")
+        };
+        let blobs = z.script_priuses.len() + z.actor_priuses.len();
+        let bad: Vec<(u32, String)> = z
+            .undecoded_priuses()
+            .into_iter()
+            .map(|(o, w)| (o, w.to_string()))
+            .collect();
+        c.ok(bad.len() == 1, format!("{} blobs did not decode, expected 1", bad.len()));
+        c.ok(
+            blobs - bad.len() >= 200,
+            format!("only {} of {blobs} blobs decoded", blobs - bad.len()),
+        );
+        // The unread blob is written back from its original bytes, so a zone
+        // holding one still round-trips byte for byte.
+        c.ok(!z.is_dirty(), "parsing alone marked the zone dirty");
+        // `to_asset_bytes` drops the 36-byte header the TOC prepends.
+        let round = z.to_asset_bytes();
+        let want = &raw[omnitool_lib::core::zone::ASSET_HEADER_LEN..];
+        c.ok(
+            round == want,
+            format!(
+                "round trip changed the file: {} bytes in, {} out",
+                want.len(),
+                round.len()
+            ),
+        );
+        c.note(format!(
+            "{} objects, {blobs} prius blobs, 1 undecoded at offset {} -- round trip byte-identical over {} bytes",
+            scene.objects.len(),
+            bad.first().map(|(o, _)| *o).unwrap_or(0),
+            want.len()
+        ));
+    });
+
+    r.check("zone_actor_row_signs", |c| {
+        let idx = match omnitool_lib::core::level::get_index(&game, Some(&hashes)) {
+            Ok(i) => i,
+            Err(e) => return c.err(e),
+        };
+        let mut rows = 0u64;
+        let mut name_neg = 0u64;
+        let mut asset_neg = 0u64;
+        let mut prius_neg = 0u64;
+        let mut count_neg = 0u64;
+        let mut pad_nz = 0u64;
+        let mut zones = 0usize;
+        for path in spread(&idx, None, 3, 240, 4 << 20) {
+            let Some(rec) = idx.zones.iter().find(|z| z.path == path) else { continue };
+            let Ok(raw) = idx.extract(rec.id) else { continue };
+            let Ok(z) = omnitool_lib::core::zone::Zone::parse(&raw) else { continue };
+            let Some(sec) = z.dat1.get_section_data(omnitool_lib::core::zone::TAG_ACTORS) else {
+                continue;
+            };
+            zones += 1;
+            for r in sec.chunks_exact(32) {
+                let w = |o: usize| i32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+                rows += 1;
+                name_neg += (w(0) < 0) as u64;
+                asset_neg += (w(4) < 0) as u64;
+                prius_neg += (w(12) < 0) as u64;
+                count_neg += (w(16) < 0) as u64;
+                pad_nz += (u16::from_le_bytes(r[22..24].try_into().unwrap()) != 0) as u64;
+            }
+        }
+        c.ok(rows > 1000, format!("only {rows} actor rows found; the spread is too thin to say anything"));
+        c.ok(name_neg == 0, format!("name_index is negative on {name_neg} of {rows} rows, so reading it as u32 is wrong"));
+        c.ok(asset_neg == 0, format!("asset_index is negative on {asset_neg} of {rows} rows, so reading it as u32 is wrong"));
+        c.ok(count_neg == 0, format!("prius_count is negative on {count_neg} of {rows} rows"));
+        c.ok(pad_nz == 0, format!("the half-word after the flags is non-zero on {pad_nz} of {rows} rows, so it is not padding"));
+        c.ok(prius_neg > 0, "prius_index is never negative in this sample, so the -1 sentinel is unproven here");
+        c.note(format!(
+            "{rows} rows over {zones} zones: prius_index -1 on {prius_neg} ({:.1}%), name/asset/count never negative, pad always zero",
+            prius_neg as f64 * 100.0 / rows.max(1) as f64
+        ));
+    });
+
     r.check("level_zone_paths", |c| {
         let mut z = if curve_zone.is_empty() { gp.clone() } else { curve_zone.clone() };
         let lines = match block_on(ent::level_zone_paths(game.clone(), z.clone(), h())) {
@@ -2270,7 +2388,7 @@ fn main() {
             Err(e) => return c.err(e),
         };
         c.ok(d.node.index == 0, "asked for node 0, got another");
-        c.ok(d.node.uid != "0000000000000000", "node 0 has a zero uid");
+        c.ok(d.node.node_id != "0000000000000000", "node 0 has a zero id");
         c.ok(
             d.in_edges.len() == d.node.in_edges.len() && d.out_edges.len() == d.node.out_edges.len(),
             "the resolved edge lists do not match the node's own edge indices",

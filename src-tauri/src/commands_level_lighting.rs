@@ -282,8 +282,8 @@ pub async fn level_atmosphere_lighting(
     }
     let dat1 = crate::core::dat1::Dat1::parse(&raw[ATMOSPHERE_WRAPPER_LEN..])?;
     let h = dat1
-        .get_section_data(T_ATMOSPHERE_HEADER)
-        .ok_or_else(|| ToolkitError::SectionNotFound(T_ATMOSPHERE_HEADER))?;
+        .get_section_data(TAG_ATMOSPHERE_HEADER)
+        .ok_or_else(|| ToolkitError::SectionNotFound(TAG_ATMOSPHERE_HEADER))?;
     if h.len() < KEYLIGHT_END {
         return Err(ToolkitError::Parse(format!(
             "atmosphere header is {} bytes, need at least {KEYLIGHT_END}",
@@ -309,7 +309,7 @@ pub async fn level_atmosphere_lighting(
     };
 
     let strings: Vec<String> = dat1
-        .get_section_data(T_ATMOSPHERE_STRINGS)
+        .get_section_data(TAG_ATMOSPHERE_STRINGS)
         .map(|s| {
             s.split(|b| *b == 0)
                 .filter(|c| !c.is_empty())
@@ -374,8 +374,8 @@ pub async fn level_lighting_conditions() -> Result<Vec<LightingConditionDto>> {
 const ATMOSPHERE_WRAPPER_LEN: usize = 36;
 /// The atmosphere's cooked settings block. 1 800 bytes on all 95 shipped
 /// atmospheres the PC build actually stores.
-const T_ATMOSPHERE_HEADER: u32 = 0x02F0_6D4E;
-const T_ATMOSPHERE_STRINGS: u32 = 0x72F2_8658;
+const TAG_ATMOSPHERE_HEADER: u32 = 0x02F0_6D4E;
+const TAG_ATMOSPHERE_STRINGS: u32 = 0x72F2_8658;
 const KEYLIGHT_END: usize = 184;
 
 /// The engine's `sSunAzimuthElevationToDirection`: the direction the key light

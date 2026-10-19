@@ -102,6 +102,10 @@ pub struct ZoneScene {
     pub objects: Vec<SceneObject>,
     pub actors: Vec<ActorRow>,
     pub sections: Vec<ZoneSectionDto>,
+    /// What the zone would not fully decode, so the UI can say so instead of
+    /// presenting a partial read as a complete one. Empty on every shipped zone
+    /// but one; see [`Zone::undecoded_priuses`](crate::core::zone::Zone::undecoded_priuses).
+    pub warnings: Vec<String>,
 }
 
 /// One in-place transform patch. `matrix` is row-major with row 3 as the
@@ -294,6 +298,12 @@ pub async fn level_load_zone(
         .filter(|o| o.geometry.is_some())
         .count();
 
+    let warnings: Vec<String> = zone
+        .undecoded_priuses()
+        .iter()
+        .map(|(off, why)| format!("prius blob at {off} did not decode: {why}"))
+        .collect();
+
     let scene = ZoneScene {
         path,
         id: hex_id(id),
@@ -306,6 +316,7 @@ pub async fn level_load_zone(
         objects: zone.scene_objects.clone(),
         actors: zone.actors.clone(),
         sections,
+        warnings,
     };
 
     info!(

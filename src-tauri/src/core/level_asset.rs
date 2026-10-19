@@ -343,21 +343,21 @@ use serde::Serialize;
 
 pub const ASSET_HEADER_LEN: usize = 36;
 
-pub const T_LEVEL_BUILT: u32 = 0x7CA7_267D;
-pub const T_REGIONS_BUILT: u32 = 0x396F_9418;
-pub const T_ZONES_BUILT: u32 = 0x4E02_3760;
-pub const T_LINKS_BUILT: u32 = 0x3395_AEC1;
-pub const T_REGION_LOD_BUILT: u32 = 0xC30D_92B6;
-pub const T_ZONE_REFERENCES: u32 = 0x95F9_1E24;
-pub const T_REGION_NAMES: u32 = 0x4130_D903;
-pub const T_ZONE_NAMES: u32 = 0x2BA3_3702;
-pub const T_LINK_NAMES: u32 = 0x2236_C47A;
-pub const T_REGION_GAME_STRUCT: u32 = 0x4188_7FB3;
-pub const T_REGION_GAME_DATA: u32 = 0x339C_970E;
-pub const T_HIBERNATE_MODEL_NAMES: u32 = 0x7077_E5F5;
-pub const T_HIBERNATE_VFX_NAMES: u32 = 0x6251_A0BF;
-pub const T_HIBERNATE_RAW_DATA: u32 = 0x07C7_5341;
-pub const T_HIBERNATE_DATA_DESC: u32 = 0x611F_490D;
+pub const TAG_LEVEL_BUILT: u32 = 0x7CA7_267D;
+pub const TAG_REGIONS_BUILT: u32 = 0x396F_9418;
+pub const TAG_ZONES_BUILT: u32 = 0x4E02_3760;
+pub const TAG_LINKS_BUILT: u32 = 0x3395_AEC1;
+pub const TAG_REGION_LOD_BUILT: u32 = 0xC30D_92B6;
+pub const TAG_ZONE_REFERENCES: u32 = 0x95F9_1E24;
+pub const TAG_REGION_NAMES: u32 = 0x4130_D903;
+pub const TAG_ZONE_NAMES: u32 = 0x2BA3_3702;
+pub const TAG_LINK_NAMES: u32 = 0x2236_C47A;
+pub const TAG_REGION_GAME_STRUCT: u32 = 0x4188_7FB3;
+pub const TAG_REGION_GAME_DATA: u32 = 0x339C_970E;
+pub const TAG_HIBERNATE_MODEL_NAMES: u32 = 0x7077_E5F5;
+pub const TAG_HIBERNATE_VFX_NAMES: u32 = 0x6251_A0BF;
+pub const TAG_HIBERNATE_RAW_DATA: u32 = 0x07C7_5341;
+pub const TAG_HIBERNATE_DATA_DESC: u32 = 0x611F_490D;
 
 pub const LEVEL_BUILT_LEN: usize = 36;
 pub const GAME_DATA_STRIDE: usize = 16;
@@ -746,9 +746,9 @@ impl LevelAsset {
         let dat1 = Dat1::parse(&body[..block0_len])?;
 
         let built = parse_level_built(&dat1)?;
-        let region_names = string_table(&dat1, T_REGION_NAMES);
-        let zone_names = string_table(&dat1, T_ZONE_NAMES);
-        let link_names = string_table(&dat1, T_LINK_NAMES);
+        let region_names = string_table(&dat1, TAG_REGION_NAMES);
+        let zone_names = string_table(&dat1, TAG_ZONE_NAMES);
+        let link_names = string_table(&dat1, TAG_LINK_NAMES);
 
         let regions = parse_regions(&dat1, &region_names);
         let zones = parse_zones(&dat1, &zone_names);
@@ -756,22 +756,22 @@ impl LevelAsset {
         let region_lods = parse_region_lods(&dat1);
         let zone_refs = parse_zone_refs(&dat1);
         let hibernate_refs = parse_hibernate_refs(&dat1);
-        let hibernate_model_names = string_table(&dat1, T_HIBERNATE_MODEL_NAMES);
-        let hibernate_vfx_names = string_table(&dat1, T_HIBERNATE_VFX_NAMES);
+        let hibernate_model_names = string_table(&dat1, TAG_HIBERNATE_MODEL_NAMES);
+        let hibernate_vfx_names = string_table(&dat1, TAG_HIBERNATE_VFX_NAMES);
         let hibernate_zones = parse_hibernate(&dat1, &hibernate_refs);
         let game_data_raw = dat1
-            .get_section_data(T_REGION_GAME_STRUCT)
+            .get_section_data(TAG_REGION_GAME_STRUCT)
             .map(|s| s.to_vec())
             .unwrap_or_default();
         let game_data = parse_game_data(&dat1);
         let game_data_payload = dat1
-            .get_section_data(T_REGION_GAME_DATA)
+            .get_section_data(TAG_REGION_GAME_DATA)
             .map(|s| s.to_vec())
             .unwrap_or_default();
         let game_data_payload_base = dat1
             .sections
             .iter()
-            .find(|s| s.tag == T_REGION_GAME_DATA)
+            .find(|s| s.tag == TAG_REGION_GAME_DATA)
             .map(|s| s.offset)
             .unwrap_or(0);
 
@@ -1175,8 +1175,8 @@ fn split_header(asset: &[u8]) -> Result<(Option<Vec<u8>>, &[u8])> {
 
 fn parse_level_built(dat1: &Dat1) -> Result<LevelHeader> {
     let s = dat1
-        .get_section_data(T_LEVEL_BUILT)
-        .ok_or(ToolkitError::SectionNotFound(T_LEVEL_BUILT))?;
+        .get_section_data(TAG_LEVEL_BUILT)
+        .ok_or(ToolkitError::SectionNotFound(TAG_LEVEL_BUILT))?;
     if s.len() < LEVEL_BUILT_LEN {
         return Err(ToolkitError::Parse(format!(
             "Level Built section is {} bytes, needs {LEVEL_BUILT_LEN}",
@@ -1218,7 +1218,7 @@ fn name_at(names: &[String], index: i16) -> String {
 }
 
 fn parse_regions(dat1: &Dat1, names: &[String]) -> Vec<LevelRegion> {
-    let Some(s) = dat1.get_section_data(T_REGIONS_BUILT) else {
+    let Some(s) = dat1.get_section_data(TAG_REGIONS_BUILT) else {
         return Vec::new();
     };
     (0..s.len() / REGION_STRIDE)
@@ -1252,7 +1252,7 @@ fn parse_regions(dat1: &Dat1, names: &[String]) -> Vec<LevelRegion> {
 }
 
 fn parse_zones(dat1: &Dat1, names: &[String]) -> Vec<LevelZone> {
-    let Some(s) = dat1.get_section_data(T_ZONES_BUILT) else {
+    let Some(s) = dat1.get_section_data(TAG_ZONES_BUILT) else {
         return Vec::new();
     };
     (0..s.len() / ZONE_STRIDE)
@@ -1270,7 +1270,7 @@ fn parse_zones(dat1: &Dat1, names: &[String]) -> Vec<LevelZone> {
 }
 
 fn parse_links(dat1: &Dat1, names: &[String]) -> Vec<LevelNamedLink> {
-    let Some(s) = dat1.get_section_data(T_LINKS_BUILT) else {
+    let Some(s) = dat1.get_section_data(TAG_LINKS_BUILT) else {
         return Vec::new();
     };
     (0..s.len() / LINK_STRIDE)
@@ -1299,7 +1299,7 @@ fn parse_links(dat1: &Dat1, names: &[String]) -> Vec<LevelNamedLink> {
 }
 
 fn parse_region_lods(dat1: &Dat1) -> Vec<LevelRegionLod> {
-    let Some(s) = dat1.get_section_data(T_REGION_LOD_BUILT) else {
+    let Some(s) = dat1.get_section_data(TAG_REGION_LOD_BUILT) else {
         return Vec::new();
     };
     (0..s.len() / REGION_LOD_STRIDE)
@@ -1320,7 +1320,7 @@ fn parse_region_lods(dat1: &Dat1) -> Vec<LevelRegionLod> {
 }
 
 fn parse_zone_refs(dat1: &Dat1) -> Vec<i16> {
-    let Some(s) = dat1.get_section_data(T_ZONE_REFERENCES) else {
+    let Some(s) = dat1.get_section_data(TAG_ZONE_REFERENCES) else {
         return Vec::new();
     };
     (0..s.len() / 2)
@@ -1329,7 +1329,7 @@ fn parse_zone_refs(dat1: &Dat1) -> Vec<i16> {
 }
 
 fn parse_hibernate_refs(dat1: &Dat1) -> Vec<ZoneHibernateRef> {
-    let Some(s) = dat1.get_section_data(T_HIBERNATE_DATA_DESC) else {
+    let Some(s) = dat1.get_section_data(TAG_HIBERNATE_DATA_DESC) else {
         return Vec::new();
     };
     (0..s.len() / HIBERNATE_DESC_STRIDE)
@@ -1493,7 +1493,7 @@ fn read_objects(
 }
 
 fn parse_hibernate(dat1: &Dat1, refs: &[ZoneHibernateRef]) -> Vec<ZoneHibernate> {
-    let Some(raw) = dat1.get_section_data(T_HIBERNATE_RAW_DATA) else {
+    let Some(raw) = dat1.get_section_data(TAG_HIBERNATE_RAW_DATA) else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(refs.len());
@@ -1536,7 +1536,7 @@ fn parse_hibernate(dat1: &Dat1, refs: &[ZoneHibernateRef]) -> Vec<ZoneHibernate>
 ///   +0x0C  u32 payload size
 /// ```
 fn parse_game_data(dat1: &Dat1) -> Vec<LevelGameData> {
-    let Some(s) = dat1.get_section_data(T_REGION_GAME_STRUCT) else {
+    let Some(s) = dat1.get_section_data(TAG_REGION_GAME_STRUCT) else {
         return Vec::new();
     };
     (0..s.len() / GAME_DATA_STRIDE)

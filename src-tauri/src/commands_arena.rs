@@ -266,7 +266,7 @@ pub fn build_arena_data(zone: &Zone, zone_path: &str, clones: Vec<ArenaCloneInfo
             let instance_ids = zone
                 .actors
                 .iter()
-                .filter(|a| a.asset_index == index as i32)
+                .filter(|a| a.asset_index == index as u32)
                 .filter(|a| zone.actor_names.get(a.name_index as usize).is_some())
                 .map(|a| format!("{:016X}", a.instance_id))
                 .collect();
@@ -315,7 +315,7 @@ pub fn build_arena_data(zone: &Zone, zone_path: &str, clones: Vec<ArenaCloneInfo
             },
         }),
         node_type_counts,
-        actor_groups: string_list(&zone, crate::core::zone::T_ACTOR_GROUP_NAMES),
+        actor_groups: string_list(&zone, crate::core::zone::TAG_ACTOR_GROUP_NAMES),
         script_priuses,
         actor_priuses,
         actor_assets,
@@ -420,7 +420,7 @@ fn prius_ids_for_asset(zone: &Zone, asset_index: u32) -> Vec<usize> {
     let mut out: Vec<usize> = zone
         .actors
         .iter()
-        .filter(|a| a.asset_index == asset_index as i32)
+        .filter(|a| a.asset_index == asset_index)
         .flat_map(|a| zone.prius_blobs_of_actor(a))
         .collect();
     out.sort_unstable();
@@ -593,7 +593,7 @@ fn spawn_targets(zone: &Zone) -> Vec<ArenaSpawnTarget> {
             continue;
         }
         out.push(ArenaSpawnTarget {
-            id: format!("{:016X}", group.uid),
+            id: format!("{:016X}", group.id),
             kind: "group".into(),
             label: group.name.clone(),
             asset: assets.join(" + "),
@@ -659,7 +659,7 @@ fn resolve_binding(zone: &Zone, var: usize, via: &mut Vec<String>, depth: u8) ->
         };
     }
 
-    if let Some(group) = zone.actor_groups.iter().find(|g| g.uid == id && id != 0) {
+    if let Some(group) = zone.actor_groups.iter().find(|g| g.id == id && id != 0) {
         let asset = group
             .members
             .first()
@@ -731,7 +731,7 @@ fn read_spawner(zone: &Zone, index: usize, action: &zone_mod::ScriptAction) -> A
 
     let groups: Vec<String> = zone
         .plugs
-        .get(action.var_plug_range())
+        .get(action.param_range())
         .map(|ps| {
             ps.iter()
                 .filter(|p| p.name_hash == crate::core::crc32::hash("SpawnIntoGroup"))
@@ -785,7 +785,7 @@ fn spawn_bindings(zone: &Zone, action: &zone_mod::ScriptAction) -> Vec<ArenaSpaw
     ];
     let write = crate::core::crc32::hash("In");
     zone.plugs
-        .get(holder.var_plug_range())
+        .get(holder.param_range())
         .map(|ps| {
             ps.iter()
                 .filter(|p| wants.contains(&p.name_hash) && p.other_hash != write)

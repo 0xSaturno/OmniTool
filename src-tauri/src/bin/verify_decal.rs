@@ -2,21 +2,21 @@
 //! row <-> scene-object mapping across many shipped zones.
 
 use omnitool_lib::core::level;
-use omnitool_lib::core::zone::{Zone, KIND_DECAL, T_DECAL_GEOMETRY, T_DECALS};
+use omnitool_lib::core::zone::{Zone, KIND_DECAL, TAG_DECAL_GEOMETRY, TAG_DECALS};
 
 /// How many of a zone's decals have their own mesh inside their own row's
 /// bounding sphere, under `row i <- list[i + shift]`.
 fn score(zone: &Zone, shift: usize) -> (usize, usize, f64) {
     let list: Vec<u32> = zone
         .dat1
-        .get_section_data(T_DECALS)
+        .get_section_data(TAG_DECALS)
         .unwrap_or(&[])
         .chunks_exact(4)
         .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     let geo = zone
         .dat1
-        .get_section_data(T_DECAL_GEOMETRY)
+        .get_section_data(TAG_DECAL_GEOMETRY)
         .unwrap_or(&[])
         .to_vec();
     let rows = geo.len() / 88;
@@ -105,12 +105,12 @@ fn main() {
         let Ok(zone) = Zone::parse(&raw) else { continue };
         let ndec = zone
             .dat1
-            .get_section_data(T_DECALS)
+            .get_section_data(TAG_DECALS)
             .map(|s| s.len() / 4)
             .unwrap_or(0);
         let nrow = zone
             .dat1
-            .get_section_data(T_DECAL_GEOMETRY)
+            .get_section_data(TAG_DECAL_GEOMETRY)
             .map(|s| s.len() / 88)
             .unwrap_or(0);
         if ndec == 0 || nrow == 0 {
@@ -134,7 +134,7 @@ fn main() {
         if deficit > 0 && zones_with_deficit <= 3 {
             let list: Vec<u32> = zone
                 .dat1
-                .get_section_data(T_DECALS)
+                .get_section_data(TAG_DECALS)
                 .unwrap_or(&[])
                 .chunks_exact(4)
                 .map(|c| u32::from_le_bytes(c.try_into().unwrap()))

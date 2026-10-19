@@ -80,23 +80,23 @@ pub fn zone_has_objects(index: &LevelIndex, id: u64) -> bool {
 /// being asked.
 fn scene_objects_present(asset: &[u8]) -> bool {
     use crate::core::zone::{
-        T_ACTORS, T_DECALS, T_IMPOSTORS, T_LIGHTS, T_MODEL_INSTS, T_SCENE_OBJECTS, T_VFX_INSTS,
-        T_VOLUMES,
+        TAG_ACTORS, TAG_DECALS, TAG_IMPOSTORS, TAG_LIGHTS, TAG_MODEL_INSTS, TAG_SCENE_OBJECTS, TAG_VFX_INSTS,
+        TAG_VOLUMES,
     };
     const HDR: usize = crate::core::zone::ASSET_HEADER_LEN;
     /// The tables `build_index` reads scene-object offsets out of.
     ///
-    /// `T_IMPOSTORS` belongs here: the 645 shipped `*impostors*` zones carry a
+    /// `TAG_IMPOSTORS` belongs here: the 645 shipped `*impostors*` zones carry a
     /// heap and that table alone, so leaving it out reported `hasObjects=false`
     /// for every one of them and hid 2.67 M triangles of megalopolis skyline.
     const INSTANCE_TABLES: [u32; 7] = [
-        T_MODEL_INSTS,
-        T_LIGHTS,
-        T_VOLUMES,
-        T_DECALS,
-        T_VFX_INSTS,
-        T_IMPOSTORS,
-        T_ACTORS,
+        TAG_MODEL_INSTS,
+        TAG_LIGHTS,
+        TAG_VOLUMES,
+        TAG_DECALS,
+        TAG_VFX_INSTS,
+        TAG_IMPOSTORS,
+        TAG_ACTORS,
     ];
 
     let u32_at = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -123,7 +123,7 @@ fn scene_objects_present(asset: &[u8]) -> bool {
         if size == 0 {
             continue;
         }
-        if tag == T_SCENE_OBJECTS {
+        if tag == TAG_SCENE_OBJECTS {
             heap = true;
         } else if INSTANCE_TABLES.contains(&tag) {
             table = true;
