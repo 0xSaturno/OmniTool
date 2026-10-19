@@ -3,6 +3,10 @@ name = "omnitool"
 version = "0.9.0"
 edition = "2021"
 default-run = "OmniTool"
+# Every `src/bin/*.rs` must be declared below. Without this, cargo discovers
+# them itself and an undeclared one joins the default build -- which is how
+# three of them were escaping the `dev-tools` gate.
+autobins = false
 
 [features]
 dev-tools = []
@@ -22,82 +26,102 @@ path = "src/main.rs"
 [[bin]]
 name = "dev_dump_scene"
 path = "src/bin/dev_dump_scene.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "dump_region"
 path = "src/bin/dump_region.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "block2_probe"
 path = "src/bin/block2_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "zone_check"
 path = "src/bin/zone_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "level_check"
 path = "src/bin/level_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "e2e_check"
 path = "src/bin/e2e_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "level_asset_check"
 path = "src/bin/level_asset_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "coverage_audit"
 path = "src/bin/coverage_audit.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "name_source_check"
 path = "src/bin/name_source_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "light_probe"
 path = "src/bin/light_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "zone_bounds"
 path = "src/bin/zone_bounds.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "entity_probe"
 path = "src/bin/entity_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "missing_probe"
 path = "src/bin/missing_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "texture_probe"
 path = "src/bin/texture_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "blend_probe"
 path = "src/bin/blend_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "shader_dump"
 path = "src/bin/shader_dump.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "instance_placement"
 path = "src/bin/instance_placement.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "nav_probe"
 path = "src/bin/nav_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "world_probe"
 path = "src/bin/world_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "dag_check"
 path = "src/bin/dag_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "diag"
@@ -285,23 +309,44 @@ strip        = true
 [[bin]]
 name = "prius_probe"
 path = "src/bin/prius_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "script_probe"
 path = "src/bin/script_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "integration_check"
 path = "src/bin/integration_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "gap_probe"
 path = "src/bin/gap_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "conduit_probe"
 path = "src/bin/conduit_probe.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "refs_probe"
 path = "src/bin/refs_probe.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "verify_audit"
+path = "src/bin/verify_audit.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "verify_decal"
+path = "src/bin/verify_decal.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "verify_decal2"
+path = "src/bin/verify_decal2.rs"
+required-features = ["dev-tools"]
