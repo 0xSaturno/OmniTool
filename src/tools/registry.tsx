@@ -41,6 +41,9 @@ export const TOOLS: ToolDefinition[] = [
     path: "/tools/level-editor",
     icon: <TbMap2 />,
     category: "asset",
+    // Dev-only like the Arena Editor, so merging this cannot change a release
+    // build's UI. Drop the flag to ship it.
+    devOnly: true,
   },
   {
     id: "model-converter",
