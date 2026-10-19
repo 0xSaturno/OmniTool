@@ -1,4 +1,5 @@
 pub mod asset_id;
+pub mod atmosphere;
 pub mod codec;
 pub mod conduit;
 pub mod config;
@@ -31,3 +32,4 @@ pub mod zone_lighting;
 pub mod zone_refs;
 pub mod zone_script;
 pub mod fnv;
+pub mod zone_pins;

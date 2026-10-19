@@ -129,27 +129,42 @@ pub struct MorphDelta {
     pub elements: Vec<[f32; 3]>,
 }
 
+/// First vertex (subset-relative) of each of a subset's skin batches — chunk k of a morph addresses batch k.
+pub fn chunk_bases(first_skin_batch: u16, skin_batch_count: u8, batches: &[super::skin::SkinBatch]) -> Vec<u32> {
+    let a = first_skin_batch as usize;
+    batches
+        .get(a..a + skin_batch_count as usize)
+        .unwrap_or(&[])
+        .iter()
+        .map(|b| b.first_vertex as u32)
+        .collect()
+}
+
 impl AnimMorphInfo {
     /// Decodes one subset of one morph into per-vertex deltas.
     ///
     /// `data` is Model Anim Morph Data, `indices` Model Anim Morph Indices.
-    /// Vertex ids are relative to the subset's `vertex_start` in Model Subset.
+    /// A subset's chunk k covers its skin batch k (the leading, morphing
+    /// batches): the index cursor restarts at every chunk and counts from that
+    /// batch's first vertex, which `bases` supplies (see `chunk_bases`).
+    /// Returned vertex ids are relative to the subset's `vertex_start`.
     pub fn decode_subset(
         entry: &MorphEntry,
         subset: usize,
         data: &[u8],
         indices: &[u8],
+        bases: &[u32],
     ) -> Vec<MorphDelta> {
         let (lo, hi) = entry.subset_chunks(subset);
         let mut out = Vec::with_capacity(entry.subset_vertex_counts[subset] as usize);
 
-        // Index side: (u16 gap, u16 run) pairs, cursor carried across the
-        // subset's chunks. A run of 0 means 32 — a zero-length run would be
-        // meaningless, and this reproduces every chunk's vertex count exactly.
+        // Index side: (u16 gap, u16 run) pairs. A run of 0 means 32 — a
+        // zero-length run would be meaningless, and this reproduces every
+        // chunk's vertex count exactly.
         let mut idx_pos = (entry.index_offset + entry.subset_index_offsets[subset]) as usize;
-        let mut cursor: u32 = 0;
         let mut ids: Vec<u32> = Vec::new();
-        for ci in lo..hi {
+        for (k, ci) in (lo..hi).enumerate() {
+            let mut cursor = bases.get(k).copied().unwrap_or(0);
             for _ in 0..entry.chunks[ci].1 {
                 if idx_pos + 4 > indices.len() {
                     break;

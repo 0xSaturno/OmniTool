@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import FilePickerInput from "../../components/shared/FilePickerInput";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
+import { deriveStagerTarget } from "../../utils/stagerTarget";
 import styles from "./MaterialRemapper.module.css";
 
 const MODEL_FILTER = [{ name: "Insomniac Model", extensions: ["model"] }];
@@ -132,8 +133,10 @@ export default function MaterialRemapper() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Material Remapper</h2>
-      <p className={styles.subtitle}>Remap material path references inside .model files</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Material Remapper</h2>
+        <span className={styles.subtitle}>Remap material path references inside .model files</span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput label="Source .model" value={modelPath} onChange={setModelPath} mode="open" filters={MODEL_FILTER} />
@@ -249,7 +252,7 @@ export default function MaterialRemapper() {
       {sendToStager && (
         <SendToStagerModal
           sourceFile={sendToStager}
-          defaultTargetPath={assetPath ? `0/${assetPath}` : `0/${sendToStager.split(/[\\/]/).pop()}`}
+          defaultTargetPath={deriveStagerTarget(sendToStager, assetPath)}
           onClose={() => setSendToStager(null)}
           onSent={(proj) => {
             setSendToStager(null);

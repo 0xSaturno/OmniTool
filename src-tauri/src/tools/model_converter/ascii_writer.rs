@@ -6,13 +6,12 @@ use crate::tools::model_converter::sections::{
     meshes::{TAG_MESHES, MeshDefinition},
     joints::{TAG_JOINTS, TAG_JOINTS_TRANSFORM, Joint, JointsTransform},
     look::{TAG_LOOK, LookSection},
-    skin::{TAG_SKIN_BATCH, TAG_SKIN_DATA, TAG_RCRA_SKIN, SkinBatch, RcraSkinEntry,
-           decode_skin_data, decode_rcra_skin, VertexWeights},
+    looks::{TAG_MATERIAL, MaterialSection},
+    skin::{SkinSource, VertexWeights},
     built::{TAG_BUILT, get_uv_scale, get_uv1_scale, get_position_scale},
 };
 
 const TAG_INDEXES:   u32 = 0x0859863D;
-const TAG_MATERIALS: u32 = 0x3250BB80;
 
 fn pretty(n: f32) -> String {
     let s = format!("{:.6}", n);
@@ -55,17 +54,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
 
     let uv1_sec: Option<Uv1Section> = dat1.get_section_data(TAG_UV1).map(|d| Uv1Section::parse(d).ok()).flatten();
 
-    // Skin
-    let batched_skin: Option<Vec<VertexWeights>> = {
-        if let (Some(raw), Some(batch_data)) = (dat1.get_section_data(TAG_SKIN_DATA), dat1.get_section_data(TAG_SKIN_BATCH)) {
-            let batches = SkinBatch::parse_all(batch_data)?;
-            Some(decode_skin_data(raw, &batches))
-        } else { None }
-    };
-
-    let rcra_skin: Option<Vec<VertexWeights>> = dat1.get_section_data(TAG_RCRA_SKIN).map(|d| {
-        decode_rcra_skin(&RcraSkinEntry::parse_all(d))
-    });
+    // Skin, decoded per subset with each batch's joint base / remap applied.
+    let skin = SkinSource::from_dat1(dat1);
 
     let has_bones_section = dat1.get_section_data(TAG_JOINTS).is_some();
 
@@ -83,32 +73,31 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
     }
     let mesh_indices: Vec<usize> = mesh_set.into_iter().filter(|&i| i < meshes.len()).collect();
 
-    // Materials
-    let get_material_path = |mat_idx: u16| -> String {
-        if let Some(mat_data) = dat1.get_section_data(TAG_MATERIALS) {
-            // The section contains a series of (offset32, offset32) pairs
-            // first is the path offset, second is the name offset
-            let entry_offset = mat_idx as usize * 8;
-            if entry_offset + 4 <= mat_data.len() {
-                let path_offset = u32::from_le_bytes(mat_data[entry_offset..entry_offset + 4].try_into().unwrap());
-                if let Some(s) = dat1.get_string(path_offset) {
-                    return s;
-                }
-            }
+    // Materials. Model Material is two parallel arrays, not one array of
+    // (u32, u32) pairs: `count` × 16-byte (u64 path_off, u64 name_off) slots,
+    // then `count` × 16-byte id records. material_index indexes the slots.
+    let mat_section = dat1
+        .get_section_data(TAG_MATERIAL)
+        .and_then(|d| MaterialSection::parse(d).ok());
+    // Labelled by slot name, falling back to the path: Blender's MAX_NAME caps
+    // names at 63 bytes and the paths run well past that, and slots like
+    // wpn_sheepinator's `pasted__mtl_sheepinator2` carry no path at all.
+    let get_material_label = |mat_idx: u16| -> String {
+        let slot = mat_section.as_ref().and_then(|m| m.slots.get(mat_idx as usize));
+        let name = slot.and_then(|s| dat1.get_string(s.name_offset as u32)).unwrap_or_default();
+        if !name.is_empty() {
+            return name;
         }
-        String::new()
+        let path = slot.and_then(|s| dat1.get_string(s.path_offset as u32)).unwrap_or_default();
+        if !path.is_empty() {
+            return path;
+        }
+        format!("mat{}", mat_idx)
     };
 
     // Max bone groups across mesh
-    let groups_count_for_mesh = |mesh: &MeshDefinition| -> usize {
-        let skin = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
-        let mut gc = 4;
-        if let Some(sw) = skin {
-            for vi in (mesh.vertex_start as usize)..(mesh.vertex_start as usize + mesh.vertex_count as usize) {
-                if vi < sw.len() { gc = gc.max(sw[vi].len()); }
-            }
-        }
-        gc
+    let groups_count_for_mesh = |weights: &[VertexWeights]| -> usize {
+        weights.iter().map(|w| w.len()).fold(4, usize::max)
     };
 
     // Build output
@@ -121,16 +110,14 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
     out.push_str(&format!("{}\n", mesh_indices.len()));
     for &mi in &mesh_indices {
         let mesh = &meshes[mi];
-        let mat_path = get_material_path(mesh.material_index);
-        out.push_str(&format!("sm{:02}_{}\n", mi, mat_path));
+        out.push_str(&format!("sm{:02}_{}\n", mi, get_material_label(mesh.material_index)));
         // Two layers when the model has a Model UV1 Vert section: UV0 from Std
         // Vert, UV1 from that section. They are independent streams.
         out.push_str(if uv1_sec.is_some() { "2\n" } else { "1\n" });   // uv_layers
         out.push_str("0\n");   // textures
 
-        let gc = groups_count_for_mesh(mesh);
-        let skin_to_use = if mesh.is_rcra_skinned() { rcra_skin.as_deref() } else { batched_skin.as_deref() };
-        let weight_offset = if mesh.is_rcra_skinned() { mesh.first_weight_index as usize } else { mesh.vertex_start as usize };
+        let mesh_weights: Vec<VertexWeights> = skin.as_ref().map(|s| s.subset_weights(mesh)).unwrap_or_default();
+        let gc = groups_count_for_mesh(&mesh_weights);
 
         out.push_str(&format!("{}\n", mesh.vertex_count));
         for vi in (mesh.vertex_start as usize)..(mesh.vertex_start as usize + mesh.vertex_count as usize) {
@@ -154,8 +141,8 @@ pub fn model_to_ascii_for_looks(model: &ModelFile, looks: &[usize]) -> Result<St
             }
 
             if has_bones_section {
-                let wi = vi - mesh.vertex_start as usize + weight_offset;
-                let (groups_str, weights_str) = get_weights(wi, skin_to_use, gc);
+                let wi = vi - mesh.vertex_start as usize;
+                let (groups_str, weights_str) = get_weights(wi, Some(&mesh_weights), gc);
                 out.push_str(&format!("{}\n{}\n", groups_str, weights_str));
             }
         }

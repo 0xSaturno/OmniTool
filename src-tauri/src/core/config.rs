@@ -15,6 +15,8 @@ pub const CONFIG2_MAGIC: u32 = 0x35F7AFA5;
 
 const CONFIG_TYPE_TAG: u32 = 0x4A128222;
 const CONFIG_CONTENT_TAG: u32 = 0xE501186F;
+const CONFIG_REFS_TAG: u32 = 0x58B8558A;
+const CONDUIT_REFS_TAG: u32 = 0x2F4056CE;
 const CONDUIT_BUILT_TAG: u32 = 0xCEB30E68;
 const ACTOR_MODEL_NAME_TAG: u32 = 0x32FAC8E0;
 const ACTOR_ASSET_REFS_TAG: u32 = 0x3AB204B9;
@@ -424,7 +426,7 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
     for path in &ref_paths {
         let asset_id = crc64::hash(path);
         let str_off = get_or_add_string_offset(dat1, path);
-        let ext_hash = compute_extension_hash(path);
+        let ext_hash = extension_hash(path);
         refs_buf.extend_from_slice(&asset_id.to_le_bytes());
         refs_buf.extend_from_slice(&str_off.to_le_bytes());
         refs_buf.extend_from_slice(&ext_hash.to_le_bytes());
@@ -554,7 +556,7 @@ fn push_unique(s: &str, out: &mut Vec<String>, seen: &mut HashSet<String>) {
 }
 
 /// CRC32 of the lowercase file extension, *including* the leading dot.
-fn compute_extension_hash(path: &str) -> u32 {
+pub fn extension_hash(path: &str) -> u32 {
     let lower = path.to_ascii_lowercase();
     let dot = lower.rfind('.');
     let ext = match dot {
@@ -804,6 +806,49 @@ fn collect_actor_asset_paths(v: &Value, out: &mut HashSet<String>) {
     }
 }
 
+/// Keeps a reference table (16-byte entries: u64 asset id, u32 path string offset, u32 extension hash)
+/// in step with edited content. The game preloads an asset's dependencies from this list, and it is not
+/// every path in the content (RYNO leaves out the actors it spawns on demand), so the list stays as it was
+/// and only the edits apply: paths edited away are dropped, paths an edit brought in are added.
+/// `old_paths` are the content's paths as loaded; nothing changes when the asset has no such table.
+fn follow_ref_edits(dat1: &mut Dat1, tag: u32, old_paths: &[String], content: &Value) -> Result<()> {
+    let Some(old_refs) = dat1.get_section_data(tag).map(<[u8]>::to_vec) else { return Ok(()) };
+    let mut paths = Vec::new();
+    collect_config_ref_paths(content, &mut paths);
+    let has = |list: &[String], p: &str| list.iter().any(|x| x.eq_ignore_ascii_case(p));
+    let mut refs = Vec::with_capacity(old_refs.len());
+    for entry in old_refs.chunks_exact(16) {
+        let offset = u32::from_le_bytes(entry[8..12].try_into().unwrap());
+        let path = dat1.get_string(offset).unwrap_or_default().replace('/', "\\");
+        if has(&paths, &path) || !has(old_paths, &path) {
+            refs.extend_from_slice(entry);
+        }
+    }
+    for path in paths.iter().filter(|p| !has(old_paths, p)) {
+        refs.extend_from_slice(&crc64::hash(path).to_le_bytes());
+        refs.extend_from_slice(&get_or_add_string_offset(dat1, path).to_le_bytes());
+        refs.extend_from_slice(&extension_hash(path).to_le_bytes());
+    }
+    dat1.set_section_data(tag, refs)
+}
+
+/// Every asset path in untyped config content, backslashed, once each in first-seen order: what Config
+/// Refs lists. A path is a string with a separator whose file name has an extension.
+fn collect_config_ref_paths(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::String(s) => {
+            let path = s.replace('/', "\\");
+            let named = path.rsplit_once('\\').is_some_and(|(_, file)| file.contains('.'));
+            if named && !out.iter().any(|o| o.eq_ignore_ascii_case(&path)) {
+                out.push(path);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|x| collect_config_ref_paths(x, out)),
+        Value::Object(map) => map.values().for_each(|x| collect_config_ref_paths(x, out)),
+        _ => {}
+    }
+}
+
 fn looks_like_asset_path(s: &str) -> bool {
     if !(s.contains('/') || s.contains('\\')) {
         return false;
@@ -1035,9 +1080,15 @@ impl ConfigFile {
             // honors UInt64 / Int64 / Double / Asset / Enum / Bitfield / File
             // / Json / Identifier / Default kinds that the legacy writer
             // could not represent.
+            // Asset paths as loaded, before the content is replaced: Conduit Refs follows the edits to them.
+            let mut old_paths = Vec::new();
+            if let Some(old) = dat1.get_section_data(CONDUIT_BUILT_TAG).and_then(|d| ddl::parse(d, &dat1).ok()) {
+                collect_config_ref_paths(&ddl_object_to_typed_json(&old), &mut old_paths);
+            }
             let obj = typed_json_to_ddl_object(&self.content)?;
             let content_bytes = ddl::serialize(&obj, &mut dat1);
             dat1.set_section_data(CONDUIT_BUILT_TAG, content_bytes)?;
+            follow_ref_edits(&mut dat1, CONDUIT_REFS_TAG, &old_paths, &self.content)?;
             let dat1_bytes = dat1.save();
 
             if self.magic == DAT1_MAGIC {
@@ -1094,18 +1145,26 @@ impl ConfigFile {
                         size: 0,
                     },
                 ],
-                unknowns: vec![],
+                fixups: vec![],
                 strings_pool: pool.data,
                 section_data: vec![Vec::new(), Vec::new()],
                 sections_map,
             }
         };
 
+        // Asset paths of the content as loaded, before it is replaced: Config Refs follows the edits to them.
+        let mut old_paths = Vec::new();
+        if let Some(old) = dat1.get_section_data(CONFIG_CONTENT_TAG).and_then(|d| deserialize_section(d, &dat1).ok()) {
+            collect_config_ref_paths(&old, &mut old_paths);
+        }
+
         let type_obj = serde_json::json!({ "Type": self.config_type });
         let type_bytes = serialize_section_into_dat1(&type_obj, &mut dat1);
-        let content_bytes = serialize_section_into_dat1(&content_main, &mut dat1);
+        // Written from the typed content so field types survive; content_main (untyped) feeds Config Refs.
+        let content_bytes = serialize_section_into_dat1(self.content.get("Main").unwrap_or(&self.content), &mut dat1);
         dat1.set_section_data(CONFIG_TYPE_TAG, type_bytes)?;
         dat1.set_section_data(CONFIG_CONTENT_TAG, content_bytes)?;
+        follow_ref_edits(&mut dat1, CONFIG_REFS_TAG, &old_paths, &content_main)?;
 
         let dat1_bytes = dat1.save();
 
@@ -1454,7 +1513,11 @@ fn serialize_object_into_dat1(obj: &Value, out: &mut Vec<u8>, dat1: &mut Dat1) {
     let children: Vec<(&String, &Value, u8, usize, u32)> = map
         .iter()
         .map(|(k, v)| {
-            let (node_type, count) = infer_type_and_count(v);
+            // A typed {Type, Value} field keeps its label (INT8 5 must not come back UINT8); plain JSON is inferred.
+            let typed = v.get("Type").and_then(Value::as_str).zip(v.get("Value"));
+            let v = typed.map_or(v, |(_, inner)| inner);
+            let (inferred, count) = infer_type_and_count(v);
+            let node_type = typed.and_then(|(label, _)| parse_node_type_label(label).ok()).unwrap_or(inferred);
             let str_off = get_or_add_string_offset(dat1, k);
             (k, v, node_type, count, str_off)
         })
@@ -1475,15 +1538,11 @@ fn serialize_object_into_dat1(obj: &Value, out: &mut Vec<u8>, dat1: &mut Dat1) {
         inner.extend_from_slice(&str_off.to_le_bytes());
     }
 
-    for (_, v, node_type, count, _) in &children {
-        if *count != 1 {
-            if let Some(arr) = v.as_array() {
-                for elem in arr {
-                    serialize_node_into_dat1(elem, *node_type, &mut inner, dat1);
-                }
-            }
-        } else {
-            serialize_node_into_dat1(v, *node_type, &mut inner, dat1);
+    for (_, v, node_type, _, _) in &children {
+        // A one-item list is written like a scalar (count 1) but its item still has to be written.
+        match v.as_array() {
+            Some(arr) => arr.iter().for_each(|elem| serialize_node_into_dat1(elem, *node_type, &mut inner, dat1)),
+            None => serialize_node_into_dat1(v, *node_type, &mut inner, dat1),
         }
     }
 
@@ -1612,7 +1671,7 @@ fn infer_type_and_count(v: &Value) -> (u8, usize) {
 // `ArrayKind = None`; otherwise a JSON array of N elements.
 // ---------------------------------------------------------------------------
 
-fn ddl_object_to_typed_json(obj: &ddl::DdlObject) -> Value {
+pub fn ddl_object_to_typed_json(obj: &ddl::DdlObject) -> Value {
     let mut map = serde_json::Map::new();
     for &id in &obj.field_order {
         let Some(field) = obj.fields.get(&id) else {
@@ -1665,7 +1724,7 @@ fn ddl_value_to_json(v: &ddl::DdlValue) -> Value {
     }
 }
 
-fn typed_json_to_ddl_object(v: &Value) -> Result<ddl::DdlObject> {
+pub fn typed_json_to_ddl_object(v: &Value) -> Result<ddl::DdlObject> {
     let map = v
         .as_object()
         .ok_or_else(|| ToolkitError::Parse("expected JSON object for DDL".into()))?;
@@ -1691,12 +1750,8 @@ fn typed_json_to_ddl_object(v: &Value) -> Result<ddl::DdlObject> {
         let type_kind = parse_ddl_type_label(type_label)?;
         let array_kind = parse_ddl_array_label(array_label);
 
+        // Default values are all null placeholders (json_to_ddl_value), but their count is kept: it can be 0.
         let values: Vec<ddl::DdlValue> = match (array_kind, raw_value) {
-            // Default fields carry a single "null" placeholder regardless of
-            // what the JSON Value is.
-            (_, _) if matches!(type_kind, ddl::DdlTypeKind::Default) => {
-                vec![ddl::DdlValue::Null]
-            }
             (ddl::DdlArrayKind::None, v) if !v.is_array() => {
                 vec![json_to_ddl_value(type_kind, v)?]
             }
@@ -1847,5 +1902,103 @@ fn infer_scalar_type(v: &Value) -> u8 {
                 NT_FLOAT
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn resave(cfg: ConfigFile) -> ConfigFile {
+        ConfigFile::parse(&cfg.save().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn one_item_string_list_keeps_its_item() {
+        let main = json!({
+            "DefaultLocators": { "Type": "STRING", "Value": ["barrelTipBase"] },
+            "Locators": { "Type": "STRING", "Value": ["upper_barrel", "lower_barrel"] },
+        });
+        let cfg = ConfigFile {
+            magic: DAT1_MAGIC,
+            unk: [0; 28],
+            config_type: "Test".into(),
+            content: json!({ "Main": main }),
+            content_tag: CONFIG_CONTENT_TAG,
+            original_dat1: None,
+        };
+        let once = resave(cfg);
+        // The wire has no one-item list: a count of 1 reads back as the item itself.
+        assert_eq!(once.content["Main"]["DefaultLocators"], json!({ "Type": "STRING", "Value": "barrelTipBase" }));
+        assert_eq!(once.content["Main"]["Locators"], main["Locators"]);
+        let content = once.content.clone();
+        assert_eq!(resave(once).content, content);
+    }
+
+    #[test]
+    fn typed_labels_survive_a_save() {
+        let main = json!({
+            "Signed": { "Type": "INT8", "Value": 5 },
+            "Wide": { "Type": "UINT32", "Value": 3 },
+            "Whole": { "Type": "FLOAT", "Value": 1 },
+            "NoNames": { "Type": "STRING", "Value": [] },
+            "Nested": { "Type": "OBJECT", "Value": { "Short": { "Type": "INT16", "Value": 7 } } },
+            "Plain": 300,
+        });
+        let cfg = ConfigFile {
+            magic: DAT1_MAGIC,
+            unk: [0; 28],
+            config_type: "Test".into(),
+            content: json!({ "Main": main }),
+            content_tag: CONFIG_CONTENT_TAG,
+            original_dat1: None,
+        };
+        let got = resave(cfg).content["Main"].clone();
+        assert_eq!(got["Signed"], main["Signed"]);
+        assert_eq!(got["Wide"], main["Wide"]);
+        assert_eq!(got["Whole"], json!({ "Type": "FLOAT", "Value": 1.0 }));
+        assert_eq!(got["NoNames"], main["NoNames"]);
+        assert_eq!(got["Nested"], main["Nested"]);
+        // Untyped JSON still works: its type is inferred from the value.
+        assert_eq!(got["Plain"], json!({ "Type": "UINT16", "Value": 300 }));
+    }
+
+    #[test]
+    fn conduit_field_names_survive_a_pool_past_the_header() {
+        let mut dat1 = Dat1 {
+            magic: DAT1_MAGIC,
+            unk1: 0,
+            total_size: 0,
+            sections: vec![SectionHeader { tag: CONDUIT_BUILT_TAG, offset: 0, size: 0 }],
+            fixups: vec![],
+            strings_pool: vec![],
+            section_data: vec![vec![]],
+            sections_map: HashMap::from([(CONDUIT_BUILT_TAG, 0)]),
+        };
+        dat1.recalculate_section_headers();
+        // Enough name bytes that pool-relative offsets pass the header end.
+        let content = json!({
+            "FirstLongFieldName": { "Type": "String", "Value": "x" },
+            "SecondLongFieldName": { "Type": "Struct", "ArrayKind": "Dynamic", "Value": [
+                { "InnerLongFieldNameA": { "Type": "Float", "Value": 1.5 } },
+                { "InnerLongFieldNameA": { "Type": "Float", "Value": 2.5 } },
+            ] },
+            "ThirdLongFieldName": { "Type": "Int32", "Value": -3 },
+            "EmptyDefault": { "Type": "Default", "Value": [] },
+            "OneDefault": { "Type": "Default", "Value": null },
+        });
+        assert!("FirstLongFieldName SecondLongFieldName ".len() > dat1.header_end());
+        let cfg = ConfigFile {
+            magic: DAT1_MAGIC,
+            unk: [0; 28],
+            config_type: "ConduitBuilt".into(),
+            content: content.clone(),
+            content_tag: CONDUIT_BUILT_TAG,
+            original_dat1: Some(dat1),
+        };
+        let once = resave(cfg);
+        assert_eq!(once.content, content);
+        assert_eq!(resave(once).content, content);
     }
 }

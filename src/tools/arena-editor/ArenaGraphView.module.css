@@ -1,0 +1,634 @@
+/* Sections | canvas | inspector */
+.layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr) 320px;
+  gap: 0.6rem;
+  flex: 1;
+  min-height: 560px;
+}
+
+.sidebar,
+.inspector {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  overflow: auto;
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+}
+
+.ref {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 0.74rem;
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ref:hover {
+  background: var(--bg-hover);
+}
+
+.resultWhere {
+  margin-left: 0.4rem;
+  font-size: 0.66rem;
+  color: var(--text-secondary);
+}
+
+.groupTitle {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  padding: 0.5rem 0.55rem 0.2rem;
+}
+
+.sectionBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  text-align: left;
+  font-size: 0.77rem;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sectionBtn:hover {
+  color: var(--text-primary);
+}
+
+.sectionActive {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.sectionCount {
+  flex-shrink: 0;
+  min-width: 2rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+}
+
+.legend {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  padding: 0.55rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.66rem;
+  color: var(--text-secondary);
+}
+
+.legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.canvasWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.78rem;
+  flex-wrap: wrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.canvas {
+  flex: 1;
+  position: relative;
+  min-height: 480px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  user-select: none;
+}
+
+.canvas input {
+  user-select: text;
+}
+
+.canvas :global(.react-flow) {
+  --xy-background-color: var(--bg-base);
+  --xy-minimap-background-color: var(--bg-surface);
+  --xy-controls-button-background-color: var(--bg-elevated);
+  --xy-controls-button-background-color-hover: var(--bg-hover);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-button-color: var(--text-primary);
+}
+
+.searchBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.searchBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.canvas kbd,
+.toolbar kbd {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+}
+
+/* Floating search, Blender F3-style */
+.palette {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.paletteInput {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.paletteInput:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.paletteMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.paletteList {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.paletteItem {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 0.25rem 0.6rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.76rem;
+  border-left: 2px solid transparent;
+}
+
+.paletteActive {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+}
+
+.paletteRow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.paletteLabel {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.paletteRow .resultWhere {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.paletteSnippet {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Canvas feedback while searching */
+.matchNode .node,
+.matchNode .ghost {
+  box-shadow: 0 0 0 2px var(--warning), 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.dimNode {
+  opacity: 0.28;
+}
+
+.laying {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.note {
+  font-size: 0.72rem;
+  color: var(--warning);
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.muted p + p {
+  margin-top: 0.5rem;
+}
+
+.error {
+  color: var(--error);
+  font-size: 0.82rem;
+}
+
+/* ---- nodes ---- */
+
+.node {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-top: 3px solid;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.nodeSelected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.nodeHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0 8px;
+}
+
+.nodeKind {
+  font-weight: 600;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nodeIndex {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-muted);
+}
+
+.nodeLabel,
+.nodeProp {
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
+.nodeLabel {
+  color: var(--text-primary);
+  line-height: 18px;
+}
+
+.nodeProp {
+  font-size: 9.5px;
+  line-height: 16px;
+}
+
+.globalTag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 8.5px;
+  color: var(--text-secondary);
+  font-family: inherit;
+}
+
+.pinRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+}
+
+.pinIn,
+.pinOut {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.pinIn {
+  padding-left: 9px;
+}
+
+.pinOut {
+  justify-content: flex-end;
+  padding-right: 9px;
+}
+
+.pinIn span,
+.pinOut span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pinSignal {
+  color: #c58af9;
+  font-style: italic;
+}
+
+.handle {
+  width: 7px;
+  height: 7px;
+  min-width: 0;
+  min-height: 0;
+  background: var(--text-secondary);
+  border: 1px solid var(--bg-base);
+}
+
+.param {
+  display: grid;
+  grid-template-columns: 10px auto minmax(0, 1fr);
+  gap: 5px;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 16px;
+}
+
+.paramRead {
+  color: #79c0ff;
+}
+
+.paramWrite {
+  color: #f0883e;
+}
+
+.paramPin {
+  color: var(--text-secondary);
+}
+
+.paramValue {
+  color: var(--text-primary);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.paramMore {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.ghost {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1px dashed var(--border);
+  border-left: 3px solid;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.ghostKind,
+.ghostWhere {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ghostKind {
+  color: var(--text-primary);
+}
+
+.ghostWhere {
+  font-size: 9.5px;
+  color: var(--text-secondary);
+}
+
+/* ---- edges ---- */
+
+.edge_link :global(.react-flow__edge-path),
+.edge_pass :global(.react-flow__edge-path) {
+  stroke: #6e7681;
+  stroke-width: 1.4;
+}
+
+.edge_signal :global(.react-flow__edge-path) {
+  stroke: #c58af9;
+  stroke-width: 1.4;
+  stroke-dasharray: 6 4;
+}
+
+.edgeOutside :global(.react-flow__edge-path) {
+  opacity: 0.45;
+}
+
+.edgeHot :global(.react-flow__edge-path) {
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  opacity: 1;
+}
+
+/* ---- inspector ---- */
+
+.inspector {
+  padding: 0.6rem 0.7rem;
+}
+
+.inspect {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 0.78rem;
+}
+
+.inspect h4 {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.inspect h5 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
+.inspect section {
+  display: flex;
+  flex-direction: column;
+}
+
+.inspectLabel {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.linkRow .muted {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+}
+
+.ref {
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  min-width: 0;
+}
+
+.refPin {
+  color: var(--text-secondary);
+}
+
+.paramTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.paramTable td {
+  padding: 0.12rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.paramValueCell {
+  word-break: break-all;
+}
+
+.openBtn {
+  margin-left: auto;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.4rem;
+  font-size: 0.66rem;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.openBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.json {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.ids {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}

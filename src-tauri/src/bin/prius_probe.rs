@@ -1000,7 +1000,7 @@ fn script(idx: &level::LevelIndex, db: Option<&SchemaDb>) {
         let pool = pool.to_vec();
         let strings = zone.dat1.get_section_data(T_SCRIPT_STRINGS).unwrap_or(&[]).to_vec();
         let ctx = NameCtx::new(Some(&zone.dat1), db);
-        for a in &zone.script_actions {
+        for a in &zone.actions {
             if a.prius_size < 16 {
                 continue;
             }

@@ -480,7 +480,7 @@ fn survey(index: &LevelIndex) -> usize {
         }
 
         // ---- script actions --------------------------------------------------------
-        if !zone.script_actions.is_empty() {
+        if !zone.actions.is_empty() {
             s.zones_with_scripts += 1;
             let plug_rows = zone
                 .dat1
@@ -500,7 +500,7 @@ fn survey(index: &LevelIndex) -> usize {
             // Out and var plugs are slices of ONE array: they interleave, so the
             // test is that together they tile Zone Script Plugs without overlap.
             let mut claimed = vec![false; plug_rows];
-            for a in &zone.script_actions {
+            for a in &zone.actions {
                 s.actions += 1;
                 *s.action_in_hist.entry(a.in_plug_count).or_default() += 1;
                 for (slice, index, count) in [
@@ -551,7 +551,7 @@ fn survey(index: &LevelIndex) -> usize {
                 shown_action = true;
                 let raw = zone.dat1.get_section_data(T_SCRIPT_ACTIONS).unwrap();
                 println!("   script actions sample from {} ({} strings, {} plug rows)", z.path, strings.len(), plug_rows);
-                for (i, a) in zone.script_actions.iter().take(6).enumerate() {
+                for (i, a) in zone.actions.iter().take(6).enumerate() {
                     let words = u16s(&raw[i * 40 + 16..i * 40 + 28]);
                     let name = strings
                         .get(a.action_name_index as usize)

@@ -8,6 +8,7 @@ import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 import FilePickerInput from "../../components/shared/FilePickerInput";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
+import { deriveStagerTarget } from "../../utils/stagerTarget";
 import styles from "./ConfigEditor.module.css";
 
 const CONFIG_FILTER = [{ name: "Insomniac Config", extensions: ["config", "actor", "conduit", "performanceset"] }];
@@ -211,8 +212,10 @@ export default function ConfigEditor() {
 
   return (
     <div className={styles.page}>
-      <h2 className={styles.title}>Config Editor</h2>
-      <p className={styles.subtitle}>Read and edit .config .actor .conduit files</p>
+      <div className={styles.header}>
+        <h2 className={styles.title}>Config Editor</h2>
+        <span className={styles.subtitle}>Read and edit .config .actor .conduit files</span>
+      </div>
 
       <div className={styles.panel}>
         <FilePickerInput
@@ -302,7 +305,7 @@ export default function ConfigEditor() {
       {sendToStager && (
         <SendToStagerModal
           sourceFile={sendToStager}
-          defaultTargetPath={assetPath ? `0/${assetPath}` : `0/${sendToStager.split(/[\\/]/).pop()}`}
+          defaultTargetPath={deriveStagerTarget(sendToStager, assetPath)}
           onClose={() => setSendToStager(null)}
           onSent={(proj) => {
             setSendToStager(null);

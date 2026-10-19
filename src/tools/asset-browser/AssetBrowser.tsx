@@ -351,17 +351,17 @@ export default function AssetBrowser() {
       setTocInfo(info);
       pushLog("success", `TOC loaded: ${info.asset_count} assets, ${info.archive_count} archives`);
 
-      pushLog("info", "Loading hashes…");
+      pushLog("info", "Loading asset names from dag…");
       let hashMap = new Map<string, string>();
       try {
-        const pairs: [string, string][] = await invoke("load_hashes");
+        const pairs: [string, string][] = await invoke("load_asset_names", { gameDir: archivesDir });
         for (const [hex, path] of pairs) {
           hashMap.set(hex, path);
         }
         setHashCount(hashMap.size);
-        pushLog("success", `Loaded ${hashMap.size} hashes`);
+        pushLog("success", `Loaded ${hashMap.size} asset names`);
       } catch (e) {
-        pushLog("warning", `Could not load hashes — all assets will be [UNKNOWN]. (${e})`);
+        pushLog("warning", `Could not read the game's dag — all assets will be [UNKNOWN]. (${e})`);
       }
 
       pushLog("info", "Listing assets…");
@@ -649,7 +649,7 @@ export default function AssetBrowser() {
       <div className={styles.header}>
         <div className={styles.headerTitle}>
           <h2 className={styles.title}>Asset Browser</h2>
-          <p className={styles.subtitle}>Browse and extract game assets</p>
+          <span className={styles.subtitle}>Browse and extract game assets</span>
         </div>
         <button className={styles.loadBtn} onClick={handleLoad} disabled={loading || !archivesDir}>
           {loading ? "Loading…" : "Load"}
@@ -669,7 +669,7 @@ export default function AssetBrowser() {
                 Archives: <span className={styles.statValue}>{tocInfo.archive_count}</span>
               </span>
               <span className={styles.statItem}>
-                Hashes: <span className={styles.statValue}>{hashCount.toLocaleString()}</span>
+                Names: <span className={styles.statValue}>{hashCount.toLocaleString()}</span>
               </span>
             </div>
           )}

@@ -4,10 +4,8 @@
 //!   1. Known `ReferencesSection` tags (16-byte entries: u64 asset_id,
 //!      u32 string_offset into the DAT1 strings pool, u32 extension type
 //!      hash).
-//!   2. Path-like strings in the DAT1 strings pool (best-effort), hashed
+//!   2. Path-like strings in the DAT1 strings pool, hashed
 //!      with the standard DAT1 CRC64 to recover their packed asset id.
-//!
-
 
 use crate::core::crc64;
 use crate::core::dat1::{Dat1, DAT1_MAGIC};
@@ -27,7 +25,9 @@ const REF_SECTION_TAGS: &[(u32, &str)] = &[
     (0x2F4056CE, "Conduit Refs"),
     (0x3AB204B9, "Actor Refs"),
     (0xFBD496D6, "NodeGraph Refs"),
-    (0x91DE11D9, "Zone Refs"),
+    (0x30DADA09, "Zone Asset References"),
+    // Decal materials, carried by id only — the name offset is always 0.
+    (0x91DE11D9, "Zone Decal Assets"),
 ];
 
 /// Map CRC32 of `.<ext>` to a human-readable type label. Used to annotate
@@ -64,10 +64,7 @@ pub fn ext_label(hash: u32) -> Option<&'static str> {
 fn is_pathlike(s: &str) -> bool {
     // Must contain an extension dot AND a separator. Reject very short or
     // very long candidates to avoid noise from non-path tokens.
-    s.len() >= 5
-        && s.len() < 512
-        && s.contains('.')
-        && (s.contains('/') || s.contains('\\'))
+    s.len() >= 5 && s.len() < 512 && s.contains('.') && (s.contains('/') || s.contains('\\'))
 }
 
 /// Iterate null-terminated strings in the DAT1 strings pool, invoking
@@ -100,7 +97,7 @@ pub fn extract_references(dat1: &Dat1) -> Vec<RawReference> {
                 let aid = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
                 let s_off = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
                 let ext_hash = u32::from_le_bytes(chunk[12..16].try_into().unwrap());
-                let filename = dat1.get_string(s_off);
+                let filename = dat1.get_string(s_off).filter(|s| !s.is_empty());
                 let src = match ext_label(ext_hash) {
                     Some(ext) => format!("{label} → {ext} ({:08X})", tag),
                     None => format!("{label} ({:08X})", tag),

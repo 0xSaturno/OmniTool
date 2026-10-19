@@ -56,8 +56,9 @@ pub struct TemplateSampler {
     pub name_hash: u32,
     /// `HWRegister - TEX_UNIT_BASE`: the texture unit the shader samples.
     pub slot_index: u16,
-    /// Non-zero when the graph exposes this sampler in the material editor.
-    pub user_exposed: u16,
+    /// True when the graph exposes this sampler in the material editor, i.e.
+    /// rest. Stored as a `u16`, and only ever 0 or 1 on the shipped build.
+    pub user_exposed: bool,
     pub type_hash: u32,
     pub default_path: String,
 }
@@ -103,7 +104,7 @@ impl MaterialTemplate {
                 }
                 let string_off = rd_u32(sec, base)?;
                 samplers.push(TemplateSampler {
-                    user_exposed: rd_u16(sec, base + 4)?,
+                    user_exposed: rd_u16(sec, base + 4)? != 0,
                     slot_index: rd_u16(sec, base + 6)?,
                     name_hash: rd_u32(sec, base + 8)?,
                     type_hash: rd_u32(sec, base + 12)?,

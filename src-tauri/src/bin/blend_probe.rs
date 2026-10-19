@@ -387,7 +387,7 @@ fn material(idx: &level::LevelIndex, path: &str) {
         );
     }
     println!("   -- overridden variations --");
-    for v in &inst.serialized.aux {
+    for v in &inst.serialized.variations {
         println!("   hash={:08X} value={}", v.name_hash, v.value);
     }
 
@@ -457,7 +457,7 @@ fn tabulate(idx: &level::LevelIndex, pat: &str, only: Option<&[u64]>) {
             e.count += 1;
             e.observe(&c.values);
         }
-        for v in &inst.serialized.aux {
+        for v in &inst.serialized.variations {
             *var_stats.entry(v.name_hash).or_default().entry(v.value).or_default() += 1;
         }
     }

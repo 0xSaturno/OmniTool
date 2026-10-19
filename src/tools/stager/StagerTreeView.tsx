@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import SendToStagerModal from "../../components/shared/SendToStagerModal";
 import { useSettings } from "../../contexts/SettingsContext";
 import { openToolWindow } from "../../utils/openToolWindow";
@@ -32,6 +32,7 @@ export default function StagerTreeView({
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [sendToStager, setSendToStager] = useState<{ file: string; defaultPath: string } | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const root: TreeNode = { name: "", path: "", isFolder: true, children: new Map() };
@@ -55,18 +56,24 @@ export default function StagerTreeView({
   }, [assets]);
 
   useEffect(() => {
-    const unlistenDrop = listen("tauri://drag-drop", async (event: any) => {
-      if (event.payload?.paths?.length > 0) {
-        try {
-          await invoke("import_assets_to_project", {
-            name: project,
-            paths: event.payload.paths,
-            targetFolder: "0",
-          });
-          onRefresh();
-        } catch (e) {
-          console.error(e);
-        }
+    // Only drops onto this window's tree; the app-wide event also fires for drops on other tools.
+    const unlistenDrop = getCurrentWindow().onDragDropEvent(async (event) => {
+      const payload = event.payload;
+      if (payload.type !== "drop" || payload.paths.length === 0) return;
+      const rect = rootRef.current?.getBoundingClientRect();
+      const scale = window.devicePixelRatio || 1;
+      const x = payload.position.x / scale;
+      const y = payload.position.y / scale;
+      if (!rect || x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
+      try {
+        await invoke("import_assets_to_project", {
+          name: project,
+          paths: payload.paths,
+          targetFolder: "0",
+        });
+        onRefresh();
+      } catch (e) {
+        console.error(e);
       }
     });
 
@@ -143,7 +150,7 @@ export default function StagerTreeView({
     : [];
 
   return (
-    <div style={{ position: "relative", height: "100%", width: "100%", overflowY: "auto", overflowX: "hidden" }}>
+    <div ref={rootRef} style={{ position: "relative", height: "100%", width: "100%", overflowY: "auto", overflowX: "hidden" }}>
       {assets.length === 0 ? (
         <div style={{ padding: "1rem", color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", marginTop: "2rem" }}>
           Empty project.<br /><br />Drag & Drop files and folders directly inside this window to import them instantly!

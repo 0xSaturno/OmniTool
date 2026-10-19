@@ -1,6 +1,6 @@
 [package]
 name = "omnitool"
-version = "0.7.0"
+version = "0.9.0"
 edition = "2021"
 default-run = "OmniTool"
 
@@ -120,6 +120,11 @@ path = "src/bin/roundtrip.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
+name = "roundtrip_gltf"
+path = "src/bin/roundtrip_gltf.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "sections"
 path = "src/bin/sections.rs"
 required-features = ["dev-tools"]
@@ -169,6 +174,76 @@ name = "model_dump"
 path = "src/bin/model_dump.rs"
 required-features = ["dev-tools"]
 
+[[bin]]
+name = "arena_dump"
+path = "src/bin/arena_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "zone_probe"
+path = "src/bin/zone_probe.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "zone_place"
+path = "src/bin/zone_place.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "scene_import"
+path = "src/bin/scene_import.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "model_import"
+path = "src/bin/model_import.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "asset_extract"
+path = "src/bin/asset_extract.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "config_set"
+path = "src/bin/config_set.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dag_query"
+path = "src/bin/dag_query.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "png2texture"
+path = "src/bin/png2texture.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "model_extract"
+path = "src/bin/model_extract.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "mesh_edit_check"
+path = "src/bin/mesh_edit_check.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "material_audit"
+path = "src/bin/material_audit.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dag_dump"
+path = "src/bin/dag_dump.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "dyn_chain"
+path = "src/bin/dyn_chain.rs"
+required-features = ["dev-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -188,7 +263,6 @@ zip            = "2"
 walkdir        = "2"
 tauri-plugin-shell = "2"
 libloading     = "0.8"
-ureq           = { version = "2", features = ["tls"] }
 texture2ddecoder = "0.1.2"
 image = "0.25.10"
 base64 = "0.22.1"
@@ -199,6 +273,7 @@ dashmap = "6"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 ww2ogg = "0.1"
 gltf           = { version = "1.4", features = ["extras"] }
+toml_edit      = "0.25"
 
 [profile.release]
 opt-level    = 3

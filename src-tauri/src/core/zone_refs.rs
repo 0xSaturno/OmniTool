@@ -662,7 +662,7 @@ pub fn verify_grown(original: &[u8], grown: &[u8], expect_id: u64, expect_name: 
         format!(
             "{he_b} -> {he_a} ({} sections, {} unknown words)",
             after.dat1.sections.len(),
-            after.dat1.unknowns.len() / 8
+            after.dat1.fixups.len() / 8
         ),
     ));
 
@@ -930,7 +930,7 @@ pub fn verify_grown(original: &[u8], grown: &[u8], expect_id: u64, expect_name: 
             z.scene_objects.len(),
             z.actors.len(),
             z.actor_groups.len(),
-            z.script_actions.len(),
+            z.actions.len(),
             z.model_ids.len(),
             z.vertex_paint.len(),
             z.decal_geometry.len(),
@@ -946,11 +946,11 @@ pub fn verify_grown(original: &[u8], grown: &[u8], expect_id: u64, expect_name: 
             ca.0, ca.1, ca.2, ca.3, ca.4, ca.5, ca.6
         ),
     ));
-    let paths_same = before.model_paths == after.model_paths;
+    let paths_same = before.model_names == after.model_names;
     checks.push(Check::new(
         "model name table resolves identically",
         paths_same,
-        format!("{} model paths", after.model_paths.len()),
+        format!("{} model paths", after.model_names.len()),
     ));
 
     finish(checks)

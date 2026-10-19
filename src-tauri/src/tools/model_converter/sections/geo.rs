@@ -288,6 +288,7 @@ impl Uv1Section {
             out.extend_from_slice(&u.to_le_bytes());
             out.extend_from_slice(&v.to_le_bytes());
         }
+        pad_to_16(&mut out);
         out
     }
 }
@@ -319,6 +320,14 @@ impl ColorsSection {
         for v in &self.values {
             out.extend_from_slice(&v.to_le_bytes());
         }
+        pad_to_16(&mut out);
         out
     }
+}
+
+/// The two 4-byte-per-vertex streams are stored padded to a 16-byte multiple,
+/// unlike Std Vert (already 16 per vertex) and Index (never padded).
+fn pad_to_16(out: &mut Vec<u8>) {
+    let pad = (16 - (out.len() & 0x0F)) & 0x0F;
+    out.resize(out.len() + pad, 0);
 }

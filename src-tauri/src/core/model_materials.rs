@@ -913,7 +913,7 @@ mod tests {
         TemplateSampler {
             name_hash,
             slot_index,
-            user_exposed: 1,
+            user_exposed: true,
             type_hash: 0x49A7_866B,
             default_path: default_path.into(),
         }
@@ -1010,7 +1010,7 @@ mod tests {
                     path: "textures/sbs/grunge/rust_001_c.texture".into(),
                 },
             ],
-            aux: Vec::new(),
+            variations: Vec::new(),
         }
     }
 

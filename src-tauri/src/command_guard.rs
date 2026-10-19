@@ -12,8 +12,8 @@
 //!
 //! This module reads the command sources and `lib.rs` back as text with
 //! `include_str!` and asserts, **in const context**, that every
-//! `#[tauri::command]` in a `commands_level_*.rs` file is named somewhere in
-//! `lib.rs`. A const assertion fails during `cargo check --lib`, which is the
+//! `#[tauri::command]` in one of the scanned command files is named somewhere
+//! in `lib.rs`. A const assertion fails during `cargo check --lib`, which is the
 //! gate this project actually runs, so a forgotten registration cannot reach a
 //! commit.
 //!
@@ -25,8 +25,10 @@
 //!   * it matches a bare `::<name>,` on any line of `lib.rs` that is not a `//`
 //!     comment, so a command named in a `/* */` block or in a string would
 //!     satisfy it. Line-commenting a registration is caught.
-//!   * it only covers `commands_level_*.rs`. `commands.rs` and
-//!     `commands_model_inspector.rs` predate the guard and are not scanned.
+//!   * it only covers the files listed in [`SOURCES`] -- every
+//!     `commands_level_*.rs` plus the arena and rivet modules the upstream
+//!     merge added. `commands.rs` and `commands_model_inspector.rs` predate the
+//!     guard and are not scanned.
 
 /// The file the registrations must appear in.
 const LIB_SRC: &str = include_str!("lib.rs");
@@ -65,6 +67,15 @@ const SOURCES: &[(&str, &str)] = &[
         "commands_level_world.rs",
         include_str!("commands_level_world.rs"),
     ),
+    // The command modules the upstream merge brought in. They are not
+    // `commands_level_*`, but they are the same shape of file and the same
+    // mistake is available in them, so the guard covers them too.
+    ("commands_arena.rs", include_str!("commands_arena.rs")),
+    (
+        "commands_arena_graph.rs",
+        include_str!("commands_arena_graph.rs"),
+    ),
+    ("commands_rivet.rs", include_str!("commands_rivet.rs")),
 ];
 
 const ATTR: &[u8] = b"#[tauri::command]";

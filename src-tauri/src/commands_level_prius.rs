@@ -319,7 +319,7 @@ pub async fn prius_script_sheet(
     let zone = load_zone(&idx, &zone_path)?;
     let db = schema();
 
-    let a = zone.script_actions.get(action_index).ok_or_else(|| {
+    let a = zone.actions.get(action_index).ok_or_else(|| {
         ToolkitError::Parse(format!("no script action {action_index} in {zone_path}"))
     })?;
     let pool = zone
@@ -426,7 +426,7 @@ pub async fn prius_plan_edit(
 
     // Locate the blob and the section it lives in.
     let (blob, base, tag, label, type_uid) = if script {
-        let Some(a) = zone.script_actions.get(row) else {
+        let Some(a) = zone.actions.get(row) else {
             return Ok(fail(format!("no script action {row}")));
         };
         let Some(pool) = zone.dat1.get_section_data(T_SCRIPT_PRIUSES) else {

@@ -1,8 +1,11 @@
 pub mod command_guard;
 pub mod core;
 pub mod tools;
-mod commands;
+pub mod commands;
+pub mod commands_arena;
+pub mod commands_arena_graph;
 pub mod commands_model_inspector;
+pub mod commands_rivet;
 pub mod commands_level_editor;
 pub mod commands_level_entities;
 pub mod commands_level_graphs;
@@ -24,6 +27,7 @@ pub fn run() {
             commands::list_model_lookgroups,
             commands::ascii_to_model,
             commands::gltf_to_model,
+            commands::gltf_material_slots,
             commands::read_model_materials,
             commands_model_inspector::read_model_info,
             commands::save_model_materials,
@@ -31,9 +35,7 @@ pub fn run() {
             commands::save_material,
             commands::material_hash_name,
             commands::get_app_dir,
-            commands::get_hashes_path,
-            commands::hashes_exist,
-            commands::load_hashes,
+            commands::load_asset_names,
             commands::load_toc,
             commands::list_toc_assets,
             commands::extract_asset_to_project,
@@ -57,12 +59,15 @@ pub fn run() {
             commands::export_config_envelope,
             commands::read_atmosphere,
             commands::write_atmosphere,
+            commands::list_atmospheres,
+            commands::read_atmosphere_weather,
             commands::extract_to_temp,
             commands::import_file_to_project,
-            commands::download_hashes,
-            commands::read_zonelightbin,
-            commands::write_zonelightbin_sections,
-            commands::diff_zonelightbin,
+            commands_arena::read_arena_zone,
+            commands_arena::write_arena_zone,
+            commands_arena::verify_arena_zone_roundtrip,
+            commands_arena::preview_arena_clones,
+            commands_arena_graph::read_arena_graph,
             commands::get_asset_references,
             commands::cancel_asset_references,
             commands::load_mod_hashes,
@@ -90,6 +95,11 @@ pub fn run() {
             commands::soundbank_extract_bnk,
             commands::bnk_batch_inject_wems,
             commands::bnk_scan_wem_folder,
+            commands_rivet::rivet_hook_installed,
+            commands_rivet::read_rivet_config,
+            commands_rivet::write_rivet_config,
+            commands_rivet::install_rivet_mod,
+            // --- Level Editor: zones, models, textures, save ---
             commands_level_editor::level_list_planets,
             commands_level_editor::level_list_zones,
             commands_level_editor::level_load_zone,
@@ -118,11 +128,15 @@ pub fn run() {
             commands_level_prius::prius_plan_edit,
             // --- Level Editor: script graph ---
             commands_level_script::level_zone_script_graph,
+            commands_level_script::level_zone_script_dump,
+            commands_level_script::level_zone_script_node,
+            // --- Level Editor: navigation ---
             commands_level_nav::level_nav_zones,
             commands_level_nav::level_nav_summary,
             commands_level_nav::level_nav_surface,
             commands_level_nav::level_nav_edges,
             commands_level_nav::level_nav_clues,
+            // --- Level Editor: node graphs and conduits ---
             commands_level_graphs::level_list_graphs,
             commands_level_graphs::level_nodegraph,
             commands_level_graphs::level_nodegraph_node,
@@ -130,8 +144,6 @@ pub fn run() {
             commands_level_graphs::level_list_conduits,
             commands_level_graphs::level_conduit,
             commands_level_graphs::level_conduit_search,
-            commands_level_script::level_zone_script_dump,
-            commands_level_script::level_zone_script_node,
             // --- Level Editor: world / region / hibernate ---
             commands_level_world::world_open_level,
             commands_level_world::world_region_data,

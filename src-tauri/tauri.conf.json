@@ -1,6 +1,6 @@
 {
   "productName": "OmniTool",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "identifier": "saturn.omnitool",
   "build": {
     "frontendDist": "../dist",
@@ -36,5 +36,9 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "shell": {
+      "open": "^((mailto:\\w+)|(tel:\\w+)|(https?://\\w+)).+|^steam://rungameid/\\d+$"
+    }
+  }
 }

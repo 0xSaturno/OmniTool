@@ -37,15 +37,40 @@
 //! (19,105,452 bytes, 169,245 assets) every de-transposed id reproduces the
 //! CRC-64 of that entry's own name, and the ids come out in ascending order, so
 //! the array is directly binary-searchable. `bin/dag_check` re-measures this.
+//!
+//! # Walking the links
+//!
+//! Two readings of the link array were written independently and they agree:
+//! a run of node indices, terminated by a negative value. `-1` is the plain
+//! terminator; any other negative value has bit 31 set and its low bits are a
+//! base into LC Link Heads, where [`LC_GROUP`] slots select one continuation
+//! per lighting condition ([`LightingCondition`], in that order). Both
+//! spellings are kept here because they answer different questions:
+//!
+//! * [`Dag::deps`] / [`Dag::lc_deps`] report the unconditional edges and the
+//!   conditional ones separately, which is what `bin/dag_check` audits (every
+//!   slot of the link array is claimed exactly once that way); and
+//! * [`Dag::direct_dependencies`] / [`Dag::dependencies`] follow the engine and
+//!   walk *through* the indirection for one condition, or the union of all of
+//!   them, which is what the asset-reference and extraction commands want.
+//!
+//! The group order was pinned from the other side too: `tile_q18_light_grid`'s
+//! marker group is `[-1, 923, 925, -1, -1]`, and slots 1 and 2 hold that tile's
+//! `_overcast` and `_sunset` `.zonelightbin`s — i.e. slot 1 is
+//! [`LightingCondition::Overcast`] and slot 2 is [`LightingCondition::Sunset`].
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
-use crate::core::dat1::Dat1;
+use crate::core::dat1::{Dat1, DAT1_MAGIC};
 use crate::core::error::{Result, ToolkitError};
 
 /// First word of the `dag` file, before the DAT1 container.
 pub const DAG_MAGIC: u32 = 0xB8EF_3955;
+/// The DAT1 type word of the container inside `dag`.
+pub const DAG_VERSION: u32 = 0x2A07_7A51;
 /// Bytes of `dag` preceding the DAT1 container: magic, payload size, one zero.
 pub const DAG_PRELUDE: usize = 12;
 
@@ -60,8 +85,58 @@ pub const TAG_LC_LINK_HEADS: u32 = 0xBFEC_699F;
 ///
 /// Measured: the shipped PC `dag` has 12,900 of them and 2,580 distinct
 /// lighting-condition markers in the link runs, and every marker's payload is a
-/// multiple of five in `0..12_900`.
+/// multiple of five in `0..12_900`. It is also exactly
+/// `LightingCondition::ALL.len()`.
+///
+/// Of those 12,900 heads, 10,577 are `-1` and 2,323 are positive, the smallest
+/// being 923 — **none is zero**. So `-1` is the only "no continuation under
+/// this condition" marker, and slot 0 of the link array (which holds node
+/// 27,307 on that build) is an ordinary head like any other. The 401,305 link
+/// slots split into 335,496 node indices, 63,228 plain `-1` terminators, 2,580
+/// condition markers and one zero, which is a node index.
 pub const LC_GROUP: usize = 5;
+
+/// Bit 31 of a link entry: the rest of its low bits are an LC Link Heads base.
+const LC_LINK_BIT: u32 = 0x8000_0000;
+/// The plain end-of-run terminator, i.e. `-1`.
+const END_OF_CHAIN: u32 = 0xFFFF_FFFF;
+
+const ASSET_TYPE_NAMES: [&str; 25] = [
+    "Level", "Zone", "Actor", "Conduit", "Config", "Cinematic", "Model", "AnimClip", "AnimSet",
+    "Material", "MaterialGraph", "Texture", "Atmosphere", "VisualEffect", "SoundBank",
+    "Localization", "Unknown16", "Unknown17", "ZoneLighting", "LevelLighting", "NodeGraph",
+    "Unknown21", "WwiseLookup", "Unknown23", "Unknown24",
+];
+
+pub fn asset_type_name(type_byte: u8) -> &'static str {
+    ASSET_TYPE_NAMES.get(type_byte as usize).copied().unwrap_or("Invalid")
+}
+
+/// The five lighting conditions, in the order the LC link-head groups use them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LightingCondition {
+    Day,
+    Overcast,
+    Sunset,
+    Night,
+    Blackout,
+}
+
+impl LightingCondition {
+    pub const ALL: [Self; 5] = [Self::Day, Self::Overcast, Self::Sunset, Self::Night, Self::Blackout];
+}
+
+/// `None` in queries means the union over every lighting condition.
+fn conditions(lc: Option<LightingCondition>) -> &'static [LightingCondition] {
+    match lc {
+        Some(LightingCondition::Day) => &LightingCondition::ALL[0..1],
+        Some(LightingCondition::Overcast) => &LightingCondition::ALL[1..2],
+        Some(LightingCondition::Sunset) => &LightingCondition::ALL[2..3],
+        Some(LightingCondition::Night) => &LightingCondition::ALL[3..4],
+        Some(LightingCondition::Blackout) => &LightingCondition::ALL[4..5],
+        None => &LightingCondition::ALL,
+    }
+}
 
 /// Undo the build-time byte transposition of a `u64` array.
 ///
@@ -102,6 +177,37 @@ fn read_u32s(block: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+fn read_u32_at(bytes: &[u8], off: usize) -> Result<u32> {
+    bytes
+        .get(off..off + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .ok_or_else(|| ToolkitError::Parse("dag file too small".into()))
+}
+
+/// Strip the 12-byte prelude, or accept a bare DAT1 container.
+fn unwrap_container(bytes: &[u8]) -> Result<&[u8]> {
+    let magic = read_u32_at(bytes, 0)?;
+    if magic == DAT1_MAGIC {
+        return Ok(bytes);
+    }
+    if magic != DAG_MAGIC {
+        return Err(ToolkitError::InvalidMagic { expected: DAG_MAGIC, got: magic });
+    }
+    let declared = read_u32_at(bytes, 4)? as usize;
+    if read_u32_at(bytes, 8)? != 0 {
+        return Err(ToolkitError::Unsupported("compressed dag".into()));
+    }
+    // The shipped file declares its payload exactly; a short one is truncated.
+    bytes
+        .get(DAG_PRELUDE..DAG_PRELUDE + declared)
+        .ok_or_else(|| {
+            ToolkitError::Parse(format!(
+                "dag payload size {declared} runs past the file ({} bytes after the prelude)",
+                bytes.len().saturating_sub(DAG_PRELUDE)
+            ))
+        })
+}
+
 /// One decoded dependency-graph node.
 #[derive(Debug, Clone, Copy)]
 pub struct DagNode {
@@ -113,11 +219,14 @@ pub struct DagNode {
 
 pub struct Dag {
     dat1: Dat1,
+    /// The DAT1 type word, for tools that report the build's dag version.
+    pub version: u32,
     /// Asset ids, de-transposed. Ascending on every shipped `dag` we have seen.
     pub ids: Vec<u64>,
     /// Asset-type enum, one byte per asset.
     pub types: Vec<u8>,
-    /// String-pool offsets of the asset paths, one per asset.
+    /// String-pool offsets of the asset paths, one per asset. Empty when the
+    /// build ships no name section.
     pub name_offsets: Vec<u32>,
     /// Start index into [`Dag::links`], or `-1` when the asset has no deps.
     pub link_heads: Vec<i32>,
@@ -132,29 +241,16 @@ pub struct Dag {
 }
 
 impl Dag {
-    /// Read `<game_dir>/dag`.
-    pub fn load(game_dir: &Path) -> Result<Self> {
-        let path = game_dir.join("dag");
-        let bytes = std::fs::read(&path)?;
-        Self::parse(&bytes)
+    /// Read a `dag`. `path` may be the file itself or the game folder holding
+    /// it, since both spellings are in use across the tools.
+    pub fn load(path: &Path) -> Result<Self> {
+        let file = if path.is_dir() { path.join("dag") } else { path.to_path_buf() };
+        Self::parse(&std::fs::read(file)?)
     }
 
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < DAG_PRELUDE {
-            return Err(ToolkitError::Parse("dag file too small".into()));
-        }
-        let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        if magic != DAG_MAGIC {
-            return Err(ToolkitError::InvalidMagic { expected: DAG_MAGIC, got: magic });
-        }
-        let declared = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-        if declared != data.len() - DAG_PRELUDE {
-            return Err(ToolkitError::Parse(format!(
-                "dag payload size {declared} does not match file ({} bytes after the prelude)",
-                data.len() - DAG_PRELUDE
-            )));
-        }
-        let dat1 = Dat1::parse(&data[DAG_PRELUDE..])?;
+        let payload = unwrap_container(data)?;
+        let dat1 = Dat1::parse(payload)?;
 
         let section = |tag: u32| -> Result<&[u8]> {
             dat1.get_section_data(tag).ok_or(ToolkitError::SectionNotFound(tag))
@@ -171,7 +267,6 @@ impl Dag {
         let count = ids.len();
 
         let types = section(TAG_ASSET_TYPES)?.to_vec();
-        let name_offsets = read_u32s(section(TAG_ASSET_NAMES)?);
         let link_heads = read_i32s(section(TAG_LINK_HEADS)?);
         let links = read_i32s(section(TAG_LINKS)?);
         // Optional: absent from some builds, so a missing section is not fatal.
@@ -179,17 +274,23 @@ impl Dag {
             .get_section_data(TAG_LC_LINK_HEADS)
             .map(read_i32s)
             .unwrap_or_default();
+        let name_offsets = dat1
+            .get_section_data(TAG_ASSET_NAMES)
+            .map(read_u32s)
+            .unwrap_or_default();
 
-        for (what, got) in [
-            ("types", types.len()),
-            ("names", name_offsets.len()),
-            ("link heads", link_heads.len()),
-        ] {
+        for (what, got) in [("types", types.len()), ("link heads", link_heads.len())] {
             if got != count {
                 return Err(ToolkitError::Parse(format!(
                     "dag {what} has {got} entries but there are {count} asset ids"
                 )));
             }
+        }
+        if !name_offsets.is_empty() && name_offsets.len() != count {
+            return Err(ToolkitError::Parse(format!(
+                "dag names has {} entries but there are {count} asset ids",
+                name_offsets.len()
+            )));
         }
 
         let ids_ascending = ids.windows(2).all(|w| w[0] < w[1]);
@@ -197,6 +298,7 @@ impl Dag {
             .then(|| ids.iter().enumerate().map(|(i, &id)| (id, i)).collect());
 
         Ok(Self {
+            version: dat1.unk1,
             dat1,
             ids,
             types,
@@ -215,6 +317,22 @@ impl Dag {
 
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
+    }
+
+    pub fn asset_ids(&self) -> &[u64] {
+        &self.ids
+    }
+
+    pub fn id(&self, index: usize) -> u64 {
+        self.ids[index]
+    }
+
+    pub fn type_byte(&self, index: usize) -> u8 {
+        self.types[index]
+    }
+
+    pub fn type_name(&self, index: usize) -> &'static str {
+        asset_type_name(self.types[index])
     }
 
     /// The raw, still-transposed asset-id block, for harnesses that want to
@@ -248,11 +366,16 @@ impl Dag {
         std::str::from_utf8(&pool[off..end]).ok()
     }
 
+    /// `(asset id, path)` for every named entry, with `/` separators.
+    pub fn named_assets(&self) -> impl Iterator<Item = (u64, String)> + '_ {
+        (0..self.ids.len()).filter_map(|i| self.name(i).map(|n| (self.ids[i], n.replace('\\', "/"))))
+    }
+
     pub fn node(&self, i: usize) -> Option<DagNode> {
         Some(DagNode {
             id: *self.ids.get(i)?,
             asset_type: self.types[i],
-            name_offset: self.name_offsets[i],
+            name_offset: self.name_offsets.get(i).copied().unwrap_or(0),
             link_head: self.link_heads[i],
         })
     }
@@ -343,14 +466,214 @@ impl Dag {
         if marker >= -1 {
             return None;
         }
-        let base = (marker as u32 & 0x7FFF_FFFF) as usize;
+        let base = (marker as u32 & !LC_LINK_BIT) as usize;
         self.lc_link_heads.get(base..base + LC_GROUP)
+    }
+
+    /// Walk one asset's links the way the engine does for a single lighting
+    /// condition: node indices as they come, following an LC marker into that
+    /// condition's continuation.
+    fn for_each_link(&self, index: usize, lc: LightingCondition, f: &mut impl FnMut(usize)) {
+        let Some(&head) = self.link_heads.get(index) else { return };
+        if head < 0 {
+            return;
+        }
+        let mut link = head as usize;
+        // The link array has no cycles on the shipped build; the bound keeps a
+        // damaged one from spinning here forever.
+        for _ in 0..self.links.len() {
+            let Some(&raw) = self.links.get(link) else { return };
+            let entry = raw as u32;
+            link += 1;
+            if entry & LC_LINK_BIT == 0 {
+                if (entry as usize) < self.ids.len() {
+                    f(entry as usize);
+                }
+                continue;
+            }
+            if entry == END_OF_CHAIN {
+                return;
+            }
+            let slot = (entry & !LC_LINK_BIT) as usize + lc as usize;
+            match self.lc_link_heads.get(slot) {
+                // `-1` is the absent head; 0 is a real slot of the link array.
+                Some(&next) if next >= 0 => link = next as usize,
+                _ => return,
+            }
+        }
+    }
+
+    /// Assets `index` loads directly, sorted and de-duplicated.
+    pub fn direct_dependencies(&self, index: usize, lc: Option<LightingCondition>) -> Vec<usize> {
+        let mut out = Vec::new();
+        for &c in conditions(lc) {
+            self.for_each_link(index, c, &mut |child| out.push(child));
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Everything the roots load, excluding the roots; one level unless `recursive`.
+    pub fn dependencies(&self, roots: &[usize], lc: Option<LightingCondition>, recursive: bool) -> Vec<usize> {
+        let mut seen = vec![false; self.ids.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        for &r in roots.iter().filter(|&&r| r < self.ids.len()) {
+            seen[r] = true;
+            stack.push(r);
+        }
+        let mut out = Vec::new();
+        let mut first_level = true;
+        while !stack.is_empty() {
+            let mut next = Vec::new();
+            for node in stack.drain(..) {
+                for &c in conditions(lc) {
+                    self.for_each_link(node, c, &mut |child| {
+                        if !seen[child] {
+                            seen[child] = true;
+                            out.push(child);
+                            next.push(child);
+                        }
+                    });
+                }
+            }
+            if first_level && !recursive {
+                break;
+            }
+            first_level = false;
+            stack = next;
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// Reverse edges for "who loads this" queries.
+    pub fn dependents_index(&self, lc: Option<LightingCondition>) -> Dependents {
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+        for parent in 0..self.ids.len() {
+            for &c in conditions(lc) {
+                self.for_each_link(parent, c, &mut |child| edges.push((child as u32, parent as u32)));
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+
+        let mut starts = vec![0u32; self.ids.len() + 1];
+        for &(child, _) in &edges {
+            starts[child as usize + 1] += 1;
+        }
+        for i in 1..starts.len() {
+            starts[i] += starts[i - 1];
+        }
+        Dependents { starts, parents: edges.into_iter().map(|(_, p)| p).collect() }
+    }
+}
+
+pub type NameTable = Arc<HashMap<u64, String>>;
+
+/// A game's dag with its reverse index and name table, shared across commands.
+pub struct GameDag {
+    pub dag: Dag,
+    pub dependents: Dependents,
+    pub names: NameTable,
+}
+
+struct CachedDag {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    game_dag: Arc<GameDag>,
+}
+
+/// Loads `<game_dir>/dag`, cached until the file changes.
+pub fn load_game_dag(game_dir: &Path) -> Result<Arc<GameDag>> {
+    static CACHE: Mutex<Option<CachedDag>> = Mutex::new(None);
+
+    let path = game_dir.join("dag");
+    let modified = std::fs::metadata(&path)?.modified().ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = cache.as_ref().filter(|c| c.path == path && c.modified == modified) {
+        return Ok(c.game_dag.clone());
+    }
+    let dag = Dag::load(&path)?;
+    let dependents = dag.dependents_index(None);
+    let names = Arc::new(dag.named_assets().collect());
+    let game_dag = Arc::new(GameDag { dag, dependents, names });
+    *cache = Some(CachedDag { path, modified, game_dag: game_dag.clone() });
+    Ok(game_dag)
+}
+
+/// `asset id -> path` from `<game_dir>/dag`.
+pub fn name_table(game_dir: &Path) -> Result<NameTable> {
+    Ok(load_game_dag(game_dir)?.names.clone())
+}
+
+pub struct Dependents {
+    starts: Vec<u32>,
+    parents: Vec<u32>,
+}
+
+impl Dependents {
+    pub fn direct(&self, index: usize) -> &[u32] {
+        match (self.starts.get(index), self.starts.get(index + 1)) {
+            (Some(&a), Some(&b)) => &self.parents[a as usize..b as usize],
+            _ => &[],
+        }
+    }
+
+    /// Every asset that loads `index` directly or indirectly, excluding `index`.
+    pub fn transitive(&self, index: usize) -> Vec<usize> {
+        let mut seen = vec![false; self.starts.len().saturating_sub(1)];
+        if index >= seen.len() {
+            return Vec::new();
+        }
+        seen[index] = true;
+        let mut stack = vec![index];
+        let mut out = Vec::new();
+        while let Some(node) = stack.pop() {
+            for &p in self.direct(node) {
+                let p = p as usize;
+                if !seen[p] {
+                    seen[p] = true;
+                    out.push(p);
+                    stack.push(p);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A graph with no container behind it, for the link-walking tests.
+    fn dag(link_heads: Vec<i32>, links: Vec<u32>, lc_link_heads: Vec<i32>) -> Dag {
+        let n = link_heads.len();
+        let empty = Dat1 {
+            magic: DAT1_MAGIC,
+            unk1: DAG_VERSION,
+            total_size: 0,
+            sections: Vec::new(),
+            fixups: Vec::new(),
+            strings_pool: Vec::new(),
+            section_data: Vec::new(),
+            sections_map: HashMap::new(),
+        };
+        Dag {
+            dat1: empty,
+            version: DAG_VERSION,
+            ids: (0..n as u64).collect(),
+            types: vec![0; n],
+            name_offsets: Vec::new(),
+            link_heads,
+            links: links.into_iter().map(|v| v as i32).collect(),
+            lc_link_heads,
+            ids_ascending: true,
+            fallback: None,
+        }
+    }
 
     /// Transpose a `u64[]` the way the build step does, then decode it back.
     #[test]
@@ -368,8 +691,57 @@ mod tests {
         assert_ne!(plain_u64(&block), ids);
     }
 
+    /// Two real ids off the shipped build, transposed by hand.
+    #[test]
+    fn untransposes_byte_planes() {
+        let ids = [0x8000_0DCC_5F02_623Cu64, 0x8000_35F1_EBDC_BCEC];
+        let mut block = vec![0u8; 16];
+        for (i, id) in ids.iter().enumerate() {
+            for k in 0..8 {
+                block[k * 2 + i] = (id >> (8 * k)) as u8;
+            }
+        }
+        assert_eq!(detranspose_u64(&block), ids);
+    }
+
     #[test]
     fn detranspose_handles_empty() {
         assert!(detranspose_u64(&[]).is_empty());
+    }
+
+    #[test]
+    fn walks_plain_and_lighting_chains() {
+        // 0 -> 1, then lc group 0: Day -> 2, Night -> 3; 1 -> 3; 2, 3 leaf
+        let links = vec![1, LC_LINK_BIT, END_OF_CHAIN, 2, END_OF_CHAIN, 3, END_OF_CHAIN, 3, END_OF_CHAIN];
+        let lc_heads = vec![3, -1, -1, 5, -1];
+        let d = dag(vec![0, 7, -1, -1], links, lc_heads);
+
+        assert_eq!(d.direct_dependencies(0, Some(LightingCondition::Day)), vec![1, 2]);
+        assert_eq!(d.direct_dependencies(0, Some(LightingCondition::Night)), vec![1, 3]);
+        assert_eq!(d.direct_dependencies(0, Some(LightingCondition::Sunset)), vec![1]);
+        assert_eq!(d.direct_dependencies(0, None), vec![1, 2, 3]);
+        assert_eq!(d.dependencies(&[0], Some(LightingCondition::Day), true), vec![1, 2, 3]);
+        assert_eq!(d.dependencies(&[0], Some(LightingCondition::Day), false), vec![1, 2]);
+
+        let rev = d.dependents_index(None);
+        assert_eq!(rev.direct(3), &[0, 1]);
+        assert_eq!(rev.transitive(3), vec![0, 1]);
+        assert!(rev.transitive(0).is_empty());
+    }
+
+    /// The same links through the other spelling: the unconditional run stops
+    /// at the marker, and the marker's group is reported per condition slot.
+    #[test]
+    fn marker_runs_are_reported_separately() {
+        let links = vec![1, LC_LINK_BIT, END_OF_CHAIN, 2, END_OF_CHAIN, 3, END_OF_CHAIN, 3, END_OF_CHAIN];
+        let lc_heads = vec![3, -1, -1, 5, -1];
+        let d = dag(vec![0, 7, -1, -1], links, lc_heads);
+
+        assert_eq!(d.deps(0), vec![1]);
+        assert_eq!(d.lc_marker(0), Some(LC_LINK_BIT as i32));
+        assert_eq!(d.lc_deps(0), vec![(0, vec![2]), (3, vec![3])]);
+        assert_eq!(d.lc_group(LC_LINK_BIT as i32), Some(&[3, -1, -1, 5, -1][..]));
+        // LC_GROUP is the per-condition group size, so the two readings agree.
+        assert_eq!(LC_GROUP, LightingCondition::ALL.len());
     }
 }

@@ -7,7 +7,7 @@
 //! what makes the match possible.
 //!
 //! usage:
-//!   material_names_harvest <toc> <archives dir> <hashes> [--out FILE]
+//!   material_names_harvest <toc> <archives dir> <dag> [--out FILE]
 //!                          [--materials] [--limit N] [--extra FILE]...
 
 use std::collections::{HashMap, HashSet};
@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 
 use omnitool_lib::core::crc32;
+use omnitool_lib::core::dag::Dag;
 use omnitool_lib::core::material::{MaterialFile, MaterialSerialized, TAG_MATERIAL_SERIALIZED};
 use omnitool_lib::core::material_graph::MaterialTemplate;
 use omnitool_lib::core::toc::{Toc, TocAsset};
@@ -475,7 +476,7 @@ fn main() {
 
     if args.len() < 3 {
         eprintln!(
-            "usage: material_names_harvest <toc> <archives dir> <hashes> \
+            "usage: material_names_harvest <toc> <archives dir> <dag> \
              [--out FILE] [--materials] [--limit N]"
         );
         std::process::exit(1);
@@ -520,26 +521,20 @@ fn main() {
     let toc = Toc::parse(&toc_bytes).expect("parse toc");
     let archives_dir = PathBuf::from(&args[1]);
 
-    // The hash list tells us which asset is a graph and which is a material.
+    // The dag names tell us which asset is a graph and which is a material.
     let mut graph_ids: HashSet<u64> = HashSet::new();
     let mut material_ids: HashSet<u64> = HashSet::new();
     let mut explain_ids: HashMap<u64, String> = HashMap::new();
     let mut graph_paths: HashMap<u64, String> = HashMap::new();
-    for line in std::fs::read_to_string(&args[2]).expect("read hashes").lines() {
-        let mut parts = line.splitn(3, ',');
-        let (Some(hex), Some(path)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        let Ok(id) = u64::from_str_radix(hex.trim(), 16) else {
-            continue;
-        };
+    let dag = Dag::load(std::path::Path::new(&args[2])).expect("read dag");
+    for (id, path) in dag.named_assets() {
         let lower = path.to_ascii_lowercase();
         if lower.ends_with(".materialgraph") {
             graph_ids.insert(id);
-            graph_paths.insert(id, path.to_string());
+            graph_paths.insert(id, path.clone());
             if let Some(needle) = &explain {
                 if lower.contains(needle.as_str()) {
-                    explain_ids.insert(id, path.to_string());
+                    explain_ids.insert(id, path);
                 }
             }
         } else if lower.ends_with(".material") {

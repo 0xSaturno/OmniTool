@@ -1,0 +1,366 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  height: calc(100vh - 4rem);
+  min-height: 0;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.noticeWarn {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  margin-bottom: -0.5rem;
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.tabDirty {
+  margin-left: 0.35rem;
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+
+.pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  padding: 0.75rem 0.9rem;
+}
+
+.pane h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.entries {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.6rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid transparent;
+}
+
+.entry:last-child {
+  border-bottom: none;
+}
+
+.entryDirty {
+  border-left-color: var(--accent);
+}
+
+.entryText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.entryLabel {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.entryComment {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.entryControl {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.input {
+  width: 260px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.input:disabled {
+  opacity: 0.5;
+}
+
+.numberInput {
+  width: 120px;
+}
+
+.keyInput {
+  width: 140px;
+  text-align: center;
+  cursor: pointer;
+  caret-color: transparent;
+}
+
+.listInput {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.switchKnob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.switchOn {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.switchOn .switchKnob {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+
+.modHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 1rem 0 0.6rem;
+}
+
+.modActions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.pane .subHeading {
+  margin: 1.1rem 0 0.5rem;
+  color: var(--text-secondary);
+}
+
+.modList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.modRow {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  padding: 0.4rem 0.6rem;
+}
+
+.modRowOff .modPath {
+  color: var(--text-secondary);
+}
+
+.modIndex {
+  width: 1.4rem;
+  text-align: right;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.modPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.missingBadge {
+  border: 1px solid var(--error);
+  color: var(--error);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+}
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.iconBtn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.iconBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.helperText {
+  margin: 0.2rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.emptyText {
+  margin: 0 0 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.runBtn {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.runBtn:hover { opacity: 0.85; }
+
+.runBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.secondaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.secondaryBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.secondaryBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

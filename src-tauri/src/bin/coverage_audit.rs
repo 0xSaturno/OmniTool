@@ -142,8 +142,9 @@ fn model_stats(index: &LevelIndex, id: u64) -> ModelStats {
     for m in &meshes {
         s.all_v += m.vertex_count as usize;
         s.all_i += m.index_count as usize;
-        // Model Subset +0x2E low nibble = the LOD this subset belongs to.
-        if (m.unk10 & 0xF) == 0 {
+        // Model Subset +0x2E low nibble = the LOD this subset belongs to;
+        // upstream's `lod_proxy_id` is that same field, named.
+        if m.lod_id() == 0 {
             s.lod0_v += m.vertex_count as usize;
             s.lod0_i += m.index_count as usize;
         }

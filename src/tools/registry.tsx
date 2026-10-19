@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { LuPackagePlus, LuLightbulb, LuMusic, LuFileAudio } from "react-icons/lu";
+import { LuPackagePlus, LuMusic, LuFileAudio, LuSwords } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
 import { TbHexagon3D, TbListSearch, TbMap2 } from "react-icons/tb";
 import { MdTexture, MdOutlinePalette } from "react-icons/md";
@@ -13,6 +13,8 @@ export interface ToolDefinition {
   path: string;
   icon: ReactNode;
   category: "asset" | "model" | "texture" | "audio" | "config" | "misc";
+  devOnly?: boolean;
+  disabled?: boolean;
 }
 
 export const TOOLS: ToolDefinition[] = [
@@ -43,7 +45,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     id: "model-converter",
     label: "Model Converter",
-    description: "Convert .model ↔ .ascii (export and inject mesh assets)",
+    description: "Convert .model to .ascii/.gltf (export and import mesh assets)",
     path: "/tools/model-converter",
     icon: <TbHexagon3D />,
     category: "model",
@@ -105,19 +107,20 @@ export const TOOLS: ToolDefinition[] = [
     category: "config",
   },
   {
+    id: "arena-editor",
+    label: "Arena Editor",
+    description: "Retune Zurkie's arena challenges and swap the enemies they spawn",
+    path: "/tools/arena-editor",
+    icon: <LuSwords />,
+    category: "config",
+    devOnly: true,
+  },
+  {
     id: "atmosphere-editor",
     label: "Atmosphere Editor",
     description: "Edit .atmosphere known values",
     path: "/tools/atmosphere-editor",
     icon: <RiCloudyLine />,
-    category: "misc",
-  },
-  {
-    id: "zonelightbin-module",
-    label: "ZoneLightBin",
-    description: "under construction",
-    path: "/tools/zonelightbin-module",
-    icon: <LuLightbulb />,
     category: "misc",
   },
 ];

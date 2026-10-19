@@ -5,6 +5,12 @@
   gap: 1.5rem;
 }
 
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
 .title {
   font-size: 1.4rem;
   font-weight: 700;
@@ -12,7 +18,7 @@
 
 .subtitle {
   color: var(--text-secondary);
-  margin-top: -1rem;
+  font-size: 0.875rem;
 }
 
 .tabs {
@@ -207,4 +213,66 @@
 .lookGroupName {
   color: var(--text-primary);
   flex: 1;
+}
+
+.injectActionsRow[hidden] { display: none; }
+
+.slotPrompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+}
+
+.slotPromptTitle {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.slotPromptHint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.slotRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.slotName {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.slotMeshes {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.slotInput {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.slotInput:focus { border-color: var(--accent); }
+
+.slotError {
+  font-size: 0.8rem;
+  color: var(--error);
 }

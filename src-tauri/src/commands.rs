@@ -66,15 +66,17 @@ use crate::core::dat1::Dat1;
 use crate::core::error::ToolkitError;
 use crate::core::filesystem;
 use crate::core::material::{
-    MaterialConstant, MaterialFile, MaterialHeaderSection, MaterialSampler, MaterialSerialized,
-    TAG_MATERIAL_FUR, TAG_MATERIAL_HEADER, TAG_MATERIAL_SERIALIZED,
+    flags as material_flags, MaterialConstant, MaterialFile, MaterialFurInfo, MaterialHeaderSection,
+    MaterialSampler, MaterialSerialized, MaterialWaterInfo, NO_PATH, TAG_MATERIAL_FUR,
+    TAG_MATERIAL_HEADER, TAG_MATERIAL_SERIALIZED, TAG_MATERIAL_WATER,
 };
 use crate::core::material_graph::MaterialTemplate;
 use crate::core::material_names;
 use crate::core::toc::{Toc, TocAsset};
 use crate::tools::model_converter::{
     ascii_reader::{inject_ascii, parse_ascii},
-    gltf_reader::{inject_gltf, parse_gltf},
+    gltf_import::{import_gltf, material_slot_plan, ImportOptions, SlotPlan},
+    gltf_reader::parse_gltf,
     gltf_writer::model_to_glb_for_looks as do_model_to_glb_for_looks,
     ascii_writer::model_to_ascii_for_looks as do_model_to_ascii_for_looks,
     model::ModelFile,
@@ -718,23 +720,99 @@ pub async fn ascii_to_model(
     Ok(output_path.to_string_lossy().into_owned())
 }
 
+fn gltf_sidecar(gltf_path: &str) -> String {
+    format!("{gltf_path}.omni.json")
+}
+
+/// Import options saved next to a glTF as `<gltf>.omni.json`, else defaults.
+fn gltf_import_options(gltf_path: &str) -> Result<ImportOptions, ToolkitError> {
+    let sidecar = gltf_sidecar(gltf_path);
+    match std::fs::read_to_string(&sidecar) {
+        Ok(text) => {
+            eprintln!("[gltf_to_model] using import options from {sidecar}");
+            serde_json::from_str(&text).map_err(|e| ToolkitError::Parse(format!("{sidecar}: {e}")))
+        }
+        Err(_) => Ok(ImportOptions::default()),
+    }
+}
+
+/// The target model's material slots and the glTF materials an import would add as new slots.
+#[tauri::command]
+pub async fn gltf_material_slots(gltf_path: String, src_model_path: String) -> Result<SlotPlan, ToolkitError> {
+    let gltf = parse_gltf(&gltf_path)?;
+    let model = ModelFile::parse(&std::fs::read(&src_model_path)?)?;
+    material_slot_plan(&model, &gltf, &gltf_import_options(&gltf_path)?)
+}
+
+/// `materials` (slot name -> `.material` path) and `strip_hair` override the saved options; with
+/// `remember` they are saved.
 #[tauri::command]
 pub async fn gltf_to_model(
     gltf_path: String,
     src_model_path: String,
     out_path: Option<String>,
+    materials: Option<std::collections::BTreeMap<String, String>>,
+    strip_hair: Option<bool>,
+    remember: Option<bool>,
 ) -> Result<String, ToolkitError> {
     let start = Instant::now();
     eprintln!("[gltf_to_model] loading gltf from {}", gltf_path);
     let gltf = parse_gltf(&gltf_path)?;
     eprintln!("[gltf_to_model] parsed gltf ({} meshes, {} bones)", gltf.meshes.len(), gltf.bones.len());
+    let mut options = gltf_import_options(&gltf_path)?;
+    let materials = materials.filter(|m| !m.is_empty());
+    let changed = materials.is_some() || strip_hair.is_some_and(|s| options.strip_hair != Some(s));
+    if let Some(materials) = materials {
+        options.materials.extend(materials);
+    }
+    if strip_hair.is_some() {
+        options.strip_hair = strip_hair;
+    }
+    if changed && remember.unwrap_or(false) {
+        let sidecar = gltf_sidecar(&gltf_path);
+        let text = serde_json::to_string_pretty(&options).map_err(|e| ToolkitError::Parse(e.to_string()))?;
+        std::fs::write(&sidecar, text)?;
+        eprintln!("[gltf_to_model] saved import options to {sidecar}");
+    }
 
     eprintln!("[gltf_to_model] loading source model from {}", src_model_path);
     let model_data = std::fs::read(&src_model_path)?;
     let mut model = ModelFile::parse(&model_data)?;
 
     eprintln!("[gltf_to_model] injecting gltf data into model");
-    inject_gltf(&mut model, &gltf)?;
+    let report = import_gltf(&mut model, &gltf, &options)?;
+    for s in &report.subsets {
+        eprintln!(
+            "[gltf_to_model] subset {:>4} <- '{}' slot '{}' {:?}{} ({} verts, {} tris{}{})",
+            s.subset,
+            s.primitive,
+            s.slot,
+            s.tier,
+            s.source.map(|o| format!(" of #{o}")).unwrap_or_default(),
+            s.vertices,
+            s.triangles,
+            if s.skin_rebuilt { ", skin rebuilt" } else { "" },
+            if s.morph_vertices > 0 { format!(", {} morphing", s.morph_vertices) } else { String::new() },
+        );
+    }
+    if !report.removed.is_empty() {
+        eprintln!("[gltf_to_model] removed subsets {:?}", report.removed);
+    }
+    if !report.kept.is_empty() {
+        eprintln!("[gltf_to_model] kept subsets missing from the glTF: {:?}", report.kept);
+    }
+    if report.hair_removed > 0 {
+        eprintln!("[gltf_to_model] removed {} hair groups", report.hair_removed);
+    }
+    if !report.new_slots.is_empty() {
+        eprintln!("[gltf_to_model] new material slots: {}", report.new_slots.join(", "));
+    }
+    if let Some(n) = report.morphs {
+        eprintln!("[gltf_to_model] re-encoded {n} morph targets");
+    }
+    for w in &report.warnings {
+        eprintln!("[gltf_to_model] WARNING: {w}");
+    }
 
     let output_path = out_path
         .filter(|s| !s.is_empty())
@@ -990,56 +1068,22 @@ pub async fn get_app_dir() -> Result<String, ToolkitError> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// `(hex id, path)` for every asset named in `<game_dir>/dag`. Ids stay strings
+/// to avoid u64 precision loss in JS.
 #[tauri::command]
-pub async fn get_hashes_path() -> Result<String, ToolkitError> {
-    let path = filesystem::hashes_path()?;
-    let exists = path.exists();
-    info!("get_hashes_path: {} (exists={})", path.display(), exists);
-    Ok(path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn hashes_exist() -> Result<bool, ToolkitError> {
-    Ok(filesystem::hashes_path()?.exists())
-}
-
-#[tauri::command]
-pub async fn load_hashes() -> Result<Vec<(String, String)>, ToolkitError> {
+pub async fn load_asset_names(game_dir: String) -> Result<Vec<(String, String)>, ToolkitError> {
     let start = Instant::now();
-    let path = filesystem::hashes_path()?;
-    eprintln!("[asset_browser] reading hashes from {}", path.display());
-    let text = std::fs::read_to_string(&path)?;
-
-    let mut hashes = Vec::new();
-    let parse_into = |text: &str, hashes: &mut Vec<(String, String)>| {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let mut parts = line.splitn(3, ',');
-            let Some(hex_str) = parts.next() else {
-                continue;
-            };
-            let Some(path_str) = parts.next() else {
-                continue;
-            };
-            // Validate hex but keep as string to avoid u64 precision loss in JS
-            if u64::from_str_radix(hex_str, 16).is_err() {
-                debug!("load_hashes: skipping malformed hex {:?}", hex_str);
-                continue;
-            }
-            hashes.push((hex_str.to_uppercase(), path_str.to_string()));
-        }
-    };
-    parse_into(&text, &mut hashes);
-
+    let names = crate::core::dag::name_table(Path::new(&game_dir))?;
+    let pairs: Vec<(String, String)> = names
+        .iter()
+        .map(|(id, path)| (format!("{id:016X}"), path.clone()))
+        .collect();
     eprintln!(
-        "[asset_browser] loaded {} hashes in {:?}",
-        hashes.len(),
+        "[asset_browser] loaded {} asset names from dag in {:?}",
+        pairs.len(),
         start.elapsed()
     );
-    Ok(hashes)
+    Ok(pairs)
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,7 +1126,7 @@ fn norm_dir(p: &str) -> String {
 /// Overstrike hashes that path with the DAT1 CRC64 to get the id it writes
 /// into the TOC (`StageInstallerHelper.IsAssetFile`). Hashing the entry names
 /// the same way recovers the paths of mod-added assets, which by definition
-/// never appear in the shipped `hashes` list.
+/// never appear in the shipped `dag`.
 ///
 /// `overstrike_dir` may point at the Overstrike folder or straight at its
 /// `Mods Library`. When `game_dir` is given, the profile whose `path` matches
@@ -2049,6 +2093,17 @@ pub struct AtmosphereKnownValue {
     pub offset: u32,
     pub value_type: String,
     pub value: String,
+    pub editable: bool,
+}
+
+fn known_value(name: &str, off: usize, value_type: &str, value: String) -> AtmosphereKnownValue {
+    AtmosphereKnownValue {
+        name: name.to_string(),
+        offset: off as u32,
+        value_type: value_type.to_string(),
+        value,
+        editable: crate::core::atmosphere::editable_type(off).is_some(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -2070,6 +2125,16 @@ pub struct AtmosphereData {
     pub known_values: Vec<AtmosphereKnownValue>,
     pub strings: Vec<String>,
     pub notes: Vec<String>,
+    /// Dag path of the shipped atmosphere this file was matched to by name.
+    pub shipped_path: Option<String>,
+    /// That atmosphere's direct dag dependencies, as normalized paths.
+    pub dependencies: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AtmosphereWeather {
+    pub source_path: String,
+    pub values: Vec<AtmosphereKnownValue>,
 }
 
 fn read_u32_at(data: &[u8], off: usize) -> Option<u32> {
@@ -2082,47 +2147,14 @@ fn read_f32_at(data: &[u8], off: usize) -> Option<f32> {
     Some(f32::from_le_bytes(bytes.try_into().ok()?))
 }
 
-fn read_i32_at(data: &[u8], off: usize) -> Option<i32> {
-    let bytes = data.get(off..off + 4)?;
-    Some(i32::from_le_bytes(bytes.try_into().ok()?))
-}
-
 fn push_f32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_f32_at(data, off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "float".to_string(),
-            value: format!("{v:.6}"),
-        });
+        values.push(known_value(name, off, "float", format!("{v:.6}")));
     }
 }
 
-/// `asset id -> path` from the shipped hash list, loaded once. Empty when the
-/// list is missing — references then show as raw ids.
-fn atmosphere_hash_lookup() -> &'static HashMap<u64, String> {
-    static LOOKUP: OnceLock<HashMap<u64, String>> = OnceLock::new();
-    LOOKUP.get_or_init(|| {
-        let mut map = HashMap::new();
-        if let Ok(path) = filesystem::hashes_path() {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                for line in text.lines() {
-                    let mut parts = line.splitn(3, ',');
-                    let (Some(hex), Some(asset_path)) = (parts.next(), parts.next()) else {
-                        continue;
-                    };
-                    if let Ok(id) = u64::from_str_radix(hex.trim(), 16) {
-                        map.insert(id, asset_path.to_string());
-                    }
-                }
-            }
-        }
-        map
-    })
-}
-
 /// An 8-byte asset reference. Unset slots read `FFFF…`/0 in shipped files;
-/// set ones are packed asset ids, resolved to a path when the hash list has it.
+/// set ones are packed asset ids, resolved to a path when the dag names it.
 fn push_asset_ref(
     values: &mut Vec<AtmosphereKnownValue>,
     data: &[u8],
@@ -2150,49 +2182,190 @@ fn push_asset_ref(
             None => format!("{id:016X}"),
         }
     };
-    values.push(AtmosphereKnownValue {
-        name: name.to_string(),
-        offset: off as u32,
-        value_type: "asset".to_string(),
-        value,
-    });
+    values.push(known_value(name, off, "asset", value));
 }
 
 fn push_u32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
     if let Some(v) = read_u32_at(data, off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "u32".to_string(),
-            value: v.to_string(),
-        });
+        values.push(known_value(name, off, "u32", v.to_string()));
     }
 }
 
-fn push_i32(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
-    if let Some(v) = read_i32_at(data, off) {
-        values.push(AtmosphereKnownValue {
-            name: name.to_string(),
-            offset: off as u32,
-            value_type: "i32".to_string(),
-            value: v.to_string(),
-        });
+fn push_u8(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], name: &str, off: usize) {
+    if let Some(&v) = data.get(off) {
+        values.push(known_value(name, off, "u8", v.to_string()));
     }
 }
 
-fn expected_value_type_for_offset(off: usize) -> Option<&'static str> {
-    match off {
-        36 | 72 | 76 | 80 | 84 | 88 | 92 | 96 | 100 | 104 | 108 | 112 | 116 | 120 | 124
-        | 128 | 132 | 144 | 152 | 156 | 160 | 164 | 168 | 176 | 180 | 184 | 188 | 192
-        | 196 | 200 | 204 => Some("float"),
-        32 | 40 | 44 | 136 | 140 | 148 => Some("u32"),
-        172 => Some("i32"),
-        _ => None,
+/// A `u32` offset of a path string from the DAT1 start, `0xFFFFFFFF` when unset.
+fn push_path(values: &mut Vec<AtmosphereKnownValue>, data: &[u8], dat1: &[u8], name: &str, off: usize) {
+    let Some(raw) = read_u32_at(data, off) else {
+        return;
+    };
+    let value = if raw == u32::MAX {
+        "<unset>".to_string()
+    } else {
+        let tail = dat1.get(raw as usize..).unwrap_or_default();
+        let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        match std::str::from_utf8(&tail[..end]) {
+            Ok("") => "<empty>".to_string(),
+            Ok(path) => path.to_string(),
+            Err(_) => format!("<bad offset {raw:#X}>"),
+        }
+    };
+    values.push(known_value(name, off, "path", value));
+}
+
+fn push_atmosphere_field(
+    values: &mut Vec<AtmosphereKnownValue>,
+    header: &[u8],
+    dat1: &[u8],
+    field: &crate::core::atmosphere::Field,
+    names: &HashMap<u64, String>,
+) {
+    use crate::core::atmosphere::FieldKind;
+    let (name, off) = (field.name, field.offset);
+    match field.kind {
+        FieldKind::F32 => push_f32(values, header, name, off),
+        FieldKind::U32 => push_u32(values, header, name, off),
+        FieldKind::U8 => push_u8(values, header, name, off),
+        FieldKind::Vec3 | FieldKind::Vec4 => {
+            let count = field.kind.size() / 4;
+            for (i, axis) in ["X", "Y", "Z", "W"].iter().take(count).enumerate() {
+                push_f32(values, header, &format!("{name}.{axis}"), off + 4 * i);
+            }
+        }
+        FieldKind::AssetRef | FieldKind::AssetId => push_asset_ref(values, header, name, off, names),
+        FieldKind::PathOffset => push_path(values, header, dat1, name, off),
     }
+}
+
+/// Dag index of the shipped atmosphere `name` refers to: its dag path, a file path ending in it,
+/// or a file name (an `_edited` suffix is ignored).
+fn find_shipped_atmosphere(dag: &crate::core::dag::Dag, name: &str) -> Result<usize, String> {
+    fn stem_of(path: &str) -> String {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        let mut stem = file.strip_suffix(".atmosphere").unwrap_or(file);
+        while let Some(s) = stem.strip_suffix("_edited") {
+            stem = s;
+        }
+        stem.to_string()
+    }
+    let wanted = crate::core::crc64::normalize_path(name);
+    let wanted_stem = stem_of(&wanted);
+    let mut by_stem = Vec::new();
+    for i in (0..dag.len()).filter(|&i| dag.type_name(i) == "Atmosphere") {
+        let Some(path) = dag.name(i).map(crate::core::crc64::normalize_path) else {
+            continue;
+        };
+        if wanted == path || wanted.ends_with(&format!("/{path}")) {
+            return Ok(i);
+        }
+        if stem_of(&path) == wanted_stem {
+            by_stem.push(i);
+        }
+    }
+    match by_stem.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("no shipped atmosphere named {wanted_stem}")),
+        many => Err(format!("{wanted_stem} matches {} shipped atmospheres", many.len())),
+    }
+}
+
+/// Header section of a shipped atmosphere, read from the game's archives.
+fn shipped_atmosphere_header(game_dir: &Path, id: u64, path: &str) -> Result<Vec<u8>, ToolkitError> {
+    let toc = Toc::parse(&std::fs::read(game_dir.join("toc"))?)?;
+    let asset = find_toc_asset_candidate(&toc, id, Some(path))
+        .ok_or_else(|| ToolkitError::Parse(format!("{path} not found in the toc")))?;
+    warn_if_mod_source(&toc, &asset);
+    let raw = toc.extract_asset(&asset, game_dir)?;
+    let size = read_u32_at(&raw, 4).unwrap_or(0) as usize;
+    let payload = raw
+        .get(36..36 + size)
+        .ok_or_else(|| ToolkitError::Parse(format!("{path}: truncated atmosphere")))?;
+    Dat1::parse(payload)?
+        .get_section_data(ATMOSPHERE_SECTION_HEADER)
+        .map(<[u8]>::to_vec)
+        .ok_or(ToolkitError::SectionNotFound(ATMOSPHERE_SECTION_HEADER))
+}
+
+/// The record an edit of the weather ref at `off` writes. Empty or `<unset>` clears it; anything
+/// else is a game path (or 16-digit hex id) the dag must list with the slot's asset type.
+fn weather_ref_record(off: usize, value: &str, game_dir: Option<&str>) -> Result<[u8; 24], ToolkitError> {
+    use crate::core::atmosphere::{encode_asset_ref, ext_for_path, weather_ref_ext, EXT_MATERIAL};
+    let ext = weather_ref_ext(off)
+        .ok_or_else(|| ToolkitError::Parse(format!("offset {off} is not a weather reference")))?;
+    let value = value.trim();
+    if value.is_empty() || value.starts_with("<unset>") {
+        return Ok(encode_asset_ref(None));
+    }
+    let (want_ext, want_type) = if ext == EXT_MATERIAL { (".material", "Material") } else { (".texture", "Texture") };
+    let hex_id = (value.len() == 16).then(|| u64::from_str_radix(value, 16).ok()).flatten();
+    let id = match hex_id {
+        Some(id) => id,
+        None if ext_for_path(value) == Some(ext) => crate::core::crc64::hash(value),
+        None => {
+            return Err(ToolkitError::Parse(format!(
+                "offset {off} needs a {want_ext} path, got {value}"
+            )))
+        }
+    };
+    let dir = game_dir.filter(|d| !d.is_empty()).ok_or_else(|| {
+        ToolkitError::Parse("set the game folder so weather asset paths can be checked against the dag".into())
+    })?;
+    let game = crate::core::dag::load_game_dag(Path::new(dir))?;
+    let index = game
+        .dag
+        .index_of(id)
+        .ok_or_else(|| ToolkitError::Parse(format!("{value} is not in the game's dag")))?;
+    let found = game.dag.type_name(index);
+    if found != want_type {
+        return Err(ToolkitError::Parse(format!(
+            "{value} is a {found}; offset {off} needs a {want_type}"
+        )));
+    }
+    Ok(encode_asset_ref(Some((id, ext))))
+}
+
+/// Paths of every shipped atmosphere, for "copy weather from".
+#[tauri::command]
+pub async fn list_atmospheres(game_dir: String) -> Result<Vec<String>, ToolkitError> {
+    let game = crate::core::dag::load_game_dag(Path::new(&game_dir))?;
+    let dag = &game.dag;
+    let mut paths: Vec<String> = (0..dag.len())
+        .filter(|&i| dag.type_name(i) == "Atmosphere")
+        .filter_map(|i| dag.name(i).map(|n| n.replace('\\', "/")))
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// Weather fields of a shipped atmosphere (dag path or file name), to apply as edits.
+#[tauri::command]
+pub async fn read_atmosphere_weather(
+    source: String,
+    game_dir: String,
+) -> Result<AtmosphereWeather, ToolkitError> {
+    let dir = Path::new(&game_dir);
+    let game = crate::core::dag::load_game_dag(dir)?;
+    let index = find_shipped_atmosphere(&game.dag, &source).map_err(ToolkitError::Parse)?;
+    let source_path = game.dag.name(index).unwrap_or_default().replace('\\', "/");
+    let header = shipped_atmosphere_header(dir, game.dag.id(index), &source_path)?;
+    let mut values = Vec::new();
+    for field in crate::core::atmosphere::FIELDS
+        .iter()
+        .filter(|f| crate::core::atmosphere::in_weather_block(f.offset))
+    {
+        push_atmosphere_field(&mut values, &header, &[], field, &game.names);
+    }
+    Ok(AtmosphereWeather { source_path, values })
 }
 
 #[tauri::command]
-pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, ToolkitError> {
+pub async fn read_atmosphere(
+    atmosphere_path: String,
+    game_dir: Option<String>,
+) -> Result<AtmosphereData, ToolkitError> {
     let bytes = std::fs::read(&atmosphere_path)?;
     if bytes.len() < 36 {
         return Err(ToolkitError::Parse(format!(
@@ -2231,75 +2404,50 @@ pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, 
         });
     }
 
+    let game = match game_dir.as_deref().filter(|d| !d.is_empty()) {
+        Some(dir) => match crate::core::dag::load_game_dag(Path::new(dir)) {
+            Ok(game) => Some(game),
+            Err(e) => {
+                notes.push(format!("asset names unavailable ({e}); references show as ids"));
+                None
+            }
+        },
+        None => {
+            notes.push("no game folder set; references show as ids".to_string());
+            None
+        }
+    };
+
+    let mut shipped_path = None;
+    let mut dependencies = Vec::new();
+    if let Some(game) = &game {
+        match find_shipped_atmosphere(&game.dag, &atmosphere_path) {
+            Ok(i) => {
+                shipped_path = game.dag.name(i).map(|n| n.replace('\\', "/"));
+                dependencies = game
+                    .dag
+                    .direct_dependencies(i, None)
+                    .into_iter()
+                    .filter_map(|d| game.dag.name(d).map(crate::core::crc64::normalize_path))
+                    .collect();
+            }
+            Err(e) => notes.push(format!("{e}; weather dependency warnings are off")),
+        }
+    }
+
     let mut known_values = Vec::new();
     if let Some(header) = dat1.get_section_data(ATMOSPHERE_SECTION_HEADER) {
-        push_u32(&mut known_values, header, "z1", 32);
-        // Was labelled `time_of_day`, but it reads 1000.0 in shipped
-        // atmospheres — the offset is unverified, so don't claim a name.
-        push_f32(&mut known_values, header, "unverified_f36", 36);
-        push_u32(&mut known_values, header, "z2", 40);
-        push_u32(&mut known_values, header, "z3", 44);
-
-        push_f32(&mut known_values, header, "curve_pair_0_x", 72);
-        push_f32(&mut known_values, header, "curve_pair_0_y", 76);
-        push_f32(&mut known_values, header, "curve_pair_1_x", 80);
-        push_f32(&mut known_values, header, "curve_pair_1_y", 84);
-        push_f32(&mut known_values, header, "curve_pair_2_x", 88);
-        push_f32(&mut known_values, header, "curve_pair_2_y", 92);
-        push_f32(&mut known_values, header, "curve_pair_3_x", 96);
-        push_f32(&mut known_values, header, "curve_pair_3_y", 100);
-        push_f32(&mut known_values, header, "curve_pair_4_x", 104);
-        push_f32(&mut known_values, header, "curve_pair_4_y", 108);
-
-        // Asset references are grouped at the front of the cooked struct in
-        // schema order, 8 bytes each (strings take 16).
-        let hash_lookup = atmosphere_hash_lookup();
-        push_asset_ref(&mut known_values, header, "IconPath", 0, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "PreviewModel", 8, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "LightGridAtmosphere", 16, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "SkySettings.SkyObjects", 56, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "SkySettings.SkyBoxCubeMap", 64, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "AssetSwap.PlatformSwaps", 72, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.FillLightCubeMap", 80, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.LightGridModConfig", 88, &hash_lookup);
-        push_asset_ref(&mut known_values, header, "EnvLighting.KeylightMaterial", 96, &hash_lookup);
-        push_asset_ref(
-            &mut known_values,
-            header,
-            "BloomSettings.BloomDirtinessAsset",
-            104,
-            &hash_lookup,
-        );
-
-        // Names below are the DDL schema's own (`AtmosphereDef`), matched to
-        // these offsets against all 95 shipped atmospheres — see
-        // docs/ATMOSPHERE_LAYOUT.md for the evidence behind each one.
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.X", 112);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Y", 116);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightColor.Z", 120);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightIntensity", 124);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightAzimuth", 128);
-        push_f32(&mut known_values, header, "EnvLighting.KeyLightElevation", 132);
-        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetAzimuth", 136);
-        push_f32(&mut known_values, header, "EnvLighting.SunDiskOffsetElevation", 140);
-        push_f32(&mut known_values, header, "EnvLighting.ShadowDrawDist", 144);
-        push_u32(&mut known_values, header, "EnvLighting.CsmLodCount", 148);
-
-        push_f32(&mut known_values, header, "unk3_f0", 152);
-        push_f32(&mut known_values, header, "unk3_f1", 156);
-        push_f32(&mut known_values, header, "unk3_f2", 160);
-        push_f32(&mut known_values, header, "unk3_f3", 164);
-        push_f32(&mut known_values, header, "unk3_f4", 168);
-        push_i32(&mut known_values, header, "unk3_i0", 172);
-        push_f32(&mut known_values, header, "unk3_f5", 176);
-        push_f32(&mut known_values, header, "unk3_f6", 180);
-        push_f32(&mut known_values, header, "unk3_f7", 184);
-        push_f32(&mut known_values, header, "unk3_f8", 188);
-
-        push_f32(&mut known_values, header, "ambience_rgba_r", 192);
-        push_f32(&mut known_values, header, "ambience_rgba_g", 196);
-        push_f32(&mut known_values, header, "ambience_rgba_b", 200);
-        push_f32(&mut known_values, header, "ambience_rgba_a", 204);
+        if header.len() != crate::core::atmosphere::HEADER_SIZE {
+            notes.push(format!(
+                "header is {} bytes, expected {}; field names may not line up",
+                header.len(),
+                crate::core::atmosphere::HEADER_SIZE
+            ));
+        }
+        let hash_lookup = game.as_ref().map(|g| g.names.clone()).unwrap_or_default();
+        for field in crate::core::atmosphere::FIELDS {
+            push_atmosphere_field(&mut known_values, header, dat1_bytes, field, &hash_lookup);
+        }
     } else {
         notes.push(format!(
             "missing section {ATMOSPHERE_SECTION_HEADER:#010X} (atmosphere header/content)"
@@ -2344,6 +2492,8 @@ pub async fn read_atmosphere(atmosphere_path: String) -> Result<AtmosphereData, 
         known_values,
         strings,
         notes,
+        shipped_path,
+        dependencies,
     })
 }
 
@@ -2353,6 +2503,7 @@ pub async fn write_atmosphere(
     values: Vec<AtmosphereValueEdit>,
     strings: Option<Vec<String>>,
     out_path: Option<String>,
+    game_dir: Option<String>,
 ) -> Result<String, ToolkitError> {
     let bytes = std::fs::read(&atmosphere_path)?;
     if bytes.len() < 36 {
@@ -2380,8 +2531,8 @@ pub async fn write_atmosphere(
 
     for edit in values {
         let off = edit.offset as usize;
-        let expected = expected_value_type_for_offset(off).ok_or_else(|| {
-            ToolkitError::Parse(format!("offset {} is not editable in phase 2", edit.offset))
+        let expected = crate::core::atmosphere::editable_type(off).ok_or_else(|| {
+            ToolkitError::Parse(format!("offset {} is not an editable value", edit.offset))
         })?;
 
         if !edit.value_type.eq_ignore_ascii_case(expected) {
@@ -2391,7 +2542,8 @@ pub async fn write_atmosphere(
             )));
         }
 
-        if off + 4 > header_data.len() {
+        let width = if expected == "asset" { 24 } else { 4 };
+        if off + width > header_data.len() {
             return Err(ToolkitError::Parse(format!(
                 "offset {} out of bounds for header section size {}",
                 edit.offset,
@@ -2399,7 +2551,10 @@ pub async fn write_atmosphere(
             )));
         }
 
-        if expected == "float" {
+        if expected == "asset" {
+            let record = weather_ref_record(off, &edit.value, game_dir.as_deref())?;
+            header_data[off..off + 24].copy_from_slice(&record);
+        } else if expected == "float" {
             let parsed = edit.value.parse::<f32>().map_err(|e| {
                 ToolkitError::Parse(format!(
                     "invalid float at offset {}: {} ({e})",
@@ -2407,14 +2562,14 @@ pub async fn write_atmosphere(
                 ))
             })?;
             header_data[off..off + 4].copy_from_slice(&parsed.to_le_bytes());
-        } else if expected == "i32" {
-            let parsed = edit.value.parse::<i32>().map_err(|e| {
+        } else if expected == "u8" {
+            let parsed = edit.value.parse::<u8>().map_err(|e| {
                 ToolkitError::Parse(format!(
-                    "invalid i32 at offset {}: {} ({e})",
+                    "invalid u8 at offset {}: {} ({e})",
                     edit.offset, edit.value
                 ))
             })?;
-            header_data[off..off + 4].copy_from_slice(&parsed.to_le_bytes());
+            header_data[off] = parsed;
         } else {
             let parsed = edit.value.parse::<u32>().map_err(|e| {
                 ToolkitError::Parse(format!(
@@ -2563,38 +2718,6 @@ pub async fn extract_to_temp(
     Ok(out_path.to_string_lossy().into_owned())
 }
 
-/// Download the hashes file from the SpaceDepot release and save it next to the exe.
-#[tauri::command]
-pub async fn download_hashes() -> Result<String, ToolkitError> {
-    use std::io::Read;
-
-    const URL: &str =
-        "https://github.com/SpaceDepot/rcra-depot/releases/download/hashes/hashes";
-
-    let path = filesystem::hashes_path()?;
-
-    let bytes = tauri::async_runtime::spawn_blocking(|| -> std::result::Result<Vec<u8>, String> {
-        let response = ureq::get(URL)
-            .timeout(std::time::Duration::from_secs(120))
-            .call()
-            .map_err(|e| format!("request failed: {e}"))?;
-
-        let mut buf = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("read failed: {e}"))?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|e| ToolkitError::Parse(format!("task error: {e}")))?
-    .map_err(ToolkitError::Parse)?;
-
-    std::fs::write(&path, &bytes)?;
-    info!("download_hashes: {} bytes → {}", bytes.len(), path.display());
-    Ok(format!("{} bytes", bytes.len()))
-}
-
 /// Copy a file directly into a project at an exact relative path (no rename suffix).
 /// Used by tools to send their output straight into a staging project.
 #[tauri::command]
@@ -2610,665 +2733,6 @@ pub fn import_file_to_project(
     std::fs::copy(&source_path, &dest)?;
     info!("import_file_to_project: {} → {}/{}", source_path, name, target_path);
     Ok(())
-}
-
-// ===========================================================================
-// ZoneLightBin Inspector / Editor
-// ===========================================================================
-
-const ZLB_WRAPPER_MAGIC: u32 = 0xFA8D90B3;
-const ZLB_WRAPPER_HEADER_LEN: usize = 36;
-
-const ZLB_PRIMARY_TAG_A: u32 = 0x27204B67;
-const ZLB_PRIMARY_TAG_B: u32 = 0x101A2196;
-const ZLB_SECONDARY_TAG_A: u32 = 0x13F4AF3B;
-const ZLB_SECONDARY_TAG_B: u32 = 0xC72A514C;
-
-#[derive(serde::Serialize, Clone)]
-pub struct ZlbSectionInfo {
-    pub tag: String,
-    pub offset: u32,
-    pub declared_size: u32,
-    pub available_size: u32,
-    pub crc32: u32,
-    pub truncated: bool,
-}
-
-#[derive(serde::Serialize, Clone)]
-pub struct ZlbDat1Info {
-    pub magic: String,
-    pub type_magic: String,
-    pub declared_total_size: u32,
-    pub available_size: u32,
-    pub start_offset: u64,
-    pub sections: Vec<ZlbSectionInfo>,
-    pub truncated: bool,
-}
-
-#[derive(serde::Serialize)]
-pub struct ZoneLightBinData {
-    pub file_path: String,
-    pub file_size: u64,
-    pub wrapper_magic: String,
-    pub wrapper_size: u32,
-    pub primary: ZlbDat1Info,
-    pub bridge_bytes_hex: String,
-    pub bridge_offset: u64,
-    pub bridge_length: u32,
-    pub secondary: Option<ZlbDat1Info>,
-    pub trailing_after_secondary: u64,
-    pub notes: Vec<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-pub struct ZlbCopyOptions {
-    #[serde(default)]
-    pub primary_27204b67: bool,
-    #[serde(default)]
-    pub primary_101a2196: bool,
-    #[serde(default)]
-    pub secondary_13f4af3b: bool,
-    #[serde(default)]
-    pub secondary_c72a514c: bool,
-}
-
-#[derive(serde::Serialize)]
-pub struct ZlbDiffSection {
-    pub tag: String,
-    pub layer: String, // "primary" or "secondary"
-    pub base_size: Option<u32>,
-    pub reference_size: Option<u32>,
-    pub equal: bool,
-    pub byte_diffs: Option<u32>,
-}
-
-#[derive(serde::Serialize)]
-pub struct ZlbDiffResult {
-    pub base_path: String,
-    pub reference_path: String,
-    pub base_file_size: u64,
-    pub reference_file_size: u64,
-    pub sections: Vec<ZlbDiffSection>,
-    pub notes: Vec<String>,
-}
-
-fn crc32_bytes(data: &[u8]) -> u32 {
-    const POLY: u32 = 0xEDB8_8320;
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ POLY } else { crc >> 1 };
-        }
-    }
-    !crc
-}
-
-/// Lightweight DAT1 view that does NOT require all section data to be present.
-/// Some `.zonelightbin` files declare section sizes larger than the bytes
-/// actually stored on disk (the rest is streamed at runtime). We tolerate
-/// truncation: each section gets a slice of whatever bytes are available.
-struct Dat1View<'a> {
-    bytes: &'a [u8],
-    start: usize,
-    magic: u32,
-    type_magic: u32,
-    declared_total_size: u32,
-    available_size: u32,
-    sections: Vec<crate::core::dat1::SectionHeader>,
-    truncated: bool,
-}
-
-impl<'a> Dat1View<'a> {
-    fn parse(bytes: &'a [u8], start: usize) -> std::result::Result<Self, ToolkitError> {
-        if start + 16 > bytes.len() {
-            return Err(ToolkitError::Parse(format!(
-                "DAT1 header out of bounds at offset {start}"
-            )));
-        }
-        let magic = u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap());
-        if magic != crate::core::dat1::DAT1_MAGIC {
-            return Err(ToolkitError::InvalidMagic {
-                expected: crate::core::dat1::DAT1_MAGIC,
-                got: magic,
-            });
-        }
-        let type_magic = u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap());
-        let declared_total_size = u32::from_le_bytes(bytes[start + 8..start + 12].try_into().unwrap());
-        let sections_count = u16::from_le_bytes(bytes[start + 12..start + 14].try_into().unwrap()) as usize;
-        let unknown_count = u16::from_le_bytes(bytes[start + 14..start + 16].try_into().unwrap()) as usize;
-
-        let header_table_end = 16 + 12 * sections_count + 8 * unknown_count;
-        if start + header_table_end > bytes.len() {
-            return Err(ToolkitError::Parse(format!(
-                "DAT1 section table at offset {start} extends past file end"
-            )));
-        }
-
-        let mut sections = Vec::with_capacity(sections_count);
-        for i in 0..sections_count {
-            let sh = start + 16 + i * 12;
-            sections.push(crate::core::dat1::SectionHeader {
-                tag: u32::from_le_bytes(bytes[sh..sh + 4].try_into().unwrap()),
-                offset: u32::from_le_bytes(bytes[sh + 4..sh + 8].try_into().unwrap()),
-                size: u32::from_le_bytes(bytes[sh + 8..sh + 12].try_into().unwrap()),
-            });
-        }
-
-        let available_end = (start + declared_total_size as usize).min(bytes.len());
-        let available_size = (available_end - start) as u32;
-        let truncated = (declared_total_size as usize) > (available_size as usize);
-
-        Ok(Dat1View {
-            bytes,
-            start,
-            magic,
-            type_magic,
-            declared_total_size,
-            available_size,
-            sections,
-            truncated,
-        })
-    }
-
-    fn section_slice(&self, tag: u32) -> Option<&'a [u8]> {
-        let header = self.sections.iter().find(|s| s.tag == tag)?;
-        let abs_start = self.start + header.offset as usize;
-        let declared_end = abs_start + header.size as usize;
-        if abs_start >= self.bytes.len() {
-            return Some(&[]);
-        }
-        let actual_end = declared_end.min(self.bytes.len());
-        Some(&self.bytes[abs_start..actual_end])
-    }
-}
-
-fn dat1_view_to_info(view: &Dat1View<'_>) -> ZlbDat1Info {
-    let mut sections = Vec::with_capacity(view.sections.len());
-    for s in &view.sections {
-        let data = view.section_slice(s.tag).unwrap_or(&[]);
-        let available = data.len() as u32;
-        sections.push(ZlbSectionInfo {
-            tag: format!("{:08X}", s.tag),
-            offset: s.offset,
-            declared_size: s.size,
-            available_size: available,
-            crc32: crc32_bytes(data),
-            truncated: available < s.size,
-        });
-    }
-    ZlbDat1Info {
-        magic: format!("{:08X}", view.magic),
-        type_magic: format!("{:08X}", view.type_magic),
-        declared_total_size: view.declared_total_size,
-        available_size: view.available_size,
-        start_offset: view.start as u64,
-        sections,
-        truncated: view.truncated,
-    }
-}
-
-/// Locate a secondary DAT1 starting at `expected` (logical_end + 2). If not
-/// present there, scan a small window for the DAT1 magic. Returns the
-/// absolute start offset of the secondary DAT1, or `None` if not found.
-fn find_secondary_dat1(bytes: &[u8], logical_end: usize) -> Option<usize> {
-    let dat1_magic_le = crate::core::dat1::DAT1_MAGIC.to_le_bytes();
-
-    // Preferred location per research: logical_end + 2.
-    let preferred = logical_end + 2;
-    if preferred + 4 <= bytes.len() && bytes[preferred..preferred + 4] == dat1_magic_le {
-        return Some(preferred);
-    }
-
-    // Fallback: scan a small window after logical_end (up to 64 bytes).
-    let scan_start = logical_end;
-    let scan_end = (logical_end + 64).min(bytes.len().saturating_sub(4));
-    for off in scan_start..=scan_end {
-        if bytes[off..off + 4] == dat1_magic_le {
-            return Some(off);
-        }
-    }
-    None
-}
-
-#[tauri::command]
-pub async fn read_zonelightbin(
-    zlb_path: String,
-) -> std::result::Result<ZoneLightBinData, ToolkitError> {
-    let bytes = std::fs::read(&zlb_path)?;
-    if bytes.len() < ZLB_WRAPPER_HEADER_LEN {
-        return Err(ToolkitError::Parse(format!(
-            "zonelightbin file too small: {} bytes",
-            bytes.len()
-        )));
-    }
-
-    let mut notes: Vec<String> = Vec::new();
-
-    let wrapper_magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    if wrapper_magic != ZLB_WRAPPER_MAGIC {
-        notes.push(format!(
-            "outer magic is {wrapper_magic:#010X}, expected ZoneLightBinRcra {ZLB_WRAPPER_MAGIC:#010X}"
-        ));
-    }
-    let wrapper_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let logical_end = ZLB_WRAPPER_HEADER_LEN + wrapper_size as usize;
-    if bytes.len() < logical_end {
-        return Err(ToolkitError::Parse(format!(
-            "zonelightbin truncated: wrapper size {wrapper_size} exceeds file length {}",
-            bytes.len()
-        )));
-    }
-
-    // Primary DAT1 sits within the wrapper bounds; parse it as a view too so
-    // truncated declarations don't blow up the inspector.
-    let primary_view = Dat1View::parse(&bytes, ZLB_WRAPPER_HEADER_LEN)?;
-    let primary_info = dat1_view_to_info(&primary_view);
-
-    // Secondary DAT1 (optional)
-    let mut secondary_info: Option<ZlbDat1Info> = None;
-    let mut bridge_bytes_hex = String::new();
-    let bridge_offset: u64 = logical_end as u64;
-    let mut bridge_length: u32 = 0;
-    let mut trailing_after_secondary: u64 = 0;
-
-    if logical_end < bytes.len() {
-        match find_secondary_dat1(&bytes, logical_end) {
-            Some(sec_start) => {
-                bridge_length = (sec_start - logical_end) as u32;
-                bridge_bytes_hex = bytes[logical_end..sec_start]
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if bridge_length != 2 {
-                    notes.push(format!(
-                        "bridge between primary and secondary DAT1 is {bridge_length} byte(s), \
-                         expected 2 in samples"
-                    ));
-                }
-                let sec_view = Dat1View::parse(&bytes, sec_start)?;
-                let declared_end = sec_start + sec_view.declared_total_size as usize;
-                if declared_end > bytes.len() {
-                    let missing = declared_end - bytes.len();
-                    notes.push(format!(
-                        "secondary DAT1 declares total_size {} but only {} byte(s) are present \
-                         on disk ({} byte(s) appear to be streamed at runtime). The inspector \
-                         will show available data.",
-                        sec_view.declared_total_size,
-                        sec_view.available_size,
-                        missing
-                    ));
-                    trailing_after_secondary = 0;
-                } else {
-                    trailing_after_secondary = (bytes.len() - declared_end) as u64;
-                    if trailing_after_secondary > 0 {
-                        notes.push(format!(
-                            "{} byte(s) of trailing data after secondary DAT1; preserving on save",
-                            trailing_after_secondary
-                        ));
-                    }
-                }
-                secondary_info = Some(dat1_view_to_info(&sec_view));
-            }
-            None => {
-                let trailing = bytes.len() - logical_end;
-                bridge_length = trailing as u32;
-                bridge_bytes_hex = bytes[logical_end..]
-                    .iter()
-                    .take(64)
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                notes.push(format!(
-                    "no secondary DAT1 found after primary; {} trailing byte(s) preserved as-is",
-                    trailing
-                ));
-            }
-        }
-    } else {
-        notes.push("file has no trailing data after primary DAT1".to_string());
-    }
-
-    Ok(ZoneLightBinData {
-        file_path: zlb_path,
-        file_size: bytes.len() as u64,
-        wrapper_magic: format!("{:08X}", wrapper_magic),
-        wrapper_size,
-        primary: primary_info,
-        bridge_bytes_hex,
-        bridge_offset,
-        bridge_length,
-        secondary: secondary_info,
-        trailing_after_secondary,
-        notes,
-    })
-}
-
-/// Owning version of [`Dat1View`] used by the writer so we can hold both base
-/// and reference loads at once without lifetime juggling.
-struct ZlbLayout {
-    bytes: Vec<u8>,
-    primary_start: usize,
-    primary_sections: Vec<crate::core::dat1::SectionHeader>,
-    secondary: Option<ZlbSecondaryLayout>,
-}
-
-struct ZlbSecondaryLayout {
-    start: usize,
-    sections: Vec<crate::core::dat1::SectionHeader>,
-}
-
-fn load_zlb_layout(path: &str) -> std::result::Result<ZlbLayout, ToolkitError> {
-    let bytes = std::fs::read(path)?;
-    if bytes.len() < ZLB_WRAPPER_HEADER_LEN {
-        return Err(ToolkitError::Parse(format!(
-            "zonelightbin file too small: {} bytes",
-            bytes.len()
-        )));
-    }
-
-    let wrapper_magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-    if wrapper_magic != ZLB_WRAPPER_MAGIC {
-        return Err(ToolkitError::InvalidMagic {
-            expected: ZLB_WRAPPER_MAGIC,
-            got: wrapper_magic,
-        });
-    }
-    let wrapper_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let logical_end = ZLB_WRAPPER_HEADER_LEN + wrapper_size as usize;
-    if bytes.len() < logical_end {
-        return Err(ToolkitError::Parse(format!(
-            "zonelightbin truncated: wrapper size {wrapper_size} exceeds file length {}",
-            bytes.len()
-        )));
-    }
-
-    let primary_view = Dat1View::parse(&bytes, ZLB_WRAPPER_HEADER_LEN)?;
-    let primary_sections = primary_view.sections.clone();
-
-    let secondary = if logical_end < bytes.len() {
-        find_secondary_dat1(&bytes, logical_end).map(|sec_start| {
-            // Best-effort: ignore parse error here so writer can still operate
-            // on primary alone if secondary is malformed.
-            let sections = Dat1View::parse(&bytes, sec_start)
-                .map(|v| v.sections.clone())
-                .unwrap_or_default();
-            ZlbSecondaryLayout {
-                start: sec_start,
-                sections,
-            }
-        })
-    } else {
-        None
-    };
-
-    Ok(ZlbLayout {
-        bytes,
-        primary_start: ZLB_WRAPPER_HEADER_LEN,
-        primary_sections,
-        secondary,
-    })
-}
-
-fn dat1_section_slice<'a>(
-    bytes: &'a [u8],
-    dat1_start: usize,
-    sections: &[crate::core::dat1::SectionHeader],
-    tag: u32,
-) -> Option<&'a [u8]> {
-    let header = sections.iter().find(|s| s.tag == tag)?;
-    let abs_start = dat1_start + header.offset as usize;
-    if abs_start >= bytes.len() {
-        return Some(&[]);
-    }
-    let actual_end = (abs_start + header.size as usize).min(bytes.len());
-    Some(&bytes[abs_start..actual_end])
-}
-
-/// Copy a section's raw bytes from `reference` into `base` at the same
-/// absolute offset. Requires the section to exist in both layouts AND have
-/// the same declared size in both files (so DAT1 offsets / total_size stay
-/// valid). Returns the number of bytes written.
-fn copy_section_inplace(
-    base: &mut [u8],
-    reference: &[u8],
-    base_dat1_start: usize,
-    base_sections: &[crate::core::dat1::SectionHeader],
-    ref_dat1_start: usize,
-    ref_sections: &[crate::core::dat1::SectionHeader],
-    tag: u32,
-) -> std::result::Result<usize, ToolkitError> {
-    let base_h = base_sections
-        .iter()
-        .find(|s| s.tag == tag)
-        .ok_or(ToolkitError::SectionNotFound(tag))?;
-    let ref_h = ref_sections
-        .iter()
-        .find(|s| s.tag == tag)
-        .ok_or(ToolkitError::SectionNotFound(tag))?;
-
-    if base_h.size != ref_h.size {
-        return Err(ToolkitError::Parse(format!(
-            "section 0x{tag:08X} size differs: base={} reference={}; in-place copy requires \
-             matching declared sizes (full DAT1 rebuild not yet supported)",
-            base_h.size, ref_h.size
-        )));
-    }
-
-    let base_abs = base_dat1_start + base_h.offset as usize;
-    let ref_abs = ref_dat1_start + ref_h.offset as usize;
-    let avail_base = base.len().saturating_sub(base_abs);
-    let avail_ref = reference.len().saturating_sub(ref_abs);
-    let copy_len = base_h.size as usize;
-    let n = copy_len.min(avail_base).min(avail_ref);
-    if n == 0 {
-        return Err(ToolkitError::Parse(format!(
-            "section 0x{tag:08X} has no bytes available in either file"
-        )));
-    }
-    base[base_abs..base_abs + n].copy_from_slice(&reference[ref_abs..ref_abs + n]);
-    Ok(n)
-}
-
-#[tauri::command]
-pub async fn write_zonelightbin_sections(
-    base_path: String,
-    reference_path: String,
-    options: ZlbCopyOptions,
-    out_path: Option<String>,
-) -> std::result::Result<String, ToolkitError> {
-    let start_t = Instant::now();
-
-    let base_layout = load_zlb_layout(&base_path)?;
-    let reference_layout = load_zlb_layout(&reference_path)?;
-
-    let want_primary = options.primary_27204b67 || options.primary_101a2196;
-    let want_secondary = options.secondary_13f4af3b || options.secondary_c72a514c;
-    if !want_primary && !want_secondary {
-        return Err(ToolkitError::Parse(
-            "no copy options selected; nothing to do".to_string(),
-        ));
-    }
-
-    let mut out_bytes = base_layout.bytes.clone();
-    let mut summary = Vec::new();
-
-    if options.primary_27204b67 {
-        let n = copy_section_inplace(
-            &mut out_bytes,
-            &reference_layout.bytes,
-            base_layout.primary_start,
-            &base_layout.primary_sections,
-            reference_layout.primary_start,
-            &reference_layout.primary_sections,
-            ZLB_PRIMARY_TAG_A,
-        )?;
-        summary.push(format!("primary 0x27204B67 ({n} B)"));
-    }
-    if options.primary_101a2196 {
-        let n = copy_section_inplace(
-            &mut out_bytes,
-            &reference_layout.bytes,
-            base_layout.primary_start,
-            &base_layout.primary_sections,
-            reference_layout.primary_start,
-            &reference_layout.primary_sections,
-            ZLB_PRIMARY_TAG_B,
-        )?;
-        summary.push(format!("primary 0x101A2196 ({n} B)"));
-    }
-
-    if want_secondary {
-        let base_sec = base_layout
-            .secondary
-            .as_ref()
-            .ok_or_else(|| ToolkitError::Parse("base file has no secondary DAT1".to_string()))?;
-        let ref_sec = reference_layout
-            .secondary
-            .as_ref()
-            .ok_or_else(|| ToolkitError::Parse("reference file has no secondary DAT1".to_string()))?;
-
-        if options.secondary_13f4af3b {
-            let n = copy_section_inplace(
-                &mut out_bytes,
-                &reference_layout.bytes,
-                base_sec.start,
-                &base_sec.sections,
-                ref_sec.start,
-                &ref_sec.sections,
-                ZLB_SECONDARY_TAG_A,
-            )?;
-            summary.push(format!("secondary 0x13F4AF3B ({n} B)"));
-        }
-        if options.secondary_c72a514c {
-            let n = copy_section_inplace(
-                &mut out_bytes,
-                &reference_layout.bytes,
-                base_sec.start,
-                &base_sec.sections,
-                ref_sec.start,
-                &ref_sec.sections,
-                ZLB_SECONDARY_TAG_B,
-            )?;
-            summary.push(format!("secondary 0xC72A514C ({n} B)"));
-        }
-    }
-
-    let output = out_path
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let p = Path::new(&base_path);
-            let stem = p.file_stem().unwrap_or_default().to_string_lossy();
-            let ext = p.extension().unwrap_or_default().to_string_lossy();
-            p.with_file_name(format!("{}_edited.{}", stem, ext))
-        });
-    std::fs::write(&output, &out_bytes)?;
-
-    info!(
-        "write_zonelightbin_sections: base={} ref={} -> {} ({} bytes) [{}] in {:?}",
-        base_path,
-        reference_path,
-        output.display(),
-        out_bytes.len(),
-        summary.join(", "),
-        start_t.elapsed()
-    );
-    Ok(output.to_string_lossy().into_owned())
-}
-
-fn diff_layer_section(
-    base_bytes: &[u8],
-    base_start: Option<usize>,
-    base_sections: Option<&[crate::core::dat1::SectionHeader]>,
-    ref_bytes: &[u8],
-    ref_start: Option<usize>,
-    ref_sections: Option<&[crate::core::dat1::SectionHeader]>,
-    tag: u32,
-    layer: &str,
-) -> ZlbDiffSection {
-    let base_data = match (base_start, base_sections) {
-        (Some(s), Some(secs)) => dat1_section_slice(base_bytes, s, secs, tag),
-        _ => None,
-    };
-    let ref_data = match (ref_start, ref_sections) {
-        (Some(s), Some(secs)) => dat1_section_slice(ref_bytes, s, secs, tag),
-        _ => None,
-    };
-
-    let base_size = base_data.map(|d| d.len() as u32);
-    let reference_size = ref_data.map(|d| d.len() as u32);
-
-    let (equal, byte_diffs) = match (base_data, ref_data) {
-        (Some(a), Some(b)) if a.len() == b.len() => {
-            let diffs: u32 = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count() as u32;
-            (diffs == 0, Some(diffs))
-        }
-        (Some(_), Some(_)) => (false, None),
-        _ => (false, None),
-    };
-
-    ZlbDiffSection {
-        tag: format!("{:08X}", tag),
-        layer: layer.to_string(),
-        base_size,
-        reference_size,
-        equal,
-        byte_diffs,
-    }
-}
-
-#[tauri::command]
-pub async fn diff_zonelightbin(
-    base_path: String,
-    reference_path: String,
-) -> std::result::Result<ZlbDiffResult, ToolkitError> {
-    let base = load_zlb_layout(&base_path)?;
-    let reference = load_zlb_layout(&reference_path)?;
-
-    let mut sections = Vec::new();
-    for tag in [ZLB_PRIMARY_TAG_A, ZLB_PRIMARY_TAG_B] {
-        sections.push(diff_layer_section(
-            &base.bytes,
-            Some(base.primary_start),
-            Some(&base.primary_sections),
-            &reference.bytes,
-            Some(reference.primary_start),
-            Some(&reference.primary_sections),
-            tag,
-            "primary",
-        ));
-    }
-    for tag in [ZLB_SECONDARY_TAG_A, ZLB_SECONDARY_TAG_B] {
-        sections.push(diff_layer_section(
-            &base.bytes,
-            base.secondary.as_ref().map(|s| s.start),
-            base.secondary.as_ref().map(|s| s.sections.as_slice()),
-            &reference.bytes,
-            reference.secondary.as_ref().map(|s| s.start),
-            reference.secondary.as_ref().map(|s| s.sections.as_slice()),
-            tag,
-            "secondary",
-        ));
-    }
-
-    let mut notes = Vec::new();
-    if base.secondary.is_none() {
-        notes.push("base file has no secondary DAT1".to_string());
-    }
-    if reference.secondary.is_none() {
-        notes.push("reference file has no secondary DAT1".to_string());
-    }
-
-    Ok(ZlbDiffResult {
-        base_path,
-        reference_path,
-        base_file_size: base.bytes.len() as u64,
-        reference_file_size: reference.bytes.len() as u64,
-        sections,
-        notes,
-    })
 }
 
 /// Write a UTF-8 string to an arbitrary path on disk. Used by the
@@ -3392,13 +2856,14 @@ fn lower_thread_priority() {
 fn lower_thread_priority() {}
 
 /// Extract outbound references (`direction="to"`) up to `depth` levels, or
-/// scan the entire TOC to find inbound references (`direction="from"`).
+/// find inbound references (`direction="from"`).
 ///
-/// Outbound mode is fast: it extracts only the target asset (and any
-/// in-TOC descendants when `depth > 1`).
+/// Outbound mode extracts only the target asset (and any in-TOC descendants
+/// when `depth > 1`).
 ///
-/// Inbound mode is expensive — it scans every span-0 asset in the TOC,
-/// in parallel via rayon. Expect tens of seconds on a full game TOC.
+/// Inbound mode walks the game's dependency graph (`<archives_dir>/dag`) for
+/// shipped assets, and scans only assets living in `d\mods\*` archives, whose
+/// dag edges may no longer be true.
 #[tauri::command]
 pub async fn get_asset_references(
     app: tauri::AppHandle,
@@ -3409,11 +2874,7 @@ pub async fn get_asset_references(
     depth: Option<u32>,
     source_mode: Option<String>,
     scan_id: Option<String>,
-    // `asset_id_allowlist`: optional hex-string allowlist limiting the
-    // inbound scan to specific asset ids (typically pre-filtered by the
-    // frontend to ref-bearing extensions like `.config`, `.actor`, `.zone`).
-    asset_id_allowlist: Option<Vec<String>>,
-    // `limit_threads`: when true, the inbound scan runs on a private rayon
+    // `limit_threads`: when true, the inbound mod scan runs on a private rayon
     // pool sized to ~75 % of the available cores so the rest of the system
     // stays responsive. Default is the global pool (all cores).
     limit_threads: Option<bool>,
@@ -3549,47 +3010,91 @@ pub async fn get_asset_references(
             let target = id;
             let toc_for_scan = Arc::clone(&toc);
             let archives_dir_owned = archives_dir_path.clone();
+            let game_dag = crate::core::dag::load_game_dag(&archives_dir_path)?;
+            let dag = &game_dag.dag;
 
-            // Optional asset-id allowlist (hex). When supplied, only ids
-            // present in the set are scanned — letting the frontend pass
-            // a curated list of ref-bearing types and skip everything
-            // else without paying any extract/decompress cost.
-            let allow_set: Option<HashSet<u64>> = asset_id_allowlist.as_ref().map(|v| {
-                v.iter()
-                    .filter_map(|s| u64::from_str_radix(s.trim(), 16).ok())
-                    .collect()
-            });
-            let total_assets_in_toc = assets
-                .iter()
-                .filter(|a| a.span_index == 0 && a.asset_id != target)
-                .count();
+            // Mods replace or add assets through d\mods\* archives, which makes the
+            // dag's edges for those assets stale; they are scanned directly instead.
+            let is_modded = |a: &TocAsset| {
+                archive_names
+                    .get(a.archive_index as usize)
+                    .is_some_and(|n| is_mod_archive(n))
+            };
+            let modded: HashSet<u64> = match mode {
+                SourceMode::Live => assets.iter().filter(|a| is_modded(a)).map(|a| a.asset_id).collect(),
+                SourceMode::RequireTocBak => HashSet::new(),
+            };
 
-            // Filter to span-0 only and exclude the target itself.
+            let item_for = |asset_id: u64, depth: u32, referenced_in: Vec<String>| {
+                let toc_asset = by_id.get(&asset_id);
+                AssetReferenceItem {
+                    depth,
+                    asset_id: format!("{asset_id:016X}"),
+                    filename: game_dag.names.get(&asset_id).cloned(),
+                    referenced_in,
+                    in_toc: toc_asset.is_some(),
+                    archive_name: toc_asset
+                        .and_then(|a| archive_names.get(a.archive_index as usize).cloned()),
+                    size: toc_asset.map(|a| a.size),
+                }
+            };
+
+            // Walk the dag upwards level by level, tagging each parent with the
+            // child it loads so deeper rows show which asset they reach it through.
+            let mut row_of: HashMap<u64, usize> = HashMap::new();
+            let mut frontier: Vec<u64> = vec![target];
+            if dag.index_of(target).is_none() {
+                notes.push(
+                    "Target is not in the game's dependency graph (added by a mod?); only mod assets were scanned."
+                        .to_string(),
+                );
+            }
+            for level in 1..=max_depth {
+                let mut next = Vec::new();
+                for &child in &frontier {
+                    let Some(ci) = dag.index_of(child) else { continue };
+                    let tag = format!("{child:016X}::DAG");
+                    for &p in game_dag.dependents.direct(ci) {
+                        let parent = dag.id(p as usize);
+                        if parent == target || modded.contains(&parent) {
+                            continue;
+                        }
+                        if let Some(&row) = row_of.get(&parent) {
+                            let item = &mut result_items[row];
+                            if item.depth == level && !item.referenced_in.contains(&tag) {
+                                item.referenced_in.push(tag.clone());
+                            }
+                            continue;
+                        }
+                        row_of.insert(parent, result_items.len());
+                        result_items.push(item_for(parent, level, vec![tag.clone()]));
+                        next.push(parent);
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+            let direct_count = result_items.iter().filter(|r| r.depth == 1).count();
+            notes.push(format!(
+                "Dependency graph: {direct_count} asset(s) load this directly, {} within depth {max_depth}.",
+                result_items.len()
+            ));
+
             let to_scan: Vec<TocAsset> = assets
                 .iter()
-                .filter(|a| a.span_index == 0 && a.asset_id != target)
-                .filter(|a| match &allow_set {
-                    Some(set) => set.contains(&a.asset_id),
-                    None => true,
-                })
+                .filter(|a| a.asset_id != target && modded.contains(&a.asset_id) && is_modded(a))
                 .cloned()
                 .collect();
             let total_to_scan = to_scan.len();
-            if let Some(set) = &allow_set {
-                notes.push(format!(
-                    "Type filter: scanning {} of {} span-0 assets ({} allowlisted ids).",
-                    total_to_scan,
-                    total_assets_in_toc,
-                    set.len()
-                ));
-            }
 
             // Optional thread-pool throttle. When the user opts in we
             // run the par_iter inside a private pool sized to ~50 % of
             // the available cores AND lower each worker's OS priority
             // to BELOW_NORMAL on Windows so the foreground UI / other
             // apps win the scheduler whenever they want CPU.
-            let throttle = limit_threads.unwrap_or(false);
+            let throttle = limit_threads.unwrap_or(false) && total_to_scan > 0;
             let scoped_pool = if throttle {
                 let avail = std::thread::available_parallelism()
                     .map(|n| n.get())
@@ -3639,7 +3144,7 @@ pub async fn get_asset_references(
                 let total = total_to_scan;
                 let started = start;
                 std::thread::spawn(move || {
-                    if scan_id.is_empty() {
+                    if scan_id.is_empty() || total == 0 {
                         return;
                     }
                     // Per-process CPU + RAM sampler. Two refreshes
@@ -3751,27 +3256,37 @@ pub async fn get_asset_references(
                 scanned = total_to_scan;
             }
 
+            // One mod asset can have records in several spans; merge them.
+            let mut mod_rows: HashMap<u64, usize> = HashMap::new();
+            for mut hit in hits {
+                let hit_id = u64::from_str_radix(&hit.asset_id, 16).unwrap_or(0);
+                if let Some(&row) = mod_rows.get(&hit_id) {
+                    let item = &mut result_items[row];
+                    for tag in hit.referenced_in {
+                        if !item.referenced_in.contains(&tag) {
+                            item.referenced_in.push(tag);
+                        }
+                    }
+                    continue;
+                }
+                hit.filename = game_dag.names.get(&hit_id).cloned();
+                mod_rows.insert(hit_id, result_items.len());
+                result_items.push(hit);
+            }
+
             if cancelled {
                 notes.push(format!(
-                    "Cancelled after scanning {}/{} assets ({} hits so far).",
-                    scanned,
-                    total_to_scan,
-                    hits.len()
+                    "Mod scan cancelled after {scanned}/{total_to_scan} records ({} hits so far).",
+                    mod_rows.len()
                 ));
-            } else {
+            } else if total_to_scan > 0 {
                 notes.push(format!(
-                    "Scanned {} span-0 assets in parallel; {} reference the target. Mmapped {} archive(s).",
-                    total_to_scan,
-                    hits.len(),
-                    cache.len()
+                    "Scanned {total_to_scan} record(s) from installed mods; {} reference the target. \
+                     Mod assets are checked at depth 1 only.",
+                    mod_rows.len()
                 ));
             }
-            if max_depth > 1 {
-                notes.push(
-                    "Inbound search only supports depth=1; ignoring higher depth.".to_string(),
-                );
-            }
-            result_items = hits;
+            result_items.sort_by_key(|r| r.depth);
         }
         other => {
             return Err(ToolkitError::Parse(format!(
@@ -4333,6 +3848,29 @@ pub struct MaterialSamplerView {
     pub default_path: Option<String>,
     pub in_template: bool,
     pub overridden: bool,
+    /// False when the template locks the slot: the game ignores overrides of it.
+    pub user_exposed: bool,
+    pub sampler_type: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialVariationView {
+    pub name_hash: u32,
+    pub name: String,
+    pub value: u32,
+}
+
+/// Fur info with its map paths resolved; `maps` is base, normal, gloss, control.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct MaterialFurDoc {
+    pub info: MaterialFurInfo,
+    pub maps: Vec<Option<String>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct MaterialWaterDoc {
+    pub info: MaterialWaterInfo,
+    pub flow_map: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -4356,8 +3894,30 @@ pub struct MaterialDocument {
     pub audio_material_name: Option<String>,
     pub samplers: Vec<MaterialSamplerView>,
     pub constants: Vec<MaterialConstantView>,
-    pub has_fur_section: bool,
+    /// Slots and shaders come from the material's own compiled template copy.
+    pub embedded_template: bool,
+    pub variations: Vec<MaterialVariationView>,
+    pub fur: Option<MaterialFurDoc>,
+    pub water: Option<MaterialWaterDoc>,
+    pub av_materials: Vec<MaterialNameOption>,
     pub section_tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct MaterialNameOption {
+    pub name_hash: u32,
+    pub name: String,
+}
+
+fn path_at(dat1: &Dat1, offset: u32) -> Option<String> {
+    (offset != NO_PATH).then(|| dat1.get_string(offset)).flatten()
+}
+
+fn path_offset(dat1: &mut Dat1, path: &Option<String>) -> u32 {
+    match path.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => dat1.intern_string(p),
+        _ => NO_PATH,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -4418,8 +3978,16 @@ pub async fn read_material(
     };
 
     let template_path = material.template_path();
+    let embedded_template = material.has_embedded_template();
     let mut template_note = None;
     let template = match &template_path {
+        _ if embedded_template => match MaterialTemplate::from_dat1(&material.dat1) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                template_note = Some(format!("embedded template unreadable: {e}"));
+                None
+            }
+        },
         Some(p) => match load_material_template(
             p,
             toc_path.as_deref(),
@@ -4433,11 +4001,16 @@ pub async fn read_material(
                 None
             }
         },
+        None if header.flags & (material_flags::FUR | material_flags::WATER) != 0 => {
+            template_note = Some("built-in fur/water material: no template".into());
+            None
+        }
         None => {
             template_note = Some("no .materialgraph reference in this material".into());
             None
         }
     };
+    let sampler_type = |ts: &crate::core::material_graph::TemplateSampler| material_names::resolve(ts.type_hash);
 
     let mut samplers: Vec<MaterialSamplerView> = serialized
         .samplers
@@ -4454,6 +4027,8 @@ pub async fn read_material(
                 default_path: slot.map(|t| t.default_path.clone()),
                 in_template: slot.is_some(),
                 overridden: true,
+                user_exposed: slot.map_or(true, |t| t.user_exposed),
+                sampler_type: slot.and_then(sampler_type),
             }
         })
         .collect();
@@ -4487,6 +4062,8 @@ pub async fn read_material(
                     default_path: Some(ts.default_path.clone()),
                     in_template: true,
                     overridden: false,
+                    user_exposed: ts.user_exposed,
+                    sampler_type: sampler_type(ts),
                 });
             }
         }
@@ -4525,7 +4102,36 @@ pub async fn read_material(
         header,
         samplers,
         constants,
-        has_fur_section: material.dat1.get_section_data(TAG_MATERIAL_FUR).is_some(),
+        embedded_template,
+        variations: serialized
+            .variations
+            .iter()
+            .map(|v| MaterialVariationView {
+                name_hash: v.name_hash,
+                name: material_names::label(v.name_hash),
+                value: v.value,
+            })
+            .collect(),
+        fur: match material.dat1.get_section_data(TAG_MATERIAL_FUR) {
+            Some(sec) => {
+                let info = MaterialFurInfo::parse(sec)?;
+                let maps = info.map_offsets.iter().map(|&o| path_at(&material.dat1, o)).collect();
+                Some(MaterialFurDoc { info, maps })
+            }
+            None => None,
+        },
+        water: match material.dat1.get_section_data(TAG_MATERIAL_WATER) {
+            Some(sec) => {
+                let info = MaterialWaterInfo::parse(sec)?;
+                let flow_map = path_at(&material.dat1, info.flow_map_offset);
+                Some(MaterialWaterDoc { info, flow_map })
+            }
+            None => None,
+        },
+        av_materials: material_names::AV_MATERIALS
+            .iter()
+            .map(|n| MaterialNameOption { name_hash: crate::core::crc32::hash(n), name: n.to_string() })
+            .collect(),
         section_tags: material
             .dat1
             .sections
@@ -4541,21 +4147,50 @@ pub async fn save_material(
     header: MaterialHeaderSection,
     samplers: Vec<MaterialSamplerEdit>,
     constants: Vec<MaterialConstantEdit>,
+    fur: Option<MaterialFurDoc>,
+    water: Option<MaterialWaterDoc>,
     out_path: Option<String>,
 ) -> Result<String, ToolkitError> {
     let data = std::fs::read(&material_path)?;
     let mut material = MaterialFile::parse(&data)?;
 
+    if header.flags & material_flags::RUNTIME_MASK != 0 {
+        return Err(ToolkitError::Unsupported("flag bits 25-31 are runtime-only and must stay clear".into()));
+    }
+    // The Fur and Water bits select a built-in material whose settings live in their own section.
+    for (bit, tag, what) in [
+        (material_flags::FUR, TAG_MATERIAL_FUR, "Fur"),
+        (material_flags::WATER, TAG_MATERIAL_WATER, "Water"),
+    ] {
+        if (header.flags & bit != 0) != material.dat1.get_section_data(tag).is_some() {
+            return Err(ToolkitError::Unsupported(format!(
+                "the {what} flag can't be changed: it must match the material's {what} Info section"
+            )));
+        }
+    }
     material
         .dat1
         .set_section_data(TAG_MATERIAL_HEADER, header.build())?;
 
-    // The aux table isn't editable and isn't shown, but it must survive a save.
-    let aux = material
+    if let Some(mut f) = fur {
+        if f.maps.len() != 4 {
+            return Err(ToolkitError::Parse("fur info needs exactly 4 map paths".into()));
+        }
+        let offsets: Vec<u32> = f.maps.iter().map(|p| path_offset(&mut material.dat1, p)).collect();
+        f.info.map_offsets.copy_from_slice(&offsets[..4]);
+        material.dat1.set_section_data(TAG_MATERIAL_FUR, f.info.build())?;
+    }
+    if let Some(mut w) = water {
+        w.info.flow_map_offset = path_offset(&mut material.dat1, &w.flow_map);
+        material.dat1.set_section_data(TAG_MATERIAL_WATER, w.info.build())?;
+    }
+
+    // Variations are compiled into the embedded template, so they're kept as they are.
+    let variations = material
         .dat1
         .get_section_data(TAG_MATERIAL_SERIALIZED)
         .and_then(|sec| MaterialSerialized::parse(sec).ok())
-        .map(|s| s.aux)
+        .map(|s| s.variations)
         .unwrap_or_default();
 
     let serialized = MaterialSerialized {
@@ -4567,7 +4202,7 @@ pub async fn save_material(
             .into_iter()
             .map(|s| MaterialSampler { name_hash: s.name_hash, path: s.path })
             .collect(),
-        aux,
+        variations,
     };
 
     if material
