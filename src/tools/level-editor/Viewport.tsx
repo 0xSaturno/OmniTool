@@ -109,6 +109,20 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/** Same zones, same objects in the same order: only transforms can differ. */
+function sameLayout(a: ZoneScene, b: ZoneScene): boolean {
+  if (a.path !== b.path || a.objects.length !== b.objects.length) return false;
+  if (JSON.stringify(a.bounds) !== JSON.stringify(b.bounds)) return false;
+  for (let i = 0; i < a.objects.length; i++) {
+    const x = a.objects[i];
+    const y = b.objects[i];
+    if (x.offset !== y.offset || x.kind !== y.kind || x.modelId !== y.modelId || x.geometryKey !== y.geometryKey) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export default function Viewport(props: ViewportProps) {
   const { scene, meshLoader, selection, onSelect, onTransform, showEntities, showGeometry, wireframe } = props;
 
@@ -170,10 +184,23 @@ export default function Viewport(props: ViewportProps) {
   const textureSourceRef = useRef(textureSource);
   textureSourceRef.current = textureSource;
 
+  const shownRef = useRef<{ renderer: LevelRenderer; scene: ZoneScene | null } | null>(null);
+
   useEffect(() => {
     if (!ready) return;
     const r = rendererRef.current;
     if (!r) return;
+    const prev = shownRef.current?.renderer === r ? shownRef.current.scene : null;
+    shownRef.current = { renderer: r, scene };
+    // Same objects in the same order (an edit, undo or save reload): push only
+    // what changed instead of tearing down and re-uploading every mesh.
+    if (prev && scene && sameLayout(prev, scene)) {
+      const changed = scene.objects.filter(
+        (o, i) => o.matrix !== prev.objects[i].matrix || o.scale !== prev.objects[i].scale,
+      );
+      if (changed.length > 0) r.applyObjects(changed);
+      return;
+    }
     r.setScene(scene, (id) => meshLoaderRef.current(id), textureSourceRef.current);
     // A rebuild drops the renderer's selection; re-apply what the shell holds.
     r.setSelection(selectionRef.current);

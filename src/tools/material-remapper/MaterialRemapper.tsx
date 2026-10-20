@@ -35,6 +35,7 @@ export default function MaterialRemapper() {
   const location = useLocation();
   const [modelPath, setModelPath] = useState("");
   const [outPath, setOutPath] = useState("");
+  const [overwriteSource, setOverwriteSource] = useState(false);
   const [tab, setTab] = useState<Tab>("slots");
   const [sendToStager, setSendToStager] = useState<string | null>(null);
   const [assetPath, setAssetPath] = useState<string | null>(null);
@@ -88,7 +89,7 @@ export default function MaterialRemapper() {
       const result: string = await invoke("save_model_materials", {
         modelPath,
         materials: Array.from(edits.entries()).map(([index, path]) => ({ index, path })),
-        outPath: outPath || null,
+        outPath: overwriteSource ? modelPath : (outPath || null),
       });
       pushLog("success", `Done → ${result}`);
     } catch (e) {
@@ -175,7 +176,8 @@ export default function MaterialRemapper() {
                         <input
                           className={styles.pathInput}
                           value={edits.has(mat.index) ? edits.get(mat.index)! : mat.path}
-                          onChange={(e) => setEditPath(mat.index, e.target.value)}
+                          onChange={(e) => setEditPath(mat.index, e.target.value.replace(/\//g, "\\"))}
+                          spellCheck={false}
                         />
                       </td>
                       <td className={`${styles.td} ${styles.dimmed}`}>{mat.name}</td>
@@ -221,19 +223,25 @@ export default function MaterialRemapper() {
           )}
 
           <div className={styles.actions}>
-            <FilePickerInput
-              label="Output .model (optional)"
-              value={outPath}
-              onChange={setOutPath}
-              mode="save"
-              filters={MODEL_FILTER}
-              placeholder="Leave blank — saves as _matmod"
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.6rem" }}>
+            {!overwriteSource && (
+              <FilePickerInput
+                label="Output .model (optional)"
+                value={outPath}
+                onChange={setOutPath}
+                mode="save"
+                filters={MODEL_FILTER}
+                placeholder="Leave blank — saves as _matmod"
+              />
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.6rem" }}>
+              <label className={styles.overwriteToggle}>
+                <input type="checkbox" checked={overwriteSource} onChange={(e) => setOverwriteSource(e.target.checked)} />
+                <span>Overwrite source model</span>
+              </label>
               <button
                 className={styles.runBtn}
                 style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-                onClick={() => setSendToStager(outPath || modelPath)}
+                onClick={() => setSendToStager(overwriteSource ? modelPath : (outPath || modelPath))}
                 disabled={running || edits.size === 0}
                 title="Send output to a Stager project"
               >

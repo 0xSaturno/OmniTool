@@ -106,6 +106,8 @@ pub struct ZoneScene {
     /// presenting a partial read as a complete one. Empty on every shipped zone
     /// but one; see [`Zone::undecoded_priuses`](crate::core::zone::Zone::undecoded_priuses).
     pub warnings: Vec<String>,
+    /// Read from the selected project's copy rather than the game archives.
+    pub from_project: bool,
 }
 
 /// One in-place transform patch. `matrix` is row-major with row 3 as the
@@ -156,15 +158,32 @@ fn index(game_dir: &str, hashes_path: Option<String>) -> Result<std::sync::Arc<L
     level::get_index(game_dir, hashes_path.as_deref())
 }
 
-/// Load a zone asset by path and parse it.
-fn load_zone(index: &LevelIndex, zone_path: &str) -> Result<(String, u64, Zone)> {
+/// Load a zone by path: `project`'s copy when it has one, else the archives, so
+/// offsets always match the file a save will patch. The bool is true for the copy.
+fn load_zone(index: &LevelIndex, zone_path: &str, project: Option<&str>) -> Result<(String, u64, Zone, bool)> {
     let path = crate::core::crc64::normalize_path(zone_path);
     // The path is the identity: hashing it gives the TOC id directly, so a zone
     // still resolves when the name list is missing or out of date.
     let id = crate::core::crc64::hash_raw(path.as_bytes());
+    if let Some(copy) = project_zone_file(project, &path)?.filter(|p| p.is_file()) {
+        return Ok((path, id, Zone::parse(&std::fs::read(copy)?)?, true));
+    }
     let raw = index.extract(id)?;
     let zone = Zone::parse(&raw)?;
-    Ok((path, id, zone))
+    Ok((path, id, zone, false))
+}
+
+/// `projects/<name>/0/<path>`, refusing names and paths that would leave it.
+fn project_zone_file(project: Option<&str>, path: &str) -> Result<Option<std::path::PathBuf>> {
+    let Some(name) = project.filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    let bad_name = name.contains(['/', '\\', ':']) || name == "." || name == "..";
+    let bad_path = path.contains(':') || path.starts_with('/') || path.split('/').any(|s| s == "..");
+    if bad_name || bad_path {
+        return Err(ToolkitError::Parse(format!("refusing project {name:?} / zone {path:?}")));
+    }
+    Ok(Some(crate::core::filesystem::projects_dir()?.join(name).join("0").join(path)))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,10 +265,11 @@ pub async fn level_load_zone(
     game_dir: String,
     zone_path: String,
     hashes_path: Option<String>,
+    project_name: Option<String>,
 ) -> Result<ZoneScene> {
     let start = Instant::now();
     let idx = index(&game_dir, hashes_path)?;
-    let (path, id, zone) = load_zone(&idx, &zone_path)?;
+    let (path, id, zone, from_project) = load_zone(&idx, &zone_path, project_name.as_deref())?;
 
     // Distinct models, most-instanced first — the viewport uploads them in that
     // order so the heaviest instanced draws appear first.
@@ -317,6 +337,7 @@ pub async fn level_load_zone(
         actors: zone.actors.clone(),
         sections,
         warnings,
+        from_project,
     };
 
     info!(
@@ -345,9 +366,10 @@ pub async fn level_zone_geometry(
     game_dir: String,
     zone_path: String,
     offset: u32,
+    project_name: Option<String>,
 ) -> Result<tauri::ipc::Response> {
     let idx = index(&game_dir, None)?;
-    let (_, _, zone) = load_zone(&idx, &zone_path)?;
+    let (_, _, zone, _) = load_zone(&idx, &zone_path, project_name.as_deref())?;
     let bytes = match level::decode_zone_geometry(&zone, offset) {
         Ok(m) => m.pack(),
         Err(e) => {
@@ -448,7 +470,8 @@ pub async fn level_save_zone(
 ) -> Result<SaveResult> {
     let start = Instant::now();
     let idx = index(&game_dir, None)?;
-    let (path, _, mut zone) = load_zone(&idx, &zone_path)?;
+    // Start from the project's copy so earlier saves and other tools' edits survive.
+    let (path, _, mut zone, _) = load_zone(&idx, &zone_path, Some(project_name.as_str()))?;
 
     for e in &edits {
         if let Some(m) = &e.matrix {

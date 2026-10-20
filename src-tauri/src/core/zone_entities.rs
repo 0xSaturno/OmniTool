@@ -124,13 +124,9 @@ pub fn xform_dir(m: &[f32; 16], p: [f32; 3]) -> [f32; 3] {
 }
 
 /// Who owns this scene entry: `(actor row, actor name, actor asset path)`.
-fn owner(zone: &Zone, scene_offset: u32) -> (i32, String, String) {
-    match zone.actors.iter().position(|a| a.scene_offset == scene_offset) {
-        Some(i) => (
-            i as i32,
-            zone.actors[i].name.clone(),
-            zone.actors[i].asset_path.clone(),
-        ),
+fn owner(zone: &Zone, actor_index: i32) -> (i32, String, String) {
+    match usize::try_from(actor_index).ok().and_then(|i| zone.actors.get(i)) {
+        Some(a) => (actor_index, a.name.clone(), a.asset_path.clone()),
         None => (-1, String::new(), String::new()),
     }
 }
@@ -378,7 +374,7 @@ pub fn volumes(zone: &Zone) -> Vec<VolumeEntity> {
             continue;
         }
         let flags = u32at(s, b + 0x88);
-        let (actor_index, actor_name, actor_asset) = owner(zone, o.offset);
+        let (actor_index, actor_name, actor_asset) = owner(zone, o.actor_index);
         let translucent_offset = u16at(s, b + 0x8E);
         let water_offset = u16at(s, b + 0x90);
         let post_effects_offset = u16at(s, b + 0x92);
@@ -572,7 +568,7 @@ pub fn curves(zone: &Zone) -> Vec<CurveEntity> {
         };
         let matrix = o.matrix;
         let world_points = points.iter().map(|&p| xform_point(&matrix, p)).collect();
-        let (actor_index, actor_name, actor_asset) = owner(zone, o.offset);
+        let (actor_index, actor_name, actor_asset) = owner(zone, o.actor_index);
         out.push(CurveEntity {
             offset: o.offset,
             size: o.size,
@@ -692,7 +688,7 @@ pub fn vfx_instances(zone: &Zone) -> Vec<VfxEntity> {
             .unwrap_or("")
             .trim_end_matches(".visualeffect")
             .to_string();
-        let (actor_index, actor_name, actor_asset) = owner(zone, o.offset);
+        let (actor_index, actor_name, actor_asset) = owner(zone, o.actor_index);
         out.push(VfxEntity {
             offset: o.offset,
             size: o.size,

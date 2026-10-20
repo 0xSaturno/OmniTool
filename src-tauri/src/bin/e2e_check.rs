@@ -546,7 +546,7 @@ fn main() {
     let mut prius_actors: Vec<usize> = Vec::new();
 
     r.check("level_load_zone", |c| {
-        let s = match block_on(ed::level_load_zone(game.clone(), art.clone(), h())) {
+        let s = match block_on(ed::level_load_zone(game.clone(), art.clone(), h(), None)) {
             Ok(v) => v,
             Err(e) => return c.err(e),
         };
@@ -630,7 +630,7 @@ fn main() {
             (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         let mut first_err = String::new();
         for path in &sample {
-            match block_on(ed::level_load_zone(game.clone(), path.clone(), h())) {
+            match block_on(ed::level_load_zone(game.clone(), path.clone(), h(), None)) {
                 Err(e) => {
                     errz += 1;
                     if first_err.is_empty() {
@@ -673,7 +673,7 @@ fn main() {
     });
 
     r.check("level_load_zone (gameplay)", |c| {
-        let s = match block_on(ed::level_load_zone(game.clone(), gp.clone(), h())) {
+        let s = match block_on(ed::level_load_zone(game.clone(), gp.clone(), h(), None)) {
             Ok(v) => v,
             Err(e) => return c.err(e),
         };
@@ -983,7 +983,7 @@ fn main() {
     });
 
     r.check("level_zone_geometry", |c| {
-        let s = match block_on(ed::level_load_zone(game.clone(), IMPOSTOR_ZONE.into(), h())) {
+        let s = match block_on(ed::level_load_zone(game.clone(), IMPOSTOR_ZONE.into(), h(), None)) {
             Ok(v) => v,
             Err(e) => return c.err(format!("{IMPOSTOR_ZONE}: {e}")),
         };
@@ -997,7 +997,7 @@ fn main() {
         let mut decoded = 0usize;
         for o in owners.iter().take(12) {
             let b = raw(
-                match block_on(ed::level_zone_geometry(game.clone(), IMPOSTOR_ZONE.into(), o.offset)) {
+                match block_on(ed::level_zone_geometry(game.clone(), IMPOSTOR_ZONE.into(), o.offset, None)) {
                     Ok(v) => v,
                     Err(e) => {
                         c.err(format!("offset {}: {e}", o.offset));
@@ -1025,7 +1025,7 @@ fn main() {
         let bogus = s.objects.iter().find(|o| o.geometry.is_none()).map(|o| o.offset);
         if let Some(off) = bogus {
             let b = raw(
-                block_on(ed::level_zone_geometry(game.clone(), IMPOSTOR_ZONE.into(), off))
+                block_on(ed::level_zone_geometry(game.clone(), IMPOSTOR_ZONE.into(), off, None))
                     .expect("an offset with no geometry must not error"),
             );
             if let Some(m) = parse_rcms(&b, c, "no-geometry offset") {
@@ -1043,7 +1043,7 @@ fn main() {
         let mut kinds: std::collections::BTreeSet<u8> = Default::default();
         for &(off, kind, declared) in &art_geo {
             let b = raw(
-                match block_on(ed::level_zone_geometry(game.clone(), art.clone(), off)) {
+                match block_on(ed::level_zone_geometry(game.clone(), art.clone(), off, None)) {
                     Ok(v) => v,
                     Err(e) => {
                         c.err(format!("art zone @{off}: {e}"));
@@ -1158,7 +1158,7 @@ fn main() {
     r.check("zone_partial_prius_decode", |c| {
         const ZONE: &str =
             "levels/i29/overlay/storymission/mis_blizar/i29_blizar_startingarea_gp.zone";
-        let scene = match block_on(ed::level_load_zone(game.clone(), ZONE.into(), h())) {
+        let scene = match block_on(ed::level_load_zone(game.clone(), ZONE.into(), h(), None)) {
             Ok(v) => v,
             Err(e) => return c.err(format!("{ZONE} will not load at all: {e}")),
         };
@@ -2000,7 +2000,7 @@ fn main() {
         let (mut zsw, mut sh2, mut fails, mut flds) = (0usize, 0usize, 0usize, 0usize);
         let mut first = String::new();
         for z in &gp_candidates {
-            let Ok(zs) = block_on(ed::level_load_zone(game.clone(), z.clone(), h())) else { continue };
+            let Ok(zs) = block_on(ed::level_load_zone(game.clone(), z.clone(), h(), None)) else { continue };
             zsw += 1;
             for (ai, _) in zs.actors.iter().enumerate().filter(|(_, a)| a.prius_count > 0).take(200) {
                 let Ok(a) = block_on(pr::prius_actor_sheet(game.clone(), z.clone(), ai, h())) else {
@@ -2063,7 +2063,7 @@ fn main() {
         // Hunt for an editable scalar leaf now, with whatever schema is
         // loaded: the field names a sheet reports depend on it.
         'hunt: for z in &gp_candidates {
-            let Ok(s) = block_on(ed::level_load_zone(game.clone(), z.clone(), h())) else { continue };
+            let Ok(s) = block_on(ed::level_load_zone(game.clone(), z.clone(), h(), None)) else { continue };
             for (ai, _) in s.actors.iter().enumerate().filter(|(_, a)| a.prius_count > 0).take(60) {
                 let Ok(a) = block_on(pr::prius_actor_sheet(game.clone(), z.clone(), ai, h())) else { continue };
                 for sh in &a.sheets {
@@ -2117,7 +2117,7 @@ fn main() {
                 .ok()
                 .and_then(|s| find(&s.view.fields, &path, ""))
         } else {
-            block_on(ed::level_load_zone(game.clone(), z.clone(), h()))
+            block_on(ed::level_load_zone(game.clone(), z.clone(), h(), None))
                 .ok()
                 .and_then(|zs| {
                     zs.actors
@@ -2807,7 +2807,7 @@ fn main() {
         // Find a placed instance of that zone which the level really does keep
         // a far-LOD copy of -- the folded uid is the only link between the two,
         // so matching it here is what makes a `true` answer provable.
-        let s = block_on(ed::level_load_zone(game.clone(), hib_zone.clone(), h()));
+        let s = block_on(ed::level_load_zone(game.clone(), hib_zone.clone(), h(), None));
         let Ok(s) = s else {
             return c.err(format!("{hib_zone} would not load"));
         };
@@ -2884,7 +2884,7 @@ fn main() {
         if art_offsets.is_empty() {
             return c.err("no scene object offsets to edit");
         }
-        let before = block_on(ed::level_load_zone(game.clone(), art.clone(), h()));
+        let before = block_on(ed::level_load_zone(game.clone(), art.clone(), h(), None));
         let Ok(before) = before else { return c.err("could not re-read the zone") };
         let target = before.objects.iter().find(|o| o.offset == art_offsets[0]).cloned();
         let Some(t) = target else { return c.err("the chosen offset vanished") };

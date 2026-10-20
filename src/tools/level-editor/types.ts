@@ -179,6 +179,8 @@ export interface ZoneScene {
    * as a complete one.
    */
   warnings?: string[];
+  /** Read from the selected project's copy rather than the game archives. */
+  fromProject?: boolean;
 }
 
 // ---------------------------------------------------------------------------

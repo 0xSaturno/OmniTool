@@ -204,6 +204,13 @@ ww2ogg = "0.1"
 gltf           = { version = "1.4", features = ["extras"] }
 toml_edit      = "0.25"
 
+[profile.dev]
+debug = "line-tables-only"
+
+# Deps compile once and rarely change; optimizing them makes dev builds run near release speed.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 opt-level    = 3
 lto          = true

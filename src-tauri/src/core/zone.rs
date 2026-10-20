@@ -1221,13 +1221,17 @@ impl Zone {
         offsets.sort_unstable();
         offsets.dedup();
 
+        let mut actor_at = HashMap::new();
+        for (i, a) in self.actors.iter().enumerate() {
+            actor_at.entry(a.scene_offset).or_insert(i);
+        }
         for off in offsets {
             let o = off as usize;
             if o + ENTRY_HEADER_LEN > scene.len() {
                 continue;
             }
             let mut obj = self.read_object(&scene, o);
-            if let Some(ai) = self.actors.iter().position(|a| a.scene_offset == off) {
+            if let Some(&ai) = actor_at.get(&off) {
                 obj.actor_index = ai as i32;
                 obj.name = self.actors[ai].name.clone();
             }
@@ -1458,12 +1462,11 @@ impl Zone {
 
     /// Patch a scene object's 4x4 transform (row-major, row 3 = translation).
     pub fn set_matrix(&mut self, offset: u32, matrix: [f32; 16]) -> Result<()> {
+        let i = self.object_index(offset)?;
         let mut buf = [0u8; 64];
         LE::write_f32_into(&matrix, &mut buf);
         self.patch(offset, OFF_MATRIX, &buf, "transform")?;
-        if let Some(o) = self.scene_objects.iter_mut().find(|o| o.offset == offset) {
-            o.matrix = matrix;
-        }
+        self.scene_objects[i].matrix = matrix;
         Ok(())
     }
 
@@ -1481,13 +1484,20 @@ impl Zone {
 
     /// Patch a scene object's scale triple.
     pub fn set_scale(&mut self, offset: u32, scale: [f32; 3]) -> Result<()> {
+        let i = self.object_index(offset)?;
         let mut buf = [0u8; 12];
         LE::write_f32_into(&scale, &mut buf);
         self.patch(offset, OFF_SCALE, &buf, "scale")?;
-        if let Some(o) = self.scene_objects.iter_mut().find(|o| o.offset == offset) {
-            o.scale = scale;
-        }
+        self.scene_objects[i].scale = scale;
         Ok(())
+    }
+
+    /// Patches must start at a real entry, or they land mid-record.
+    fn object_index(&self, offset: u32) -> Result<usize> {
+        self.scene_objects
+            .iter()
+            .position(|o| o.offset == offset)
+            .ok_or_else(|| ToolkitError::Parse(format!("no scene object at {offset}")))
     }
 
     fn patch(&mut self, obj_offset: u32, field: usize, bytes: &[u8], what: &str) -> Result<()> {

@@ -476,7 +476,11 @@ impl<'a> NameCtx<'a> {
 struct Rd<'a> {
     d: &'a [u8],
     p: usize,
+    depth: u32,
 }
+
+/// Deepest struct nesting decoded; guards the stack against crafted blobs.
+const MAX_STRUCT_DEPTH: u32 = 64;
 
 impl<'a> Rd<'a> {
     fn need(&self, n: usize) -> Result<()> {
@@ -514,7 +518,8 @@ impl<'a> Rd<'a> {
         Ok(v)
     }
     fn align4(&mut self) {
-        self.p = (self.p + 3) & !3;
+        // An unpadded tail must not push spans past the blob end.
+        self.p = ((self.p + 3) & !3).min(self.d.len());
     }
 }
 
@@ -523,7 +528,7 @@ impl<'a> Rd<'a> {
 /// `type_id` / `type_name` only label the root; decoding is driven entirely by
 /// the blob, so an unknown type still yields a full tree.
 pub fn decode(blob: &[u8], type_id: u32, type_name: Option<String>, ctx: &NameCtx) -> Result<PObject> {
-    let mut rd = Rd { d: blob, p: 0 };
+    let mut rd = Rd { d: blob, p: 0, depth: 0 };
     let mut obj = read_object(&mut rd, ctx)?;
     obj.type_id = type_id;
     obj.type_name = type_name;
@@ -672,8 +677,10 @@ fn read_object(rd: &mut Rd, ctx: &NameCtx) -> Result<PObject> {
         // Type 19 carries one byte with count 0.
         let reads: u32 = if ddl_type == DT_EMPTY_ARRAY { 1 } else { count };
 
-        let mut values = Vec::with_capacity(reads as usize);
-        let mut spans = Vec::with_capacity(reads as usize);
+        // Every value reads at least one byte, so the blob bounds the count.
+        let cap = (reads as usize).min(rd.d.len() - rd.p);
+        let mut values = Vec::with_capacity(cap);
+        let mut spans = Vec::with_capacity(cap);
         for _ in 0..reads {
             let at = rd.p;
             let v = read_value(rd, ddl_type, ctx)?;
@@ -749,7 +756,12 @@ fn read_value(rd: &mut Rd, t: u8, ctx: &NameCtx) -> Result<PValue> {
             PValue::Str { value, hash, checksum }
         }
         DT_STRUCT => {
+            if rd.depth >= MAX_STRUCT_DEPTH {
+                return Err(ToolkitError::Parse(format!("prius: structs nested deeper than {MAX_STRUCT_DEPTH}")));
+            }
+            rd.depth += 1;
             let inner = read_object(rd, ctx)?;
+            rd.depth -= 1;
             rd.align4();
             PValue::Struct(Box::new(inner))
         }
@@ -1332,7 +1344,6 @@ pub struct FieldView {
     pub options: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<FieldView>,
 }
 

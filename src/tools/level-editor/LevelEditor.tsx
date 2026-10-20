@@ -256,8 +256,8 @@ export default function LevelEditor() {
   const viewportRef = useRef<HTMLDivElement>(null);
 
   const meshLoader = useMemo(
-    () => (gameDir ? api.makeMeshLoader(gameDir) : async () => new ArrayBuffer(0)),
-    [gameDir],
+    () => (gameDir ? api.makeMeshLoader(gameDir, selectedProject || undefined) : async () => new ArrayBuffer(0)),
+    [gameDir, selectedProject],
   );
 
   // The WebGL viewport is only created once the user has actually opened the
@@ -399,7 +399,7 @@ export default function LevelEditor() {
       if (!gameDir) return;
       markBusy(path, true);
       try {
-        const scene = await api.loadZone(gameDir, path);
+        const scene = await api.loadZone(gameDir, path, selectedProject || undefined);
         setLoaded((prev) => {
           if (prev.some((z) => z.path === path)) return prev;
           const used = new Set(prev.map((z) => z.slot));
@@ -409,7 +409,7 @@ export default function LevelEditor() {
         });
         pushLog(
           "success",
-          `${path.split("/").pop()} — ${scene.objects.length.toLocaleString()} objects, ${scene.models.length.toLocaleString()} models`,
+          `${path.split("/").pop()}${scene.fromProject ? ` (from "${selectedProject}")` : ""} — ${scene.objects.length.toLocaleString()} objects, ${scene.models.length.toLocaleString()} models`,
         );
         for (const w of scene.warnings ?? []) {
           pushLog("warning", `${path.split("/").pop()} — ${w}`);
@@ -420,11 +420,30 @@ export default function LevelEditor() {
         markBusy(path, false);
       }
     },
-    [gameDir, pushLog],
+    [gameDir, selectedProject, pushLog],
+  );
+
+  /** Re-read loaded zones in place (same slots), e.g. after a save or a project switch. */
+  const reloadZones = useCallback(
+    async (paths: string[]) => {
+      if (!gameDir) return;
+      const fresh = new Map<string, ZoneScene>();
+      for (const p of paths) {
+        try {
+          fresh.set(p, await api.loadZone(gameDir, p, selectedProject || undefined));
+        } catch (e) {
+          pushLog("error", `Could not reload ${p}: ${e}`);
+        }
+      }
+      setLoaded((prev) => prev.map((z) => (fresh.has(z.path) ? { ...z, scene: fresh.get(z.path)! } : z)));
+    },
+    [gameDir, selectedProject, pushLog],
   );
 
   const unloadZonePath = useCallback((path: string) => {
     setLoaded((prev) => prev.filter((z) => z.path !== path));
+    // Slots get reused, so a kept selection would point into the next zone.
+    setSelection([]);
   }, []);
 
   const toggleZone = useCallback(
@@ -446,6 +465,7 @@ export default function LevelEditor() {
   const unloadTile = useCallback((entries: ZoneEntry[]) => {
     const paths = new Set(entries.map((e) => e.path));
     setLoaded((prev) => prev.filter((z) => !paths.has(z.path)));
+    setSelection([]);
   }, []);
 
   const cancelBulk = useCallback(() => {
@@ -521,7 +541,7 @@ export default function LevelEditor() {
           if (bulkCancelRef.current) break;
           markBusy(entry.path, true);
           try {
-            const scene = await api.loadZone(gameDir, entry.path);
+            const scene = await api.loadZone(gameDir, entry.path, selectedProject || undefined);
             batch.push({ path: entry.path, scene });
             objects += scene.objects.length;
             for (const w of scene.warnings ?? []) {
@@ -559,7 +579,7 @@ export default function LevelEditor() {
       // Let the composite scene commit and reach the renderer before framing.
       if (ok > 0) window.setTimeout(frameAll, 80);
     },
-    [gameDir, pushLog, frameAll],
+    [gameDir, selectedProject, pushLog, frameAll],
   );
 
   /**
@@ -588,19 +608,30 @@ export default function LevelEditor() {
     [pushLog, runBulkLoad],
   );
 
-  // "Send to Level Editor" from the Asset Browser: `?assetPath=…zone`.
+  // "Send to Level Editor": the Asset Browser passes `?assetPath=…zone`, the
+  // Stager only `?filePath=…/projects/<name>/<span>/<asset path>`.
   const incomingRef = useRef<string | null>(null);
   useEffect(() => {
     if (!active || !gameDir) return;
-    const state = location.state as { assetPath?: string } | null;
+    const state = location.state as { assetPath?: string; filePath?: string } | null;
     const params = new URLSearchParams(location.search);
-    const incoming = state?.assetPath ?? params.get("assetPath") ?? undefined;
+    let incoming = state?.assetPath ?? params.get("assetPath") ?? undefined;
+    const filePath = (state?.filePath ?? params.get("filePath") ?? "").replace(/\\/g, "/");
+    const stager = incoming ? null : filePath.match(/\/projects\/([^/]+)\/\d+\/(.+\.zone)$/i);
+    if (stager) {
+      // Switch first and load on the re-run, so the zone is read from that project.
+      if (stager[1] !== selectedProject) {
+        setSelectedProject(stager[1]);
+        return;
+      }
+      incoming = stager[2];
+    }
     if (!incoming || !incoming.toLowerCase().endsWith(".zone")) return;
     const normalised = incoming.replace(/\\/g, "/").toLowerCase();
     if (incomingRef.current === normalised) return;
     incomingRef.current = normalised;
     void loadZonePath(normalised);
-  }, [active, gameDir, location, loadZonePath]);
+  }, [active, gameDir, location, loadZonePath, selectedProject, setSelectedProject]);
 
   // Once the index is in, point the browser at the region that zone lives in.
   useEffect(() => {
@@ -724,6 +755,7 @@ export default function LevelEditor() {
       if (doomed.length === 0) return;
       const paths = new Set(doomed.map((z) => z.path));
       setLoaded((prev) => prev.filter((z) => !paths.has(z.path)));
+      setSelection([]);
       pushLog("info", `Unloaded ${doomed.length} zone${doomed.length === 1 ? "" : "s"} of ${key}.`);
     },
     [regionKeys, pushLog],
@@ -1078,16 +1110,19 @@ export default function LevelEditor() {
     }
     setSaving(true);
     try {
-      let files = 0;
+      const saved: string[] = [];
       for (const [zonePath, edits] of pendingByZone) {
         const res = await api.saveZone(gameDir, zonePath, selectedProject, edits);
-        files++;
+        saved.push(zonePath);
         pushLog(
           "success",
           `${res.assetPath} — ${edits.length} edit${edits.length === 1 ? "" : "s"}, ${res.bytesWritten.toLocaleString()} bytes → ${res.projectFile}`,
         );
       }
+      // Show what is now on disk before dropping the edits, so nothing snaps back.
+      await reloadZones(saved);
       dispatchEdit({ type: "reset" });
+      const files = saved.length;
       pushLog(
         "info",
         `Wrote ${files} zone file${files === 1 ? "" : "s"} into "${selectedProject}". Open the Stager to export the project as a .stage mod.`,
@@ -1097,7 +1132,23 @@ export default function LevelEditor() {
     } finally {
       setSaving(false);
     }
-  }, [gameDir, pendingByZone, selectedProject, pushLog]);
+  }, [gameDir, pendingByZone, selectedProject, pushLog, reloadZones]);
+
+  // Offsets belong to the file a zone was read from, so a project switch
+  // re-reads every loaded zone; unsaved edits can't follow and are dropped.
+  const projectRef = useRef(selectedProject);
+  useEffect(() => {
+    if (projectRef.current === selectedProject) return;
+    projectRef.current = selectedProject;
+    const paths = loadedRef.current.map((z) => z.path);
+    if (paths.length === 0) return;
+    if (editState.edits.size > 0) {
+      pushLog("warning", `Project changed with ${editState.edits.size} unsaved edit(s); they were discarded.`);
+      dispatchEdit({ type: "reset" });
+    }
+    setSelection([]);
+    void reloadZones(paths);
+  }, [selectedProject, editState.edits, pushLog, reloadZones]);
 
   /* ---------------- derived counters ---------------- */
 
@@ -1487,7 +1538,12 @@ function Header({
               className={styles.projectSelect}
               value={selectedProject}
               onChange={(e) => setSelectedProject(e.target.value)}
-              title="Project the edited zone is written into"
+              disabled={pendingEdits > 0}
+              title={
+                pendingEdits > 0
+                  ? "Save or undo your edits before switching project"
+                  : "Project zones are read from (when it has a copy) and saved into"
+              }
             >
               {projects.length === 0 && <option value="">No projects</option>}
               {projects.map((p) => (

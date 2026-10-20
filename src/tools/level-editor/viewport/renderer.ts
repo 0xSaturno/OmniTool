@@ -816,13 +816,20 @@ export class LevelRenderer {
     this.needsRender = true;
   }
 
-  /** Push a new matrix for one object (e.g. after an external edit / undo). */
-  applyMatrix(offset: number, rowMajor: number[]): void {
-    const slot = this.slots.get(offset);
-    if (!slot) return;
-    const m = zoneToMatrix4(rowMajor);
-    this.matrices.set(offset, m);
-    this.writeInstanceMatrix(slot, m);
+  /** Update objects in place (edit, undo, reload) without rebuilding the scene. */
+  applyObjects(objects: SceneObjectDto[]): void {
+    const touched = new Set<Batch>();
+    for (const o of objects) {
+      const slot = this.slots.get(o.offset);
+      if (!slot || !isFiniteMatrix(o.matrix)) continue;
+      slot.object = o;
+      slot.batch.objects[slot.index] = o;
+      const m = zoneToMatrix4(o.matrix);
+      this.matrices.set(o.offset, m);
+      this.writeInstanceMatrix(slot, m);
+      touched.add(slot.batch);
+    }
+    for (const b of touched) b.mesh.computeBoundingSphere();
     this.updateOutline();
     this.updateGizmoAttachment();
     this.needsRender = true;

@@ -831,7 +831,8 @@ pub fn decode_condition_block(
     }
 
     let rows = condition_count.max(1) as usize;
-    let stride = stride.max(1);
+    // Stride comes from file data; cap it at what the section can hold.
+    let stride = stride.clamp(1, (sec.len().saturating_sub(p) / ASSET_REF_LEN).max(1));
     let mut per_condition = Vec::with_capacity(rows);
     for r in 0..rows {
         let mut refs = Vec::with_capacity(stride);
@@ -924,16 +925,13 @@ pub fn read_env_probe_assets(dat1: &Dat1) -> Option<EnvProbeAssets> {
     if p % 8 != 0 {
         p += 8 - (p % 8);
     }
-    let mut overrides = Vec::with_capacity(override_texture_count);
-    for i in 0..override_texture_count {
-        let o = p + i * ASSET_REF_LEN;
-        if o + ASSET_REF_LEN > sec.len() {
-            break;
-        }
-        overrides.push(read_asset_ref(dat1, sec, o));
+    let fit = (sec.len() - p) / ASSET_REF_LEN;
+    let mut overrides = Vec::with_capacity(override_texture_count.min(fit));
+    for i in 0..override_texture_count.min(fit) {
+        overrides.push(read_asset_ref(dat1, sec, p + i * ASSET_REF_LEN));
     }
-    p += override_texture_count * ASSET_REF_LEN;
-    let per_condition = decode_condition_block(dat1, TAG_ENVPROBE_ASSETS, &sec[p..], probe_asset_count.max(1))?;
+    p = p.checked_add(override_texture_count.checked_mul(ASSET_REF_LEN)?)?;
+    let per_condition = decode_condition_block(dat1, TAG_ENVPROBE_ASSETS, sec.get(p..)?, probe_asset_count.max(1))?;
     Some(EnvProbeAssets {
         override_texture_count,
         probe_asset_count,

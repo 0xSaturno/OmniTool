@@ -310,18 +310,28 @@ pub fn parse(data: &[u8], pool: &dyn StringPoolRead) -> Result<DdlObject> {
         return Ok(DdlObject::default());
     }
     let mut cur = Cursor::new(data);
-    parse_object(&mut cur, pool)
+    parse_object(&mut cur, pool, 0)
 }
 
-fn parse_object(cur: &mut Cursor<&[u8]>, pool: &dyn StringPoolRead) -> Result<DdlObject> {
+/// Deepest struct nesting parsed; guards the stack against crafted blobs.
+const MAX_STRUCT_DEPTH: u32 = 64;
+
+fn bytes_left(cur: &Cursor<&[u8]>) -> usize {
+    cur.get_ref().len().saturating_sub(cur.position() as usize)
+}
+
+fn parse_object(cur: &mut Cursor<&[u8]>, pool: &dyn StringPoolRead, depth: u32) -> Result<DdlObject> {
     let _zero = cur.read_u32::<LE>()?;
     let magic = cur.read_u32::<LE>()?;
     if magic != DDL_MAGIC {
         // Absence of magic treated as empty object, not an error.
         return Ok(DdlObject::default());
     }
-    let field_count = cur.read_i32::<LE>()? as usize;
+    let field_count = cur.read_u32::<LE>()? as usize;
     let _size = cur.read_i32::<LE>()? as usize;
+    if field_count > bytes_left(cur) / 12 {
+        return Err(ToolkitError::Parse(format!("DDL field count {field_count} exceeds the data")));
+    }
 
     let mut headers = Vec::with_capacity(field_count);
     for _ in 0..field_count {
@@ -350,9 +360,10 @@ fn parse_object(cur: &mut Cursor<&[u8]>, pool: &dyn StringPoolRead) -> Result<Dd
             .get_string(name_offsets[i])
             .unwrap_or_else(|| format!("field_{:08X}", header.id));
 
-        let mut values = Vec::with_capacity(count);
+        // Every value reads at least one byte, so the data bounds the count.
+        let mut values = Vec::with_capacity(count.min(bytes_left(cur)));
         for _ in 0..count {
-            values.push(read_value(cur, type_kind, pool)?);
+            values.push(read_value(cur, type_kind, pool, depth)?);
         }
 
         obj.insert(DdlField { id: header.id, name, type_kind, array_kind, values });
@@ -366,6 +377,7 @@ fn read_value(
     cur: &mut Cursor<&[u8]>,
     type_kind: DdlTypeKind,
     pool: &dyn StringPoolRead,
+    depth: u32,
 ) -> Result<DdlValue> {
     Ok(match type_kind {
         DdlTypeKind::UInt8 => DdlValue::U8(cur.read_u8()?),
@@ -387,7 +399,10 @@ fn read_value(
         | DdlTypeKind::File
         | DdlTypeKind::Json => read_inline_string(cur)?,
         DdlTypeKind::Struct => {
-            let inner = parse_object(cur, pool)?;
+            if depth >= MAX_STRUCT_DEPTH {
+                return Err(ToolkitError::Parse(format!("DDL structs nested deeper than {MAX_STRUCT_DEPTH}")));
+            }
+            let inner = parse_object(cur, pool, depth + 1)?;
             align_to(cur, 4)?;
             DdlValue::Struct(inner)
         }
@@ -405,9 +420,12 @@ fn read_value(
 
 fn read_inline_string(cur: &mut Cursor<&[u8]>) -> Result<DdlValue> {
     // DDLString = { i32 length, u32 hash, u64 checksum }  (16 bytes)
-    let length = cur.read_i32::<LE>()? as usize;
+    let length = cur.read_u32::<LE>()? as usize;
     let hash = cur.read_u32::<LE>()?;
     let checksum = cur.read_u64::<LE>()?;
+    if length > bytes_left(cur) {
+        return Err(ToolkitError::Parse(format!("DDL string length {length} exceeds the data")));
+    }
     let mut bytes = vec![0u8; length];
     cur.read_exact(&mut bytes)?;
     cur.read_u8()?; // NUL terminator

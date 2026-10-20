@@ -69,12 +69,14 @@ export async function listZones(
   return invoke<ZoneEntry[]>("level_list_zones", { gameDir, region, hashesPath });
 }
 
+/** `projectName`: read that project's copy of the zone when it has one. */
 export async function loadZone(
   gameDir: string,
   zonePath: string,
+  projectName?: string,
   hashesPath?: string,
 ): Promise<ZoneScene> {
-  return invoke<ZoneScene>("level_load_zone", { gameDir, zonePath, hashesPath });
+  return invoke<ZoneScene>("level_load_zone", { gameDir, zonePath, hashesPath, projectName });
 }
 
 export async function loadModelMesh(
@@ -98,8 +100,9 @@ export async function loadZoneGeometry(
   gameDir: string,
   zonePath: string,
   offset: number,
+  projectName?: string,
 ): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("level_zone_geometry", { gameDir, zonePath, offset });
+  return invoke<ArrayBuffer>("level_zone_geometry", { gameDir, zonePath, offset, projectName });
 }
 
 export async function saveZone(
@@ -128,7 +131,7 @@ export async function zoneStats(gameDir: string, hashesPath?: string): Promise<L
  * models thousands of times, so the viewport must never re-fetch one, and a
  * block-2 mesh is per-object so it must be fetched exactly once.
  */
-export function makeMeshLoader(gameDir: string): MeshLoader {
+export function makeMeshLoader(gameDir: string, projectName?: string): MeshLoader {
   lastGameDir = gameDir;
   const cache = new Map<string, Promise<ArrayBuffer>>();
   return (key: string) => {
@@ -136,7 +139,7 @@ export function makeMeshLoader(gameDir: string): MeshLoader {
     if (!hit) {
       const zone = parseZoneGeometryKey(key);
       const call = zone
-        ? loadZoneGeometry(gameDir, zone.zonePath, zone.offset)
+        ? loadZoneGeometry(gameDir, zone.zonePath, zone.offset, projectName)
         : loadModelMesh(gameDir, key);
       hit = call.catch((e) => {
         // One undecodable mesh must not poison the whole scene; the viewport

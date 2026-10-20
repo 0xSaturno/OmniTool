@@ -1162,7 +1162,7 @@ fn split_header(asset: &[u8]) -> Result<(Option<Vec<u8>>, &[u8])> {
     }
     if LE::read_u32(&asset[0..4]) == crate::core::dat1::DAT1_MAGIC {
         Ok((None, asset))
-    } else if asset.len() > ASSET_HEADER_LEN
+    } else if asset.len() >= ASSET_HEADER_LEN + 4
         && LE::read_u32(&asset[ASSET_HEADER_LEN..ASSET_HEADER_LEN + 4])
             == crate::core::dat1::DAT1_MAGIC
     {
@@ -1421,7 +1421,8 @@ fn read_objects(
     clusters: &[HibernateCluster],
 ) -> Vec<HibernateObject> {
     let start = base + sub.object_offset as usize;
-    let n = sub.object_count as usize;
+    // The count is file data; never size buffers past what the container holds.
+    let n = (sub.object_count as usize).min(raw.len().saturating_sub(start) / HOBJECT_LEN);
     // Which cluster owns each instance. `object_offset` on a cluster is an
     // index into this same array, so one pass fills the map.
     let mut owner = vec![usize::MAX; n];
