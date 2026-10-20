@@ -119,7 +119,7 @@ struct RawField {
     array_type: i64,
     #[serde(default)]
     map_type: i64,
-    /// Spelled `fized_size` in the dump — kept verbatim so the loader matches.
+    /// Spelled `fized_size` in the dump — kept verbatim so the game matches.
     #[serde(default, alias = "fixed_size")]
     fized_size: i64,
     #[serde(default)]

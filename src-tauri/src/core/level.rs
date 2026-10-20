@@ -533,7 +533,7 @@ pub fn clear_probe_cache() {
 /// inspector panel reads as something other than a column of hex.
 ///
 /// The hash-verified table in [`crate::core::section_names`] answers first: every
-/// one of its entries reproduces its own tag under the engine CRC-32, so where it
+/// one of its entries reproduces its own tag under the game CRC-32, so where it
 /// and the hand-written list below disagree, it is the table that is right. It
 /// also covers far more ground — over a 400-zone / 400-model sample it names 70 of
 /// the 85 distinct tags seen, against 32 for the list below.
@@ -734,7 +734,7 @@ pub struct ModelBuilt {
     /// treated as "morph targets present"; the values 6 and 8 that reading
     /// keyed on are strand counts on hair models.
     pub strand_subset_count: u8,
-    /// `0x64` / `0x68` totals the engine validates the geometry sections against.
+    /// `0x64` / `0x68` totals the game validates the geometry sections against.
     pub index_count: u32,
     pub vertex_count: u32,
     /// `0x6C` physics A/V surface hash, `0x70` audio surface hash.

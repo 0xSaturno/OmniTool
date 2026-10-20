@@ -178,7 +178,7 @@ const THREE_COMPRESSED: Record<number, number> = {
 };
 
 /**
- * Orientation. The engine's UVs are DirectX-style: V grows downward from a
+ * Orientation. The game's UVs are DirectX-style: V grows downward from a
  * top-left origin (`VertexesSection::parse_scaled` reads a raw i16 pair and
  * only scales it, and `gltf_writer` passes `[u, v]` straight through into a
  * glTF, which defines exactly that convention). three.js instead defaults to

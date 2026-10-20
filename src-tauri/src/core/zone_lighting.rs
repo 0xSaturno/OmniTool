@@ -86,8 +86,8 @@
 //! Two fields the header alone would have you read wrong:
 //!
 //! * **Cone angles are populated on every type.** All 322 point, 13 shaft and
-//!   232 modulate lights carry the builder's defaults (15 deg inner, 45 deg
-//!   outer — the builder's defaults). Only spot and pyramid mean them —
+//!   232 modulate lights carry the authoring tool's defaults (15 deg inner, 45 deg
+//!   outer — the authoring tool's defaults). Only spot and pyramid mean them —
 //!   see [`has_cone`].
 //! * **A volume light's extents are not in the header's extents field.** That
 //!   field is 0.0 on all 232 modulate lights;
@@ -108,12 +108,12 @@
 //!   `0 = right, 1 = up, 2 = forward, 3 = translation`. A spot/pyramid/shaft
 //!   points down row 2.
 //! * **Radius.** `attenuation_radius` is authoritative when `> 0`. When it is
-//!   `0` the engine *derives* one from the colour:
+//!   `0` the game *derives* one from the colour:
 //!   `sqrt(luminance(linear_rgb) / 0.125)` with
 //!   `luminance = 0.2126 r + 0.7152 g + 0.0722 b`. [`ZoneLight::effective_radius`]
 //!   reproduces that, so a viewer never has to special-case the zero.
 //! * **Cones.** `inner_cone_radians` / `outer_cone_radians` are half-angles from
-//!   the axis. The engine clamps `inner` to `outer * 0.99` and builds the
+//!   the axis. The game clamps `inner` to `outer * 0.99` and builds the
 //!   falloff as `saturate((cos t - cos outer) / (cos inner' - cos outer))`
 //!   **squared**.
 //! * **Cut planes.** For spot and pyramid lights `cut_on_dist` / `cut_off_dist`
@@ -140,7 +140,7 @@
 //!   AssetRef = { u64 asset_id, u32 string_offset, u32 suffix_hash }
 //! ```
 //!
-//!   The engine indexes row `current_condition` of that array, so a zone does
+//!   The game indexes row `current_condition` of that array, so a zone does
 //!   not *choose* a condition: the **scene** holds one and every
 //!   condition-dependent block is indexed by it.
 //!
@@ -298,7 +298,7 @@ pub const LIGHT_FLAG_USE_COLOR_TEMPERATURE: u16 = 1 << 6;
 pub const LIGHT_FLAG_ALLOW_VFX_MULTIPLIER: u16 = 1 << 7;
 pub const LIGHT_FLAG_VOLUME_IS_ELLIPSOID: u16 = 1 << 8;
 pub const LIGHT_FLAG_EARLY_MOD_LIGHT: u16 = 1 << 9;
-/// Bits above 9 are runtime-only in the engine and must be zero on disk.
+/// Bits above 9 are runtime-only in the game and must be zero on disk.
 pub const LIGHT_FLAG_SERIALIZED_MASK: u16 = 0x03FF;
 
 pub fn light_flag_names(flags: u16) -> Vec<&'static str> {
@@ -325,7 +325,7 @@ pub const LIGHTING_CONDITION_ALL: u8 = (1 << LIGHTING_CONDITION_COUNT) - 1;
 
 pub fn lighting_condition_names(mask: u8) -> Vec<&'static str> {
     if mask == 0 {
-        // The engine treats a zero mask on a *volume* as "all"; on a light a
+        // The game treats a zero mask on a *volume* as "all"; on a light a
         // zero mask excludes it under every condition.
         return Vec::new();
     }
@@ -340,7 +340,7 @@ pub fn luminance(rgb: [f32; 3]) -> f32 {
     rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
 }
 
-/// The engine's implicit radius for a light that ships `attenuation_radius == 0`:
+/// The game's implicit radius for a light that ships `attenuation_radius == 0`:
 /// the distance at which the light's luminance falls to `0.125`.
 pub fn derived_radius(rgb: [f32; 3]) -> f32 {
     (luminance(rgb).max(0.0) * 8.0).sqrt()
@@ -446,7 +446,7 @@ pub struct ZoneLight {
     /// Colour premultiplied by intensity, in **linear** space.
     pub linear_rgb: [f32; 3],
     pub luminance: f32,
-    /// `attenuation_radius` when authored, otherwise the engine's derived radius.
+    /// `attenuation_radius` when authored, otherwise the game's derived radius.
     pub effective_radius: f32,
     /// `true` when `effective_radius` came from the colour, not from the file.
     pub radius_is_derived: bool,
@@ -648,7 +648,7 @@ impl ZoneLight {
         })
     }
 
-    /// The two cone-falloff constants the engine derives, so a viewer can use
+    /// The two cone-falloff constants the game derives, so a viewer can use
     /// the same maths: `intensity = saturate(dot * x + y)` squared, with `dot`
     /// taken between `direction` and the light-to-sample direction.
     pub fn cone_falloff_consts(&self) -> Option<[f32; 2]> {
@@ -762,7 +762,7 @@ pub struct ConditionBlock {
 }
 
 impl ConditionBlock {
-    /// The refs the engine would use under one lighting condition index.
+    /// The refs the game would use under one lighting condition index.
     pub fn refs_for(&self, condition: usize) -> &[AssetRef] {
         let row = if self.condition_count == 0 {
             0
@@ -894,7 +894,7 @@ pub fn condition_block_stride(dat1: &Dat1, tag: u32) -> Option<usize> {
 ///   AssetRef per_condition[condition_count * probe_asset_count]
 /// ```
 ///
-/// The engine builds one texture array per zone as
+/// The game builds one texture array per zone as
 /// `[overrides..., this condition's probe textures...]`, and
 /// `EnvProbeRow::asset_index` indexes **that** array, so the valid range is
 /// `0 .. override_texture_count + probe_asset_count`, with `-1` meaning
@@ -1243,7 +1243,7 @@ impl LightGridSample {
     }
 }
 
-/// Sample index inside a grid block: the engine walks voxels as
+/// Sample index inside a grid block: the game walks voxels as
 /// `x + width * (y + width * z)`.
 pub fn light_grid_sample_index(x: usize, y: usize, z: usize) -> usize {
     x + LIGHT_GRID_WIDTH * (y + LIGHT_GRID_WIDTH * z)

@@ -8,7 +8,7 @@
 //! `table_is_self_consistent` test below, so a wrong name cannot survive here.
 //!
 //! Passing the hash check proves a name is *a* preimage of the tag, not that
-//! the engine used that exact spelling — but a 32-bit collision on a plausible
+//! the game used that exact spelling — but a 32-bit collision on a plausible
 //! English section name is not something that happens by accident, and the
 //! names that overlap the tags we had already identified by hand all agree.
 //!

@@ -232,7 +232,7 @@ pub fn volume_flag_names(flags: u32) -> Vec<&'static str> {
 /// bytes long — 0 exceptions. The shapes seen are 52 306 Cuboid, 2 637 Ellipsoid,
 /// 1 626 Cylinder, 109 Capsule and 1 Point: every value the enum defines.
 ///
-/// +0x94 equals `1 - 0.5 / extents.y` on 55 555 of 56 679, so the builder
+/// +0x94 equals `1 - 0.5 / extents.y` on 55 555 of 56 679, so the authoring tool
 /// normally derives it from the extents; the remaining 2 % are authored.
 ///
 /// The half-extents are *not* the base header's own +0x50 extents: they differ on
@@ -261,7 +261,7 @@ pub struct VolumeEntity {
     pub extents: [f32; 3],
     pub inv_extents: [f32; 3],
     /// For `Cylinder` and `Capsule`, the straight section's height as a
-    /// fraction of the unit box; the engine defaults it to 0.5.
+    /// fraction of the unit box; the game defaults it to 0.5.
     pub unit_space_cylinder_height: f32,
     pub has_water: bool,
     pub has_post_effects: bool,
@@ -487,7 +487,7 @@ pub struct CurveEntity {
     pub world_points: Vec<[f32; 3]>,
     /// Per-point normal ("up"), absent on a curve built without them.
     pub normals: Option<Vec<[f32; 3]>>,
-    /// Arc length of each segment, when the builder stored them.
+    /// Arc length of each segment, when the authoring tool stored them.
     pub segment_lengths: Vec<f32>,
     /// Sum of `segment_lengths`: the path's total length in metres.
     pub length: f32,
@@ -719,7 +719,7 @@ pub fn vfx_instances(zone: &Zone) -> Vec<VfxEntity> {
 // Decals (kind 3)
 // ---------------------------------------------------------------------------
 
-/// `DecalAssetType`, the low two bits of the byte at +0x2B7. The engine numbers
+/// `DecalAssetType`, the low two bits of the byte at +0x2B7. The game numbers
 /// them 1 = material graph, 2 = material, 3 = texture, leaving 0 unused —
 /// VERIFIED, because 16 384 of 16 386 shipped decals read 2 and carry a
 /// `.material` path, and the 2 that read 3 carry a `.texture` path.
@@ -861,7 +861,7 @@ pub const NAV_POS_BIAS: i32 = 32768;
 /// Section `Zone Nav Built Container`.
 ///
 /// ```text
-///   +0x00 u32 magic (the engine's built-nav version hash)
+///   +0x00 u32 magic (the game's built-nav version hash)
 ///   +0x04 u64 this container's asset id
 ///   +0x0C i32 nav layer count (agent classes)
 ///   +0x10 i16 grid min x, +0x12 min z, +0x14 max x, +0x16 max z  (tile units)

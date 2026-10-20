@@ -229,7 +229,7 @@ function NumField({
 /**
  * Linear RGB premultiplied by intensity, as a swatch plus the numbers.
  *
- * `linearRgb` is exactly what the engine multiplies into the G-buffer, so it
+ * `linearRgb` is exactly what the game multiplies into the G-buffer, so it
  * routinely leaves 0..1 — a 40 W practical is a small colour times a large
  * intensity. The swatch therefore shows the HUE (the colour normalised so its
  * brightest channel is 1, then gamma-encoded for the screen) and the numbers

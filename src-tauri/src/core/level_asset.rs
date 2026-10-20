@@ -165,7 +165,7 @@
 //! ```
 //!
 //! The flags byte is two things at once. Bits 5, 6 and 7 are the instance's
-//! own: visible, z-bias, long range. Bits 0 to 4 are the engine's standard
+//! own: visible, z-bias, long range. Bits 0 to 4 are the game's standard
 //! matrix-property bits, which every transform carries. Across all 87,778
 //! instances the low five bits take the values `0b10111`, i.e. bit 3 is never
 //! set. Matching 29,281 instances back to the zone entries they stand in for
@@ -184,7 +184,7 @@
 //!   Nothing needs them to draw an instance, so they stay a GUESS.
 //!
 //! The rotation / offset / scale triples have **two** encodings. Shipped data
-//! is the half-float form above. The first time the engine loads a container it
+//! is the half-float form above. The first time the game loads a container it
 //! rewrites the records in place into a faster form — offsets become `i16`
 //! metres over 64, scales `i16` over 256, rotations a 12-bit-per-component
 //! quaternion — and sets the `optimized` word so it never repeats. That word is
@@ -249,7 +249,7 @@
 //!   why a one-parent-per-zone grouping cannot reproduce this tree.
 //! * Every region name is the crc64 of its own stored asset id, and so is every
 //!   zone name. None of the 1,216 `.region` ids is in the TOC: `.region` is an
-//!   authoring type the builder flattens away. 133 of the 9,176 zone ids are
+//!   authoring type the authoring tool flattens away. 133 of the 9,176 zone ids are
 //!   *also* absent from the PC TOC, so a level zone row is a reference, not a
 //!   guarantee the asset ships.
 //! * LOD controls come in three settings — load/unload 150/170 (566 regions),
@@ -260,8 +260,8 @@
 //!   list is exactly as long as that region's primary list, so entry *i* covers
 //!   primary zone *i*; 732 of the 10,135 entries are -1, meaning "this zone has
 //!   no shadow zone".
-//! * All 860 link names reproduce their stored `name_hash` under the engine
-//!   CRC-32, and all 860 link actor uids carry the engine's "placed in a zone"
+//! * All 860 link names reproduce their stored `name_hash` under the game
+//!   CRC-32, and all 860 link actor uids carry the game's "placed in a zone"
 //!   bit 63.
 //! * Hibernation is not an open-world-only mechanism: the 613 hibernating zones
 //!   are owned by regions of every loadable type — 368 by open units, 112 by
@@ -280,7 +280,7 @@
 //!
 //! The game-data table is `DDLStructInstBuilt`, 16 bytes a row: `{u32 name
 //! string offset, u32 name hash, u32 payload offset, u32 payload size}`. The
-//! offset is relative to the DAT1 block, which is the file base the engine
+//! offset is relative to the DAT1 block, which is the file base the game
 //! passes; all 312 rows land inside `Level Region Game Struct Data`, back to
 //! back, and all 312 reproduce `crc32(struct name) == name_hash`. Rows are read
 //! into [`LevelGameData`] and sliced by a region's `game_data_start/count` or a
@@ -371,7 +371,7 @@ pub const HIBERNATE_CLUSTER_LEN: usize = 32;
 pub const HOBJECT_LEN: usize = 40;
 
 /// The `.level` builder's version word, which sits in the DAT1 header where a
-/// zone keeps its type id. It is the hash of the builder's version string, not
+/// zone keeps its type id. It is the hash of the authoring tool's version string, not
 /// a type id, so a future game patch can change it — hence a warning rather
 /// than a hard failure on mismatch.
 pub const LEVEL_BUILT_VERSION: u32 = 0x587B_60A6;
@@ -469,7 +469,7 @@ pub struct LevelNamedLink {
 }
 
 impl LevelNamedLink {
-    /// Whether `name_hash` is the engine CRC-32 of the resolved name string.
+    /// Whether `name_hash` is the game CRC-32 of the resolved name string.
     /// The name table stores an asset-style path for regions and zones, so it
     /// is worth checking what the hash is actually taken over before relying
     /// on it to look a link up by name.
@@ -488,7 +488,7 @@ impl LevelNamedLink {
 ///
 /// A row names a DDL struct and points at that struct's serialised instance.
 /// Regions and named links both slice this table with their own
-/// `game_data_start` / `game_data_count`. The engine looks a block up by
+/// `game_data_start` / `game_data_count`. The game looks a block up by
 /// `name_hash` alone, so the hash is the identity; the name string is there
 /// for tools.
 ///
@@ -520,7 +520,7 @@ pub struct HibernateSubContainer {
     pub radius: f32,
     pub cluster_offset: u32,
     pub cluster_count: u16,
-    /// Non-zero once the engine has rewritten the records into the packed
+    /// Non-zero once the game has rewritten the records into the packed
     /// runtime form. Zero in shipped data.
     pub optimized: u16,
     pub object_offset: u32,
@@ -1092,7 +1092,7 @@ impl LevelAsset {
             }
         }
 
-        // -1 is a real value, not a defect: the engine fills a region's
+        // -1 is a real value, not a defect: the game fills a region's
         // secondary zone list with 0xFF bytes and treats -1 as "this primary
         // zone has no low-LOD / shadow stand-in", so the secondary list stays
         // parallel to the primary one.
@@ -1532,8 +1532,8 @@ fn parse_hibernate(dat1: &Dat1, refs: &[ZoneHibernateRef]) -> Vec<ZoneHibernate>
 ///
 /// ```text
 ///   +0x00  u32 name string offset   -> DAT1 string pool
-///   +0x04  u32 name hash            what the engine looks a block up by
-///   +0x08  u32 payload offset       relative to the DAT1 block (the engine's file base)
+///   +0x04  u32 name hash            what the game looks a block up by
+///   +0x08  u32 payload offset       relative to the DAT1 block (the game's file base)
 ///   +0x0C  u32 payload size
 /// ```
 fn parse_game_data(dat1: &Dat1) -> Vec<LevelGameData> {

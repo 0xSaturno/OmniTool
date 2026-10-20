@@ -72,7 +72,7 @@
 //!   up — which is exactly what [`verify_grown`] re-checks.
 //!
 //! Nothing outside the zone has to change for the *reference list itself* to be
-//! correct: the id the loader looks up is in the row, and the TOC already knows
+//! correct: the id the game looks up is in the row, and the TOC already knows
 //! where that asset lives. The `dag` is a build-time artefact — see
 //! [`crate::core::dag`] — and is not rewritten by this module; see
 //! `bin/refs_probe dag` for the measurement of what it does and does not hold.

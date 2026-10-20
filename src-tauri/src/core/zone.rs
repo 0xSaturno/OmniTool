@@ -209,7 +209,7 @@ pub fn kind_name(kind: u8) -> &'static str {
 /// vfx entries, 3 944 of 7 853 splines and 109 of 221 impostors. Treat
 /// `is_placed` as meaningful for actors and kinds 0..2 only.
 ///
-/// Clearing the bit on a cloned id makes the engine treat the object as
+/// Clearing the bit on a cloned id makes the game treat the object as
 /// runtime-spawned, which is why editing ids is a trap.
 pub const PLACED_BIT: u64 = 1 << 63;
 
@@ -219,7 +219,7 @@ pub fn is_placed(uid: u64) -> bool {
 
 /// Bit names of the actor flag word, bit 0 first.
 ///
-/// Most of these are runtime state the engine sets after load. Over 113 046
+/// Most of these are runtime state the game sets after load. Over 113 046
 /// actor rows of 4 063 shipped zones **only bits 2 and 3 ever appear on disk**:
 ///
 /// ```text

@@ -156,7 +156,7 @@ pub struct TexInfo {
     /// and has six faces; see [`TexInfo::slices`].
     pub surfaces: u32,
     /// The raw format-flags word at `+0x12`, from which `dimension` and
-    /// `content_type` below are sliced. Kept whole because the engine treats it
+    /// `content_type` below are sliced. Kept whole because the game treats it
     /// as one bitfield (`kIs1D`/`kIs2D`/`kIs2DArray`/`kIs3D`/`kIsCube`,
     /// `kIsBaseMap`/`kIsNormalMap`/`kIsGlossMap`, `kIsIBL`, `kDisableStreaming`
     /// …) and this module only claims to have measured two of its fields.

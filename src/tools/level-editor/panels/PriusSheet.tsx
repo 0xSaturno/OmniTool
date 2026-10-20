@@ -84,7 +84,7 @@ export interface PriusSheetProps {
 /* ------------------------------------------------------------------ */
 
 /**
- * What to *call* the field. The schema type wins because the builder erased
+ * What to *call* the field. The schema type wins because the authoring tool erased
  * the interesting ones; the wire type is shown beside it when they differ so
  * the byte width is never hidden.
  */

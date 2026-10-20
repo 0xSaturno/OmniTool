@@ -88,7 +88,7 @@
 //! `DebugOnlyOutput`, …). A connection names a source node + source plug and a
 //! target node + target plug, all by tuid.
 //!
-//! Beside each plug array the builder *also* emits one field per element named
+//! Beside each plug array the authoring tool *also* emits one field per element named
 //! `"<plug> <i>"` (`"Inputs 0"`, `"SyncOutput 2"`, …) carrying the **same**
 //! `Id`, and often the same `Type`, as the array element. Measured: 637 such
 //! alias fields across the 60 graphs, 591 of them an exact id duplicate of a
@@ -99,7 +99,7 @@
 //! over 12 distinct port labels instead of the 25 the aliases produced — and no
 //! plug id occurs twice on one node. `ApproximatePlugCount` in the header counts
 //! the aliases too, so it totals 2,250 across the 60 and is an upper bound on
-//! the real port count, which is presumably why the builder calls it
+//! the real port count, which is presumably why the authoring tool calls it
 //! approximate: 191 real ports against a stated 298 on the mission graph.
 //!
 //! The array element is the one worth keeping for another reason: on a
@@ -482,7 +482,7 @@ pub struct Connection {
     pub target_plug: u64,
 }
 
-/// One row of `Node Graph Built Debug`: what an id was before the builder
+/// One row of `Node Graph Built Debug`: what an id was before the authoring tool
 /// flattened the graph.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IdMapping {
@@ -686,7 +686,7 @@ impl NodeGraph {
     ///
     /// 10 of the 802 shipped connections, in 2 of the 60 graphs, and none of
     /// them resolves in any other shipped graph either — they are edges to
-    /// deleted nodes that the builder kept. A UI should list these rather than
+    /// deleted nodes that the authoring tool kept. A UI should list these rather than
     /// let them vanish.
     pub fn stale_connections(&self) -> Vec<&Connection> {
         let by_id = self.node_index();
@@ -887,7 +887,7 @@ fn str_of(obj: &PObject, name: &str) -> Option<String> {
     }
 }
 
-/// Is this field one of the builder's `"<base> <i>"` per-element aliases, given
+/// Is this field one of the authoring tool's `"<base> <i>"` per-element aliases, given
 /// the set of field names the node actually has?
 ///
 /// The alias repeats an array element's `Id` verbatim and adds nothing, so it is

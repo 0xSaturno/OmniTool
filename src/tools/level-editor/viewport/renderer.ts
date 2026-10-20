@@ -180,7 +180,7 @@ function usesTexture(use: SlotTextures, id: string): boolean {
  * Submesh tables, keyed the same way meshes are.
  *
  * `decodeRcms` throws the submesh table away and `rcms.ts` is not this change's
- * to edit, so the loader is wrapped (see `setScene`) and the table read off the
+ * to edit, so the game is wrapped (see `setScene`) and the table read off the
  * raw buffer here. Module level, because `MeshQueue`'s geometry cache can hand
  * back a geometry whose buffer this process already consumed and will not fetch
  * again. 16 bytes per submesh, so a whole planet's tables are well under a
@@ -662,7 +662,7 @@ export class LevelRenderer {
     // the block-2 meshes, which are one object each and therefore cheaper to
     // wait for.
     //
-    // The loader is wrapped so the RCMS submesh table is kept as the buffer
+    // The game is wrapped so the RCMS submesh table is kept as the buffer
     // goes past: `decodeRcms` discards it, and it is what turns submeshes into
     // geometry groups (see `submeshTables`).
     const withSubmeshes: MeshLoader = async (key) => {

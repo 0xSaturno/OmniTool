@@ -78,7 +78,7 @@ fn shipped_with_suffix(idx: &LevelIndex, suffix: &str) -> Vec<(u64, String)> {
     out
 }
 
-/// Resolve an asset by path the way the loader does, then extract it.
+/// Resolve an asset by path the way the game does, then extract it.
 fn extract_by_path(idx: &LevelIndex, path: &str) -> Result<(u64, Vec<u8>)> {
     let norm = crate::core::crc64::normalize_path(path);
     let id = crate::core::crc64::hash_raw(norm.as_bytes());
@@ -201,7 +201,7 @@ pub struct NodeGraphDto {
     pub path: String,
     pub graph_type: String,
     pub graph_type_hash: String,
-    /// The header's own plug count. It counts the builder's per-element alias
+    /// The header's own plug count. It counts the authoring tool's per-element alias
     /// fields, so it is an upper bound on `plugs`.
     pub approximate_plug_count: u64,
     /// Real ports, after the aliases are dropped.

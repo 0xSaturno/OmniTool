@@ -25,7 +25,7 @@
 //!
 //! The asset-id block is not a plain `u64[]`. It is stored as eight planes of
 //! `count` bytes each — every id's byte 0, then every id's byte 1, and so on —
-//! which makes the block compress far better, and which the loader undoes in
+//! which makes the block compress far better, and which the game undoes in
 //! one pass. So
 //!
 //! ```text
@@ -50,7 +50,7 @@
 //! * [`Dag::deps`] / [`Dag::lc_deps`] report the unconditional edges and the
 //!   conditional ones separately, which is what `bin/dag_check` audits (every
 //!   slot of the link array is claimed exactly once that way); and
-//! * [`Dag::direct_dependencies`] / [`Dag::dependencies`] follow the engine and
+//! * [`Dag::direct_dependencies`] / [`Dag::dependencies`] follow the game and
 //!   walk *through* the indirection for one condition, or the union of all of
 //!   them, which is what the asset-reference and extraction commands want.
 //!
@@ -470,7 +470,7 @@ impl Dag {
         self.lc_link_heads.get(base..base + LC_GROUP)
     }
 
-    /// Walk one asset's links the way the engine does for a single lighting
+    /// Walk one asset's links the way the game does for a single lighting
     /// condition: node indices as they come, following an LC marker into that
     /// condition's continuation.
     fn for_each_link(&self, index: usize, lc: LightingCondition, f: &mut impl FnMut(usize)) {

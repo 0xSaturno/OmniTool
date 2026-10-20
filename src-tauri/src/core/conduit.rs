@@ -33,7 +33,7 @@
 //! refs section; on 19 of those every response really is a pure value edit
 //! (`kConstant` / `kMaterial`) that names no external asset, so "value-only
 //! conduits need no ref table" is the *tendency*, not a rule — the other 5 have
-//! `kVFX` or `kSound` responses whose constants name assets that the builder
+//! `kVFX` or `kSound` responses whose constants name assets that the authoring tool
 //! did not list.
 //!
 //! `Conduit Built` is one DDL object — `EffectConduitMapping` — and is read by
@@ -41,12 +41,12 @@
 //! own DAT1 string pool, so nothing here depends on an external name list.
 //! `Conduit Asset Refs` is the ordinary 16-byte-per-entry asset-reference table
 //! ([`ddl::parse_asset_refs`]). Wwise sound-event references are interleaved
-//! into the same table by the builder, under their own type tag — see
+//! into the same table by the authoring tool, under their own type tag — see
 //! [`ConduitRef`].
 //!
 //! The two other root fields are small and both constant across the build:
 //! `BuiltValueStackSize` is 8 on all 1,070, and `AssetId64` is **0 on all
-//! 1,070** (the builder narrows it to a one-byte zero). It is *not* the asset's
+//! 1,070** (the authoring tool narrows it to a one-byte zero). It is *not* the asset's
 //! own id — that matched 0 of 1,070 — so nothing should be keyed off it.
 //!
 //! # Object model
@@ -528,7 +528,7 @@ pub const REF_TAG_MATERIAL: u32 = 0xB5AA_FACC;
 
 /// One row of the `Conduit Asset Refs` table.
 ///
-/// The builder writes file references and Wwise sound-event references into
+/// The authoring tool writes file references and Wwise sound-event references into
 /// the *same* table, so a row is not necessarily a file: see
 /// [`Self::is_wwise_event`].
 ///
@@ -549,7 +549,7 @@ pub struct ConduitRef {
 impl ConduitRef {
     /// A Wwise event row rather than a file row, decided by the row's own type
     /// tag. The "no dot in the path" heuristic this used to use agrees on
-    /// 3,623 of 3,623 rows, but the tag is what the loader reads, so the tag is
+    /// 3,623 of 3,623 rows, but the tag is what the game reads, so the tag is
     /// what is trusted here.
     pub fn is_wwise_event(&self) -> bool {
         self.type_id == REF_TAG_WWISE_EVENT
@@ -768,7 +768,7 @@ fn bool_of(obj: &PObject, name: &str) -> bool {
     )
 }
 
-/// The builder narrows every integer to the smallest lossless type, so a field
+/// The authoring tool narrows every integer to the smallest lossless type, so a field
 /// declared `uint32` can arrive as `U8`. Read whatever width it used.
 fn uint_of(obj: &PObject, name: &str) -> Option<u64> {
     Some(match obj.field_named(name)?.values.first()? {
@@ -848,7 +848,7 @@ fn read_mapping(obj: &PObject) -> Mapping {
 mod tests {
     use super::*;
 
-    /// The two section tags are the Insomniac crc32 of the builder's buffer
+    /// The two section tags are the Insomniac crc32 of the authoring tool's buffer
     /// names, not magic numbers.
     #[test]
     fn section_tags_are_crc32_of_their_names() {
@@ -859,7 +859,7 @@ mod tests {
     /// The map-key law, on a row read straight out of
     /// `emp_nef_finale_telekinesis_object.conduit`: the event is
     /// `BotTelekinesisStartedEvent`, its name hash is `0x13A5AE65` = 329625189,
-    /// the string the builder put in the pool at the map entry is `"329625189"`,
+    /// the string the authoring tool put in the pool at the map entry is `"329625189"`,
     /// and the DDL field id is `0xA8AEFD06`.
     #[test]
     fn events_map_key_is_crc32_of_the_decimal_name_hash() {

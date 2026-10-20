@@ -21,7 +21,7 @@
 //!   0x2300D240  Zone Script Priuses        DDL blob store, one blob per node
 //! ```
 //!
-//! `Zone Script Hashes` (`0xD266157E`) exists in the engine's section-tag list
+//! `Zone Script Hashes` (`0xD266157E`) exists in the game's section-tag list
 //! but ships in **0 of 9 046** zones, so `Zone Script String Hashes` is the
 //! a parallel array of hashes. Measured: its length equals
 //! `Zone Script Strings`' length in 973 of 973 scripted zones, and
@@ -140,7 +140,7 @@
 //!
 //! Measured over all 247 073 nodes:
 //!
-//! * every node's `uid` has bit 63 set (247 073 / 247 073) — the engine's
+//! * every node's `uid` has bit 63 set (247 073 / 247 073) — the game's
 //!   the placed bit, so every script node counts as authored-in-place;
 //! * `template_id` has bit 63 on only 127 058 (51.4 %);
 //! * `uid == template_id` on 30 523 (12.35 %), `uid == template_id ^ (1 << 63)` on
@@ -176,7 +176,7 @@ pub const TAG_SCRIPT_STRINGS: u32 = 0xEF86_37D5;
 pub const TAG_SCRIPT_STRING_HASHES: u32 = 0x80D2_9828;
 /// 32-byte `ScriptVarBuilt` rows.
 pub const TAG_SCRIPT_VARS: u32 = 0xD86A_7934;
-/// In the engine's section-tag list but absent from every shipped zone.
+/// In the game's section-tag list but absent from every shipped zone.
 pub const TAG_SCRIPT_HASHES: u32 = 0xD266_157E;
 
 pub const ACTION_ROW: usize = 40;
@@ -273,7 +273,7 @@ pub enum VarValue {
         actor_index: Option<u16>,
         /// `Zone Actor Groups` row index, or `None`.
         group_index: Option<u16>,
-        /// Fallback uid the engine resolves by search when both indices are -1.
+        /// Fallback uid the game resolves by search when both indices are -1.
         #[serde(serialize_with = "ser_u64_str")]
         uid: u64,
         /// The actor or group name those indices resolve to in this zone.

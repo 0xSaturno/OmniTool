@@ -16,7 +16,7 @@
 //! instance stores the same `{offset, size, hash}` shape but its offsets are
 //! packed, which is why the two tables are parsed by different modules.
 //!
-//! Only the hashes ship. The builder names a slot
+//! Only the hashes ship. The authoring tool names a slot
 //! `"<node variable name>_<port internal name>"` with spaces turned into
 //! underscores and then CRC32s it, and neither string survives into the built
 //! file, so a name can only be recovered by hashing a candidate.

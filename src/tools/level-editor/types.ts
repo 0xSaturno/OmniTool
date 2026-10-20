@@ -628,7 +628,7 @@ export interface PriusFieldView {
   /** The type the BLOB stores. This is what bounds an edit. */
   type: PriusTypeName;
   /**
-   * The type the SCHEMA declares, present only when it differs. The builder
+   * The type the SCHEMA declares, present only when it differs. The authoring tool
    * erases `select`/`bitfield`/`file` into a plain `string` and narrows floats
    * into the smallest lossless integer, so this is the only way to know a text
    * field is really a dropdown or a path — label with this, read with `type`.
@@ -987,7 +987,7 @@ export interface ZoneLightingDto {
   notes: string[];
 }
 
-/** The light types, indexed by the engine's type id. */
+/** The light types, indexed by the game's type id. */
 export const LIGHT_TYPE_NAMES = [
   "point",
   "spot",
@@ -1022,7 +1022,7 @@ export interface AtmosphereLightingDto {
   /** Stored linear, normalised so one channel is 1.0. */
   keyLightColor: Vec3;
   keyLightIntensity: number;
-  /** `keyLightColor` rescaled to `keyLightIntensity` luminance — what the engine uses. */
+  /** `keyLightColor` rescaled to `keyLightIntensity` luminance — what the game uses. */
   keyLightLinear: Vec3;
   keyLightAzimuthDeg: number;
   keyLightElevationDeg: number;

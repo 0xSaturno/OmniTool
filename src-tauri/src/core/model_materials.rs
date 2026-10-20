@@ -287,7 +287,7 @@ mod rgb_blend {
     ///     had each of those two layers reading the *other* layer's texture,
     ///     tiling and normal intensity under its own name.
     ///
-    /// The tint constants stand as they were: the builder hashes
+    /// The tint constants stand as they were: the authoring tool hashes
     /// `"<node variable>_<port>"`, and these twelve are exactly
     /// `"{Base,Red,Green,Blue}_HSL_{Hue,Saturation,Luminance}"`. Twelve
     /// simultaneous hits forming one naming scheme is not coincidence, and the

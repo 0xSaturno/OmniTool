@@ -311,7 +311,7 @@ impl PValue {
 #[serde(rename_all = "snake_case")]
 pub enum Edit {
     /// Fixed-width number or bool. Safe to offer as a spin box / checkbox --
-    /// but only inside [`PField::numeric_bounds`], because the builder stores a
+    /// but only inside [`PField::numeric_bounds`], because the authoring tool stores a
     /// field in the **narrowest type that represents the authored value**, not
     /// in the type the schema declares.
     ///
@@ -1176,7 +1176,7 @@ pub fn numeric_bounds_of(ddl_type: u8) -> Option<(f64, f64, bool)> {
 }
 
 /// Coerce a number into the type a blob slot actually stores, or explain why it
-/// does not fit. This is the gate in front of every numeric edit: the builder
+/// does not fit. This is the gate in front of every numeric edit: the authoring tool
 /// narrowed the field, so the slot - not the schema - decides.
 pub fn coerce_number(ddl_type: u8, x: f64) -> Result<PValue> {
     let Some((lo, hi, integral)) = numeric_bounds_of(ddl_type) else {

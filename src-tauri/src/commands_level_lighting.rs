@@ -59,7 +59,7 @@ pub struct ZoneLightingDto {
     pub zone_path: String,
     /// Every kind-1 scene object, decoded into renderer units.
     pub lights: Vec<zl::ZoneLight>,
-    /// Count per light type, indexed by the engine's type id.
+    /// Count per light type, indexed by the game's type id.
     pub type_counts: [u32; 6],
     pub shadow_casters: u32,
     /// Lights excluded under at least one lighting condition.
@@ -95,7 +95,7 @@ pub struct AtmosphereLightingDto {
     /// The authored intensity, which the runtime forces the colour's luminance to.
     pub key_light_intensity: f32,
     /// `key_light_color` rescaled so its luminance equals `key_light_intensity` —
-    /// what the engine actually multiplies into the G-buffer.
+    /// what the game actually multiplies into the G-buffer.
     pub key_light_linear: [f32; 3],
     pub key_light_azimuth_deg: f32,
     pub key_light_elevation_deg: f32,
@@ -183,7 +183,7 @@ fn refs_of(
 /// Everything needed to light one zone.
 ///
 /// `condition` selects which `LightingConditions` row the per-condition asset
-/// lists are resolved for (0 = day, the engine's default); the light list always
+/// lists are resolved for (0 = day, the game's default); the light list always
 /// carries every light with its own condition mask, so a viewer can filter
 /// client-side without another round trip.
 #[tauri::command]
@@ -379,7 +379,7 @@ const TAG_ATMOSPHERE_STRINGS: u32 = 0x72F2_8658;
 /// The key-light block occupies +112..+184 of that block.
 const KEYLIGHT_END: usize = 184;
 
-/// The engine's `sSunAzimuthElevationToDirection`: the direction the key light
+/// The game's `sSunAzimuthElevationToDirection`: the direction the key light
 /// travels, Y up. Elevation is negated on both axes, so a positive elevation
 /// points the light downward.
 fn sun_direction(azimuth_deg: f32, elevation_deg: f32) -> [f32; 3] {
