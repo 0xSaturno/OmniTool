@@ -198,6 +198,9 @@ export interface ZoneSaveResult {
   assetPath: string;
   bytesWritten: number;
   projectFile: string;
+  /** Havok collision pieces moved along with their models. */
+  collisionPieces: number;
+  warnings: string[];
 }
 
 // ---------------------------------------------------------------------------

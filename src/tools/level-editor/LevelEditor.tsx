@@ -1114,10 +1114,12 @@ export default function LevelEditor() {
       for (const [zonePath, edits] of pendingByZone) {
         const res = await api.saveZone(gameDir, zonePath, selectedProject, edits);
         saved.push(zonePath);
+        const collision = res.collisionPieces > 0 ? `, ${res.collisionPieces} collision piece(s) moved` : "";
         pushLog(
           "success",
-          `${res.assetPath} — ${edits.length} edit${edits.length === 1 ? "" : "s"}, ${res.bytesWritten.toLocaleString()} bytes → ${res.projectFile}`,
+          `${res.assetPath} — ${edits.length} edit${edits.length === 1 ? "" : "s"}${collision}, ${res.bytesWritten.toLocaleString()} bytes → ${res.projectFile}`,
         );
+        for (const w of res.warnings) pushLog("warning", `${res.assetPath} — ${w}`);
       }
       // Show what is now on disk before dropping the edits, so nothing snaps back.
       await reloadZones(saved);

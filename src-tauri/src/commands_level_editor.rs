@@ -128,6 +128,9 @@ pub struct SaveResult {
     pub asset_path: String,
     pub bytes_written: usize,
     pub project_file: String,
+    /// Havok collision pieces moved along with their models.
+    pub collision_pieces: usize,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -473,6 +476,13 @@ pub async fn level_save_zone(
     // Start from the project's copy so earlier saves and other tools' edits survive.
     let (path, _, mut zone, _) = load_zone(&idx, &zone_path, Some(project_name.as_str()))?;
 
+    // Collision is matched by placement, so a placement several models share is ambiguous.
+    let mut placements: HashMap<[u32; 16], usize> = HashMap::new();
+    for o in zone.scene_objects.iter().filter(|o| o.kind == 0) {
+        *placements.entry(o.matrix.map(f32::to_bits)).or_insert(0) += 1;
+    }
+    let mut moved_models = Vec::new();
+
     for e in &edits {
         if let Some(m) = &e.matrix {
             if m.len() != 16 {
@@ -484,12 +494,17 @@ pub async fn level_save_zone(
             }
             let mut arr = [0f32; 16];
             arr.copy_from_slice(m);
+            let before = zone.find(e.offset).filter(|o| o.kind == 0).map(|o| o.matrix);
             zone.set_matrix(e.offset, arr)?;
+            if let Some(old) = before.filter(|old| *old != arr) {
+                moved_models.push((old, arr));
+            }
         }
         if let Some(s) = e.scale {
             zone.set_scale(e.offset, s)?;
         }
     }
+    let (collision_pieces, warnings) = move_collision(&mut zone, &moved_models, &placements);
 
     let project_dir = crate::core::filesystem::projects_dir()?.join(&project_name);
     if !project_dir.join("info.json").exists() {
@@ -520,7 +535,45 @@ pub async fn level_save_zone(
         asset_path: path,
         bytes_written: bytes.len(),
         project_file: out_path.to_string_lossy().into_owned(),
+        collision_pieces,
+        warnings,
     })
+}
+
+/// Carry each moved model's baked collision along (docs/ZONE_FORMAT.md "Static collision").
+/// When anything doesn't check out, the tail is left exactly as it was and a warning says why.
+fn move_collision(
+    zone: &mut Zone,
+    moves: &[([f32; 16], [f32; 16])],
+    placements: &HashMap<[u32; 16], usize>,
+) -> (usize, Vec<String>) {
+    if moves.is_empty() {
+        return (0, Vec::new());
+    }
+    let col = match crate::core::havok::ZoneCollision::parse(&zone.tail) {
+        Ok(Some(c)) => c,
+        Ok(None) => return (0, Vec::new()),
+        Err(e) => return (0, vec![format!("collision not moved: {e}")]),
+    };
+    let original = zone.tail.clone();
+    let mut pieces = 0;
+    let mut warnings = Vec::new();
+    for (old, new) in moves {
+        let at = format!("model at ({:.2}, {:.2}, {:.2})", old[12], old[13], old[14]);
+        if placements.get(&old.map(f32::to_bits)).copied().unwrap_or(0) > 1 {
+            warnings.push(format!("{at}: collision not moved, another model has the same placement"));
+            continue;
+        }
+        match col.move_with(&mut zone.tail, old, new) {
+            Ok(n) => pieces += n,
+            Err(e) => warnings.push(format!("{at}: collision not moved ({e})")),
+        }
+    }
+    if let Err(e) = col.verify(&zone.tail) {
+        zone.tail = original;
+        return (0, vec![format!("collision left in place, the refit failed its check: {e}")]);
+    }
+    (pieces, warnings)
 }
 
 /// Headline counts for the tool's landing screen.

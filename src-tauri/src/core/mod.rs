@@ -10,6 +10,7 @@ pub mod dat1;
 pub mod ddl;
 pub mod ddl_schema;
 pub mod error;
+pub mod havok;
 pub mod level;
 pub mod level_asset;
 pub mod material;
