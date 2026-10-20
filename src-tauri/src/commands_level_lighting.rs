@@ -376,6 +376,7 @@ const ATMOSPHERE_WRAPPER_LEN: usize = 36;
 /// atmospheres the PC build actually stores.
 const TAG_ATMOSPHERE_HEADER: u32 = 0x02F0_6D4E;
 const TAG_ATMOSPHERE_STRINGS: u32 = 0x72F2_8658;
+/// The key-light block occupies +112..+184 of that block.
 const KEYLIGHT_END: usize = 184;
 
 /// The engine's `sSunAzimuthElevationToDirection`: the direction the key light
