@@ -3,9 +3,17 @@ name = "omnitool"
 version = "0.9.0"
 edition = "2021"
 default-run = "OmniTool"
+# Every `src/bin/*.rs` must be declared below. Without this, cargo discovers
+# them itself and an undeclared one joins the default build -- which is how
+# three of them were escaping the `dev-tools` gate.
+autobins = false
 
 [features]
 dev-tools = []
+# Lets `nav_probe cmd` drive the `level_nav_*` Tauri commands. Off by default
+# because it needs `pub mod commands_level_nav;` in lib.rs, and the default build
+# must stay green before that line lands.
+nav-commands = []
 
 [lib]
 name = "omnitool_lib"
@@ -14,6 +22,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "OmniTool"
 path = "src/main.rs"
+
+[[bin]]
+name = "e2e_check"
+path = "src/bin/e2e_check.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "diag"
@@ -197,3 +210,4 @@ lto          = true
 codegen-units = 1
 panic        = "abort"
 strip        = true
+

@@ -9,6 +9,7 @@ export const SEND_TO_ROUTES: Record<string, { label: string; route: string }[]> 
     { label: "Material Remapper", route: "/tools/material-remapper" },
   ],
   material: [{ label: "Material Editor", route: "/tools/material-editor" }],
+  zone: [{ label: "Level Editor", route: "/tools/level-editor" }],
   atmosphere: [{ label: "Atmosphere Editor", route: "/tools/atmosphere-editor" }],
   soundbank: [
     { label: "Wwise Soundbank Patcher", route: "/tools/wwise-patcher" },

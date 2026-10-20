@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { LuPackagePlus, LuMusic, LuFileAudio, LuSwords } from "react-icons/lu";
 import { RiArchiveStackLine, RiCloudyLine } from "react-icons/ri";
-import { TbHexagon3D, TbListSearch } from "react-icons/tb";
+import { TbHexagon3D, TbListSearch, TbMap2 } from "react-icons/tb";
 import { MdTexture, MdOutlinePalette } from "react-icons/md";
 import { PiImageSquareBold } from "react-icons/pi";
 import { VscJson } from "react-icons/vsc";
@@ -33,6 +33,17 @@ export const TOOLS: ToolDefinition[] = [
     path: "/tools/stager",
     icon: <LuPackagePlus />,
     category: "asset",
+  },
+  {
+    id: "level-editor",
+    label: "Level Editor",
+    description: "View and edit level geometry and gameplay entities",
+    path: "/tools/level-editor",
+    icon: <TbMap2 />,
+    category: "asset",
+    // Dev-only like the Arena Editor, so merging this cannot change a release
+    // build's UI. Drop the flag to ship it.
+    devOnly: true,
   },
   {
     id: "model-converter",

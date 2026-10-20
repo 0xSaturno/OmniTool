@@ -1,3 +1,4 @@
+pub mod command_guard;
 pub mod core;
 pub mod tools;
 pub mod commands;
@@ -5,6 +6,13 @@ pub mod commands_arena;
 pub mod commands_arena_graph;
 pub mod commands_model_inspector;
 pub mod commands_rivet;
+pub mod commands_level_editor;
+pub mod commands_level_entities;
+pub mod commands_level_graphs;
+pub mod commands_level_lighting;
+pub mod commands_level_prius;
+pub mod commands_level_script;
+pub mod commands_level_world;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -90,6 +98,50 @@ pub fn run() {
             commands_rivet::read_rivet_config,
             commands_rivet::write_rivet_config,
             commands_rivet::install_rivet_mod,
+            // --- Level Editor: zones, models, textures, save ---
+            commands_level_editor::level_list_planets,
+            commands_level_editor::level_list_zones,
+            commands_level_editor::level_load_zone,
+            commands_level_editor::level_model_mesh,
+            commands_level_editor::level_zone_geometry,
+            commands_level_editor::level_model_materials,
+            commands_level_editor::level_texture,
+            commands_level_editor::level_save_zone,
+            commands_level_editor::level_zone_stats,
+            commands_level_entities::level_zone_entities,
+            commands_level_entities::level_zone_paths,
+            commands_level_entities::level_nav_info,
+            commands_level_entities::level_nav_mesh,
+            commands_level_entities::level_nav_tiles,
+            // --- Level Editor: lighting ---
+            commands_level_lighting::level_zone_lighting,
+            commands_level_lighting::level_atmosphere_lighting,
+            commands_level_lighting::level_lighting_conditions,
+            // --- Level Editor: prius property sheets ---
+            commands_level_prius::prius_schema_status,
+            commands_level_prius::prius_load_schema,
+            commands_level_prius::prius_zone_summary,
+            commands_level_prius::prius_actor_sheet,
+            commands_level_prius::prius_script_sheet,
+            commands_level_prius::prius_plan_edit,
+            // --- Level Editor: script graph ---
+            commands_level_script::level_zone_script_graph,
+            commands_level_script::level_zone_script_dump,
+            commands_level_script::level_zone_script_node,
+            // --- Level Editor: navigation ---
+            // --- Level Editor: node graphs and conduits ---
+            commands_level_graphs::level_list_graphs,
+            commands_level_graphs::level_nodegraph,
+            commands_level_graphs::level_nodegraph_node,
+            commands_level_graphs::level_nodegraph_outline,
+            commands_level_graphs::level_list_conduits,
+            commands_level_graphs::level_conduit,
+            commands_level_graphs::level_conduit_search,
+            // --- Level Editor: world / region / hibernate ---
+            commands_level_world::world_open_level,
+            commands_level_world::world_region_data,
+            commands_level_world::world_zone_hibernate,
+            commands_level_world::world_hibernate_ghost,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

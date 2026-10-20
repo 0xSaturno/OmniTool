@@ -4,6 +4,7 @@ import Home from "./pages/Home";
 import ModelConverter from "./tools/model-converter/ModelConverter";
 import ModelInspector from "./tools/model-inspector/ModelInspector";
 import AssetBrowser from "./tools/asset-browser/AssetBrowser";
+import LevelEditor from "./tools/level-editor/LevelEditor";
 import MaterialRemapper from "./tools/material-remapper/MaterialRemapper";
 import MaterialEditor from "./tools/material-editor/MaterialEditor";
 import Stager from "./tools/stager/Stager";
@@ -24,6 +25,7 @@ const TOOL_PATHS = [
   "/tools/material-remapper",
   "/tools/material-editor",
   "/tools/asset-browser",
+  "/tools/level-editor",
   "/tools/texture-converter",
   "/tools/stager",
   "/tools/config-editor",
@@ -64,6 +66,9 @@ export default function App() {
           </div>
           <div style={{ display: show("/tools/asset-browser", pathname) }}>
             <AssetBrowser />
+          </div>
+          <div style={{ display: show("/tools/level-editor", pathname) }}>
+            <LevelEditor />
           </div>
           <div style={{ display: show("/tools/texture-converter", pathname) }}>
             <TextureConverter />
