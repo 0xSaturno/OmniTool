@@ -16,7 +16,6 @@ pub mod material;
 pub mod material_graph;
 pub mod material_names;
 pub mod model_materials;
-pub mod nav;
 pub mod nodegraph;
 pub mod prius;
 pub mod filesystem;

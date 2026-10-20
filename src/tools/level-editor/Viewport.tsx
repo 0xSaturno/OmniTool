@@ -37,7 +37,7 @@ export interface ViewportProps {
   /**
    * Material tables and texture bytes. Defaults to the Tauri-backed source for
    * the game directory the shell last built a mesh loader for, so the shell
-   * needs no new prop; pass one explicitly to mock or disable texturing.
+   * needs no new prop; pass one explicitly to override or disable texturing.
    */
   textureSource?: TextureSource | null;
   /** Selected scene-object offsets. */
@@ -113,7 +113,7 @@ export default function Viewport(props: ViewportProps) {
   const { scene, meshLoader, selection, onSelect, onTransform, showEntities, showGeometry, wireframe } = props;
 
   // `undefined` means "use the default source"; an explicit `null` disables
-  // texturing (the mock source and the tests pass null). `meshLoader` is in the
+  // texturing. `meshLoader` is in the
   // deps because the shell rebuilds it exactly when the game directory changes,
   // which is also when the default source has to be rebound.
   const textureSource = useMemo(

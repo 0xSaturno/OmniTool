@@ -490,7 +490,8 @@ pub async fn world_hibernate_ghost(
 }
 
 /// Which region-data struct types this build knows how to decode, for a UI that
-/// wants to say so. The eighth possibility, `Other`, means a struct the shipped
+/// wants to say so. The eighth possibility, `Other`, means a struct this build
+/// has no description for — the block is still returned with its fields.
 pub fn known_region_data_types() -> Vec<&'static str> {
     vec![
         RegionDataKind::Planet.label(),

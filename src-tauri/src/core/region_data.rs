@@ -27,6 +27,7 @@
 //! its value**, not in the type the schema declares. In the shipped level the
 //! same field id `0x5E33418D` (`X` of a map corner) arrives as `UInt8` in one
 //! block and `UInt16` in another, and `PerfSpecRegionData.ImpostorDrawDistance`
+//! — a float according to the type database — ships as `UInt16 1000`. A reader that
 //! matches on the declared type reads nothing, so everything here goes through
 //! [`as_f64`] / [`as_str`].
 //!
@@ -283,7 +284,8 @@ fn get_vec3(obj: &DdlObject, id: u32) -> Option<[f32; 3]> {
 // ---------------------------------------------------------------------------
 
 /// The region-data struct types a shipped Rift Apart level uses. `Other` keeps
-/// codebase is partial, so a name this build has never seen is expected.
+/// an unknown struct visible rather than dropping it — the list below is not
+/// exhaustive, so a name this build has never seen is expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum RegionDataKind {
     Planet,

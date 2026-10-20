@@ -399,7 +399,8 @@ impl Response {
             || matches!(self.payload("FollowActor"), Some(v) if v != "0")
     }
 
-    /// in the file: `(StartDelay, FadeIn, FadeOut, MaxInstances)`.
+    /// The timing / instancing knobs, as they appear in the file:
+    /// `(StartDelay, FadeIn, FadeOut, MaxInstances)`.
     ///
     /// Each is a constant when present and `None` when the response leaves the
     /// effect's own default alone. Counts over shipped `kVFX`: `StartDelay` 93,

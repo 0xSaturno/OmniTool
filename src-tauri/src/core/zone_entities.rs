@@ -7,11 +7,12 @@
 //! Every scene-object entry in `Zone Scene Objects` starts with the same
 //! 0x80-byte base header (`crate::core::zone`), and each kind appends its own
 //! fields after it. The offsets below were read off the shipped PC build and
+//! cross-checked across zones; the per-field evidence is
 //! in the doc comment of each struct. Nothing here allocates unless the caller
 //! asks for a specific entity, so a zone list stays cheap.
 //!
-//! The base header, for reference (all VERIFIED on the shipped build, and the
-//! exact field order the engine writes):
+//! The base header, for reference (all VERIFIED on the shipped build, in the
+//! order the fields appear on disk):
 //!
 //! ```text
 //!   +0x00 f32[16] object-to-world, row-major (row 3 = translation)
@@ -152,6 +153,7 @@ fn base_extents(s: &[u8], b: usize) -> [f32; 3] {
 // Volumes (kind 2)
 // ---------------------------------------------------------------------------
 
+/// The volume shape, a single byte in the volume entry.
 pub const VOLUME_SHAPES: [&str; 5] = ["Point", "Cuboid", "Ellipsoid", "Cylinder", "Capsule"];
 
 pub fn volume_shape_name(shape: u8) -> &'static str {
@@ -417,6 +419,7 @@ pub fn volumes(zone: &Zone) -> Vec<VolumeEntity> {
 // Curves / splines / paths (kind 4)
 // ---------------------------------------------------------------------------
 
+/// The spline type index. 0, 2 and 3 are pinned by compile-time asserts in the
 /// engine; 1 is the remaining interpolation mode. Measured over all 8 758 shipped
 /// curves: 7 241 Centripetal, 977 type 1, 489 Linear, 48 CatmullRom and 3 whose
 /// type byte is outside 0..=3 at all, which [`spline_type_name`] reports as `?`.
@@ -426,8 +429,10 @@ pub fn spline_type_name(t: i8) -> &'static str {
     SPLINE_TYPES.get(t as usize).copied().unwrap_or("?")
 }
 
+/// The looping flag.
 pub const SPLINE_LOOPING: u8 = 1 << 0;
 
+/// One kind-4 scene entry: an authored path.
 ///
 /// ```text
 ///   +0x80 f32[4] curve bounding sphere in object space
@@ -457,6 +462,8 @@ pub const SPLINE_LOOPING: u8 = 1 << 0;
 /// `points` at exactly 0xB4 with every following array starting exactly where the
 /// previous one ends, so the whole entry is accounted for; the other 82 are empty
 /// curves whose entry is exactly 0xB4 bytes with every offset 0xFFFF — which is
+/// also the independent proof that the fixed part of the entry is 0xB4
+/// bytes. Nothing else
 /// fails: 0 of 8 758 are unexplained.
 ///
 /// The stored `segment_lengths` are real arc lengths: on all 435 `Linear` curves
@@ -529,6 +536,7 @@ pub fn curves(zone: &Zone) -> Vec<CurveEntity> {
         let sflags = s[b + 0xAE];
         let stype = s[b + 0xAF] as i8;
 
+        // The array order on disk.
         let exp_p = 0xB4usize;
         let exp_n = exp_p + pc * 12;
         let exp_c = exp_n + pc * 12;
@@ -613,6 +621,7 @@ pub fn curves(zone: &Zone) -> Vec<CurveEntity> {
 /// ```
 ///
 /// The asset index is the field `Zone::UpdateVisualEffectInstantiation` reads as
+/// an asset index to pick the effect out of the zone's own effect array; the top
 /// byte is a separate field because every instance measured has bytes +0x9D and
 /// +0x9E zero while the largest index in the whole game is 22.
 #[derive(Debug, Clone, Serialize)]
@@ -753,6 +762,7 @@ pub const DECAL_FLAG_NAMES: [&str; 6] = [
 /// is exactly 0x2C0 bytes, and on 16 386 of 16 386 the inline path is
 /// NUL-terminated inside its 512-byte field *and* carries the extension its asset
 /// type implies — 16 384 read type 2 with a `.material` path and 2 read type 3
+/// with a `.texture` path, which is the numbering used on disk. All 16 386 set the
 /// `Mesh` flag and have an all-ones AV material mask; 5 313 also set
 /// `AllowBVHBuffer`; 14 548 own a geometry row and 1 838 project no mesh. Fade
 /// distance spans 25..1000 m, lod 15..150 m and the projection limit 0..0.9.
@@ -848,6 +858,7 @@ pub fn decals(zone: &Zone) -> Vec<DecalEntity> {
 /// agree exactly on every tile measured.
 pub const NAV_POS_BIAS: i32 = 32768;
 
+/// Section `Zone Nav Built Container`.
 ///
 /// ```text
 ///   +0x00 u32 magic (the engine's built-nav version hash)
@@ -925,6 +936,7 @@ pub fn nav_container(zone: &Zone) -> Option<NavContainer> {
     })
 }
 
+/// One row of a unit's group grid, 48 bytes.
 ///
 /// ```text
 ///   +0x00 u16 nav-local x in metres + NAV_POS_BIAS
@@ -984,6 +996,7 @@ pub struct NavGroup {
     pub plain: bool,
 }
 
+/// Section `Zone Nav Built Unit`: the walkable mesh of one tile of
 /// the world, as a triangle soup per group per layer.
 ///
 /// ```text
@@ -992,6 +1005,7 @@ pub struct NavGroup {
 ///   +0x0C u64 the container zone's asset id
 ///   +0x14 i16 group grid min x, +0x16 min z, +0x18 max x, +0x1A max z
 ///   +0x1C i16 log2 of the group (tile) size in metres
+///   +0x20 group grid[layer_count * (max_x-min_x) * (max_z-min_z)]
 ///         then every non-empty group's vertex and polygon arrays
 /// ```
 ///
@@ -1175,6 +1189,7 @@ pub fn nav_mesh(zone: &Zone, unit: &NavUnit, layer: Option<usize>) -> NavMesh {
 /// The header itself is stock Recast/Detour: magic `'DTLR'`, version 1, the
 /// tile's (tx, ty, layer), the tile's world AABB as floats, a quantised height
 /// range and the 128x128 cell grid's used sub-rectangle. The payload after it is
+/// compressed with a tile-cache compressor and is *not* decoded
 /// here; the header alone already gives a viewer the exact footprint and height
 /// span of every navigation tile.
 #[derive(Debug, Clone, Serialize)]

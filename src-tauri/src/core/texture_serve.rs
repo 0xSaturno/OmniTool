@@ -151,8 +151,11 @@ pub struct TexInfo {
     /// Size of the first resident mip.
     pub sd_w: u32,
     pub sd_h: u32,
+    /// Array slices: the depth-or-array-size the GPU resource is created
+    /// with. A cube map stores 1 here
     /// and has six faces; see [`TexInfo::slices`].
     pub surfaces: u32,
+    /// The raw format-flags word at `+0x12`, from which `dimension` and
     /// `content_type` below are sliced. Kept whole because the engine treats it
     /// as one bitfield (`kIs1D`/`kIs2D`/`kIs2DArray`/`kIs3D`/`kIsCube`,
     /// `kIsBaseMap`/`kIsNormalMap`/`kIsGlossMap`, `kIsIBL`, `kDisableStreaming`

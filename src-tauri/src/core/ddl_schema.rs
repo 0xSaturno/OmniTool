@@ -277,7 +277,7 @@ impl SchemaDb {
 
     /// The prius struct of a component named on a Zone Actor Prius row.
     ///
-    /// The engine names the component (`"StackableCrate"`) and the struct is
+    /// The component is named (`"StackableCrate"`) and the struct is
     /// that name plus `"Prius"` (`"StackableCratePrius"`). **VERIFIED** for
     /// 100% of the distinct component names measured on the shipped build — see
     /// `prius_probe`. `name` alone and the `Component`-stripped spelling are

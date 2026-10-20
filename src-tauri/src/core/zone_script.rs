@@ -23,6 +23,7 @@
 //!
 //! `Zone Script Hashes` (`0xD266157E`) exists in the engine's section-tag list
 //! but ships in **0 of 9 046** zones, so `Zone Script String Hashes` is the
+//! a parallel array of hashes. Measured: its length equals
 //! `Zone Script Strings`' length in 973 of 973 scripted zones, and
 //! `crc32(string i) == hashes[i]` on **52 286 of 52 286** entries.
 //!
@@ -69,6 +70,7 @@
 //!    plug on the **target**, and for a var plug the target is the variable, so
 //!    the variable's `Out` plug feeding the node means the **node reads** it and
 //!    the variable's `In` plug means the **node writes** it. That is not a
+//!    guess: authored var selects carry labels such as `label("kFloat in")` /
 //!    `label("kFloat out")` annotations ([`NODE_VAR_DIRS`], 448 of them), and
 //!    reading the word from the node's point of view contradicts **every one of
 //!    the 105 930 rows those labels cover**, while reading it from the
@@ -76,9 +78,11 @@
 //!    counts say the same thing: nodes mostly consume parameters, so reads
 //!    (236 748) should far outnumber writes (39 023).
 //!
-//! `FinalizeScriptAction` then rewrites each out plug's handle as
-//! `handles[handle.GetData()]` where `handles` is the zone's script-action array
-//! in row order — so the stored index is a row index, not a uid.
+//! The stored index is a **row index** into the zone's script-action array,
+//! not a uid. Measured: every out-plug index is a valid row on all 201 189
+//! action rows, and resolving them as row indices makes the out-plug and
+//! var-plug slices tile the plug section exactly, with no overlap and no
+//! unclaimed row. Read as uids they resolve to nothing.
 //!
 //! # The var row — 32 bytes, measured
 //!
@@ -103,6 +107,7 @@
 //! (0 out of range over 275 771 bindings). `+0x00` is in `0..=5` on
 //! **219 339 of 219 339** rows (5 distinct values) and `+0x02` is `-1` or a
 //! valid string index on **219 339 of 219 339**; no other halfword slot in the
+//! row satisfies both.
 //!
 //! # Names
 //!
@@ -113,7 +118,8 @@
 //!
 //! **Plug names** are *not* in the zone; only their `crc32`. [`PLUG_NAMES`]
 //! holds 1 320 names harvested from the `select XxxInputs` / `XxxOutputs` /
-//! and C++ forms, then extended with identifiers from elsewhere in the source
+//! `XxxVars` blocks of the authored node definitions, then extended with
+//! identifiers harvested from the shipped build
 //! drop whose `crc32` measurably hits a shipped plug hash. Measured coverage
 //! over the whole build:
 //!
@@ -125,6 +131,7 @@
 //! | var-plug name               | 264 841 / 275 771 (96.04 %) |
 //!
 //! 85 distinct out-plug and 89 distinct var-plug hashes are still unnamed; they
+//! belong mostly to node types this build has no definition for
 //! (`SunsetSpawnerFactoryScriptAction`, `ActorAttachAction`, `SimpleMoverAction`
 //! …). [`NODE_PLUGS`] has per-type plug tables for 396 of the 475 shipped type
 //! names, covering 182 438 / 247 073 nodes (73.84 %).
@@ -134,6 +141,7 @@
 //! Measured over all 247 073 nodes:
 //!
 //! * every node's `uid` has bit 63 set (247 073 / 247 073) — the engine's
+//!   the placed bit, so every script node counts as authored-in-place;
 //! * `template_id` has bit 63 on only 127 058 (51.4 %);
 //! * `uid == template_id` on 30 523 (12.35 %), `uid == template_id ^ (1 << 63)` on
 //!   28 669 (11.60 %), and they are unrelated on the remaining 187 881
@@ -145,6 +153,8 @@
 //!
 //! The same plug name may appear more than once on one node: 30 989 nodes repeat
 //! an out-plug name (one output fanning out to several targets) and 7 124 repeat
+//! a var-plug name — a node may carry several plugs under one name, and a
+//! reader has to collect them as a list rather than expect one. Neither is an error;
 //! a UI must be ready for both.
 //!
 //! # What is not decoded here
@@ -201,6 +211,8 @@ impl PlugRow {
     }
 }
 
+/// The var type, as the row's `+0x00` halfword spells it: `0..=5` on all
+/// 219 339 shipped rows, with five distinct values in use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VarType {
@@ -302,6 +314,7 @@ pub struct VarBinding {
     pub var_index: u32,
     /// `"in"`, `"out"`, or `"?"` when the word is neither.
     pub direction: &'static str,
+    /// The authored direction for this plug, when known.
     pub authored_direction: Option<&'static str>,
 }
 
@@ -412,6 +425,7 @@ pub fn plug_name(hash: u32) -> Option<&'static str> {
         .map(|i| PLUG_NAMES[i].1)
 }
 
+/// The authored direction for `type.var`, when known.
 pub fn authored_var_direction(ty: &str, var: &str) -> Option<&'static str> {
     NODE_VAR_DIRS
         .binary_search_by(|r| (r.0, r.1).cmp(&(ty, var)))
@@ -597,6 +611,7 @@ impl ScriptGraph {
                     // `In` plug is fed by the node. So the node's direction is
                     // the opposite of the word. Measured: reading it the other
                     // way round contradicts every one of the 105 930 rows the
+                    // the authored labels cover.
                     let direction = match pr.target_plug_name_hash {
                         VAR_PLUG_OUT => "in",
                         VAR_PLUG_IN => "out",

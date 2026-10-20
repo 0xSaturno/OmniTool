@@ -17,6 +17,7 @@
 //! 712/712 sampled zones. Reading a fixed four sizes mis-splits the tail and
 //! loses block 2, which is where every decal and impostor mesh lives.
 //!
+//! Block 0 sections used here (names verified by `crc32(name) == tag`):
 //!
 //! ```text
 //!   0x06ABCAB2  Zone Scene Objects     byte-packed HEAP of variable-size entries

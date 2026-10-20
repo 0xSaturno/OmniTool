@@ -226,7 +226,7 @@ export function rcmsToGeometry(mesh: RcmsMesh): THREE.BufferGeometry {
   return g;
 }
 
-/** Serialise a BufferGeometry back into an RCMS buffer (used by the mock source). */
+/** Serialise a BufferGeometry back into an RCMS buffer. */
 export function encodeRcms(geometry: THREE.BufferGeometry): ArrayBuffer {
   const pos = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
   const nrm = geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;

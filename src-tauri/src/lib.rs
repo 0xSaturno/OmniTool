@@ -10,7 +10,6 @@ pub mod commands_level_editor;
 pub mod commands_level_entities;
 pub mod commands_level_graphs;
 pub mod commands_level_lighting;
-pub mod commands_level_nav;
 pub mod commands_level_prius;
 pub mod commands_level_script;
 pub mod commands_level_world;
@@ -109,7 +108,6 @@ pub fn run() {
             commands_level_editor::level_texture,
             commands_level_editor::level_save_zone,
             commands_level_editor::level_zone_stats,
-            // --- Level Editor: non-model zone entities (volumes, curves, VFX, nav) ---
             commands_level_entities::level_zone_entities,
             commands_level_entities::level_zone_paths,
             commands_level_entities::level_nav_info,
@@ -131,11 +129,6 @@ pub fn run() {
             commands_level_script::level_zone_script_dump,
             commands_level_script::level_zone_script_node,
             // --- Level Editor: navigation ---
-            commands_level_nav::level_nav_zones,
-            commands_level_nav::level_nav_summary,
-            commands_level_nav::level_nav_surface,
-            commands_level_nav::level_nav_edges,
-            commands_level_nav::level_nav_clues,
             // --- Level Editor: node graphs and conduits ---
             commands_level_graphs::level_list_graphs,
             commands_level_graphs::level_nodegraph,

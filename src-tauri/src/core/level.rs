@@ -1078,10 +1078,8 @@ pub fn parse_model_asset(bytes: &[u8]) -> Result<ModelFile> {
 /// vertex index and quantised at `(1 << n) / 16384` where `n` is the **high**
 /// nibble of `Built +0x30`.
 ///
-/// That the high nibble is UV1's and not a spare is stated by the engine
-/// scale of UV0 in the low nibble and UV1 in the high one;
-/// for UV1 and divides `1 << (n & 0xf)` by the same fixed-point base; and the
-/// Re-measured here: over the 887 distinct models Nefarious City places, the
+/// That the high nibble is UV1's and not a spare is measured, not assumed:
+/// over the 887 distinct models Nefarious City places, the
 /// two nibbles differ on 291 of the 738 that carry UV1, so the sets genuinely
 /// do not share a scale, and the decoded values stay finite with 21,117 of
 /// 10,261,052 texels outside +/-64 (0.21%, the largest `2270.8` on

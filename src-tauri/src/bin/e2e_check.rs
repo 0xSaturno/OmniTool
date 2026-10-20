@@ -25,7 +25,6 @@ use omnitool_lib::commands_level_editor as ed;
 use omnitool_lib::commands_level_entities as ent;
 use omnitool_lib::commands_level_graphs as gr;
 use omnitool_lib::commands_level_lighting as lt;
-use omnitool_lib::commands_level_nav as nv;
 use omnitool_lib::commands_level_prius as pr;
 use omnitool_lib::commands_level_script as sc;
 use omnitool_lib::commands_level_world as wd;
@@ -33,8 +32,6 @@ use omnitool_lib::core::prius::{Edit, FieldView};
 use tauri::async_runtime::block_on;
 use tauri::ipc::{InvokeResponseBody, IpcResponse, Response};
 
-const DEFAULT_GAME: &str = r"F:\SteamLibrary\steamapps\common\Ratchet & Clank - Rift Apart";
-const DEFAULT_HASHES: &str = r"E:\RCRALevelEditorViewer\refs\RCRA-Forge\hashes.txt";
 
 /// The region every zone fixture is taken from.
 const REGION: &str = "i29/openarea/sargasso";
@@ -256,40 +253,6 @@ fn check_rcms(m: &Rcms, c: &mut Ck, what: &str) {
     }
 }
 
-/// `"RCNL"`: magic, version, segment count, pad, min/max, then two `f32[3]`
-/// per segment and one `u32` class per segment.
-fn check_rcnl(b: &[u8], c: &mut Ck, what: &str) -> Option<u32> {
-    if b.len() < 40 {
-        c.err(format!("{what}: {} bytes, below the 40-byte header", b.len()));
-        return None;
-    }
-    if u32at(b, 0) != omnitool_lib::core::nav::NAV_LINES_MAGIC {
-        c.err(format!("{what}: magic {:#010X} is not RCNL", u32at(b, 0)));
-        return None;
-    }
-    let n = u32at(b, 8);
-    let want = 40 + n as usize * 28;
-    if b.len() != want {
-        c.err(format!(
-            "{what}: declares {n} segments = {want} bytes, buffer is {}",
-            b.len()
-        ));
-        return None;
-    }
-    let min = [f32at(b, 16), f32at(b, 20), f32at(b, 24)];
-    let max = [f32at(b, 28), f32at(b, 32), f32at(b, 36)];
-    c.ok(
-        plausible(min) && plausible(max),
-        format!("{what}: bounds {min:?}..{max:?} are not world metres"),
-    );
-    let class_at = 40 + n as usize * 24;
-    let bad = (0..n as usize)
-        .filter(|i| u32at(b, class_at + i * 4) & 0xFF > 3)
-        .count();
-    c.ok(bad == 0, format!("{what}: {bad} segments with an unknown edge type"));
-    Some(n)
-}
-
 /// First `Edit::Scalar` leaf with a byte span, depth-first, as a dotted path.
 fn first_scalar(fields: &[FieldView], prefix: &str) -> Option<(String, f64, f64)> {
     for f in fields {
@@ -378,8 +341,16 @@ fn schema_candidates() -> Vec<std::path::PathBuf> {
 }
 
 fn main() {
-    let game = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_GAME.into());
-    let hashes = std::env::args().nth(2).unwrap_or_else(|| DEFAULT_HASHES.into());
+    // No machine-specific defaults. The game directory is required; the asset
+    // name list is optional, and without it names come from the shipped dag.
+    let Some(game) = std::env::args().nth(1) else {
+        eprintln!("usage: e2e_check <game directory> [asset name list]");
+        eprintln!();
+        eprintln!("  <game directory>   the Rift Apart install (the folder holding the toc)");
+        eprintln!("  [asset name list]  optional; omit to take names from the shipped dag");
+        std::process::exit(2);
+    };
+    let hashes = std::env::args().nth(2).unwrap_or_default();
     let h = || Some(hashes.clone());
     let mut r = Report::default();
     let t_all = Instant::now();
@@ -1632,364 +1603,6 @@ fn main() {
     // ---- navigation --------------------------------------------------------
     let mut nav_unit_zone = String::new();
     let mut nav_container_zone = String::new();
-
-    r.check("level_nav_zones", |c| {
-        let zs = match block_on(nv::level_nav_zones(game.clone(), REGION.into(), h())) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        };
-        c.ok(!zs.is_empty(), format!("{REGION} reports no navdata zones at all"));
-        let units = zs.iter().filter(|z| z.has_unit).count();
-        let conts = zs.iter().filter(|z| z.has_container).count();
-        c.ok(units > 0, "no zone of the region holds a nav unit");
-        c.ok(conts == 1, format!("{conts} container zones; a region has exactly one"));
-        let off = zs.iter().filter(|z| !z.path.contains("navdata")).count();
-        c.ok(off == 0, format!("{off} entries are not navdata zones"));
-        nav_unit_zone = zs
-            .iter()
-            .filter(|z| z.has_unit)
-            .max_by_key(|z| z.size)
-            .map(|z| z.path.clone())
-            .unwrap_or_default();
-        nav_container_zone = zs
-            .iter()
-            .find(|z| z.has_container)
-            .map(|z| z.path.clone())
-            .unwrap_or_default();
-        c.note(format!(
-            "{} navdata zones, {units} with a unit, {conts} container, {} with a tile cache",
-            zs.len(),
-            zs.iter().filter(|z| z.has_tile_cache).count()
-        ));
-    });
-
-    r.check("level_nav_summary", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let s = match block_on(nv::level_nav_summary(game.clone(), nav_unit_zone.clone(), h())) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        };
-        c.ok(s.problems.is_empty(), format!("validate() objected: {:?}", s.problems));
-        let Some(u) = &s.unit else { return c.err("the unit zone decoded no unit") };
-        c.ok(u.layers > 0, "the unit has no layers");
-        c.ok(u.per_layer.len() == u.layers.max(1), "per-layer table does not match the layer count");
-        let polys: usize = u.per_layer.iter().map(|l| l.polygons).sum();
-        let verts: usize = u.per_layer.iter().map(|l| l.vertices).sum();
-        c.ok(verts > 0, "the unit holds no vertices");
-        c.ok(
-            plausible(u.min) && plausible(u.max) && (0..3).all(|i| u.min[i] <= u.max[i]),
-            format!("unit bounds {:?}..{:?}", u.min, u.max),
-        );
-        let span = [u.max[0] - u.min[0], u.max[2] - u.min[2]];
-        c.ok(
-            span[0] > 1.0 && span[1] > 1.0 && span[0] < 20_000.0 && span[1] < 20_000.0,
-            format!("unit footprint {span:?} m is not a tile of walkable ground"),
-        );
-        c.ok(u.tiles_x > 0 && u.tiles_z > 0, "the group grid is empty");
-        if let (Some(tl), true) = (s.tile_cache_layers, true) {
-            c.ok(
-                tl == u.layers || tl == 0,
-                format!("tile cache says {tl} layers, the unit says {}", u.layers),
-            );
-        }
-        c.note(format!(
-            "{} layers, {polys} reachable polys, {} disconnected, {verts} verts, \
-             {} clues, footprint {:.0}x{:.0} m, tileCache {:?} tiles",
-            u.layers,
-            u.per_layer.iter().map(|l| l.disconnected).sum::<usize>(),
-            u.clues,
-            span[0],
-            span[1],
-            s.tile_cache_tiles
-        ));
-        // The project's claim is that `validate()` objects to nothing on any
-        // shipped unit. Check it over every nav unit of the region rather than
-        // one, and count how many units have no reachable polygon at all.
-        let zs = block_on(nv::level_nav_zones(game.clone(), REGION.into(), h())).unwrap_or_default();
-        let (mut swept, mut probs, mut no_reach, mut polys, mut disc) =
-            (0usize, 0usize, 0usize, 0usize, 0usize);
-        let mut worst = String::new();
-        for nz in zs.iter().filter(|z| z.has_unit).take(160) {
-            let Ok(sm) = block_on(nv::level_nav_summary(game.clone(), nz.path.clone(), h())) else {
-                c.err(format!("{}: nav summary failed", nz.path));
-                continue;
-            };
-            swept += 1;
-            if !sm.problems.is_empty() {
-                probs += 1;
-                if worst.is_empty() {
-                    worst = format!("{}: {:?}", nz.path, sm.problems);
-                }
-            }
-            match &sm.unit {
-                None => c.err(format!("{} declares a unit section but decoded none", nz.path)),
-                Some(u) => {
-                    let pc: usize = u.per_layer.iter().map(|l| l.polygons).sum();
-                    let dc: usize = u.per_layer.iter().map(|l| l.disconnected).sum();
-                    polys += pc;
-                    disc += dc;
-                    if pc == 0 {
-                        no_reach += 1;
-                    }
-                    c.ok(
-                        plausible(u.min) && plausible(u.max),
-                        format!("{}: unit bounds {:?}..{:?}", nz.path, u.min, u.max),
-                    );
-                }
-            }
-        }
-        c.ok(probs == 0, format!("{probs} of {swept} units failed validate(); first {worst}"));
-        c.ok(polys > 0, "no unit of the region holds a reachable polygon");
-        c.note(format!(
-            "{swept} units swept: {polys} reachable polys, {disc} disconnected, {no_reach} units with no reachable polygon"
-        ));
-        // The container zone must decode a container, and agree about layers.
-        if !nav_container_zone.is_empty() {
-            match block_on(nv::level_nav_summary(game.clone(), nav_container_zone.clone(), h())) {
-                Ok(cs) => match &cs.container {
-                    None => c.err("the container zone decoded no container"),
-                    Some(k) => {
-                        c.ok(k.slots == k.implied_slots,
-                            format!("container holds {} slots, the header implies {}", k.slots, k.implied_slots));
-                        c.ok(k.units_x > 0 && k.units_z > 0, "container grid is empty");
-                        c.ok(
-                            k.min_m.iter().chain(k.max_m.iter()).all(|v| v.abs() < 1_000_000),
-                            format!("container grid {:?}..{:?} is not metres", k.min_m, k.max_m),
-                        );
-                        c.note(format!(
-                            "container {}x{} units, {} slots, layers {}",
-                            k.units_x, k.units_z, k.slots, k.layer_count
-                        ));
-                    }
-                },
-                Err(e) => c.err(format!("container zone: {e}")),
-            }
-        }
-    });
-
-    r.check("level_nav_surface", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let b = raw(
-            match block_on(nv::level_nav_surface(game.clone(), nav_unit_zone.clone(), None, Some(true), h())) {
-                Ok(v) => v,
-                Err(e) => return c.err(e),
-            },
-        );
-        let Some(m) = parse_rcms(&b, c, "nav surface") else { return };
-        check_rcms(&m, c, "nav surface");
-        c.ok(m.vertices > 0, "the unit's surface packs to no geometry");
-        c.ok(m.submeshes > 0, "no runs, so the viewport cannot colour the classes apart");
-        // Run flags carry layer<<8 | polyFlags, 0x8000 for reachable.
-        let reachable = m.subs.iter().filter(|s| s[3] & 0x8000 != 0).count();
-        c.ok(
-            m.subs.iter().enumerate().all(|(i, s)| s[2] == i as u32),
-            "submesh materialIndex is not the run ordinal",
-        );
-        c.note(format!(
-            "{} verts, {} tris, {} runs ({reachable} reachable)",
-            m.vertices,
-            m.indices / 3,
-            m.submeshes
-        ));
-        // The layer filter has to partition the unit: per-layer triangles must
-        // add up to the whole, or a viewport showing one layer is lying.
-        let mut per_layer = 0usize;
-        let mut layers = Vec::new();
-        for l in 0..8usize {
-            let b = raw(
-                match block_on(nv::level_nav_surface(game.clone(), nav_unit_zone.clone(), Some(l), Some(true), h())) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        c.err(format!("layer {l}: {e}"));
-                        continue;
-                    }
-                },
-            );
-            let Some(lm) = parse_rcms(&b, c, &format!("layer {l}")) else { continue };
-            check_rcms(&lm, c, &format!("layer {l}"));
-            if lm.indices > 0 {
-                layers.push((l, lm.indices / 3));
-                per_layer += lm.indices as usize / 3;
-            }
-        }
-        c.ok(
-            per_layer == m.indices as usize / 3,
-            format!("layers hold {per_layer} triangles, the unfiltered surface holds {}", m.indices / 3),
-        );
-        // includeDisconnected=false must be a strict subset.
-        let only = raw(
-            block_on(nv::level_nav_surface(game.clone(), nav_unit_zone.clone(), None, Some(false), h()))
-                .expect("reachable-only must not error"),
-        );
-        if let Some(om) = parse_rcms(&only, c, "reachable only") {
-            check_rcms(&om, c, "reachable only");
-            c.ok(
-                om.indices <= m.indices,
-                format!("reachable-only has {} indices, all classes have {}", om.indices, m.indices),
-            );
-            c.ok(
-                om.subs.iter().all(|s| s[3] & 0x8000 != 0),
-                "a run came back unreachable when only the reachable class was asked for",
-            );
-            c.note(format!("per layer {layers:?}, reachable-only {} tris", om.indices / 3));
-        }
-        // Asking a zone with no nav at all must give a well-formed empty buffer.
-        let e = raw(
-            block_on(nv::level_nav_surface(game.clone(), art.clone(), None, Some(true), h()))
-                .expect("a zone with no nav must not error"),
-        );
-        if let Some(em) = parse_rcms(&e, c, "nav surface of an art zone") {
-            c.ok(em.vertices == 0 && em.submeshes == 0, "an art zone returned a nav surface");
-        }
-    });
-
-    r.check("level_nav_edges", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let b = raw(
-            match block_on(nv::level_nav_edges(game.clone(), nav_unit_zone.clone(), None, h())) {
-                Ok(v) => v,
-                Err(e) => return c.err(e),
-            },
-        );
-        let Some(n) = check_rcnl(&b, c, "nav edges") else { return };
-        c.ok(n > 0, "the unit packs no edge segments");
-        c.note(format!("{n} segments, {} bytes", b.len()));
-        let e = raw(
-            block_on(nv::level_nav_edges(game.clone(), art.clone(), None, h()))
-                .expect("a zone with no nav must not error"),
-        );
-        if let Some(en) = check_rcnl(&e, c, "nav edges of an art zone") {
-            c.ok(en == 0, "an art zone returned nav edges");
-        }
-    });
-
-    r.check("level_nav_clues", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let cl = match block_on(nv::level_nav_clues(game.clone(), nav_unit_zone.clone(), h())) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        };
-        for k in &cl {
-            c.ok(plausible(k.position), format!("clue at {:?}", k.position));
-            c.ok(k.distance.is_finite() && k.distance >= 0.0, format!("clue distance {}", k.distance));
-        }
-        if cl.is_empty() {
-            c.note("no authored links in this unit (valid: most units have none)");
-        } else {
-            c.note(format!("{} clues, max distance {:.1} m", cl.len(),
-                cl.iter().map(|k| k.distance).fold(0.0f32, f32::max)));
-        }
-    });
-
-    r.check("level_nav_info", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let i = match block_on(ent::level_nav_info(game.clone(), nav_unit_zone.clone(), h())) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        };
-        c.ok(i.has_nav, "the unit zone says it has no nav");
-        c.ok(i.unit.is_some(), "no unit decoded");
-        c.ok(i.triangle_count > 0, "no triangles");
-        c.ok(i.vertex_count > 0, "no vertices");
-        c.ok(
-            i.plain_groups + i.link_groups > 0,
-            "no nav groups classified",
-        );
-        if let Some(u) = &i.unit {
-            c.ok(
-                i.tile_cache_layers == u.layer_count || i.tile_cache_layers == 0,
-                format!("tile cache layers {} vs unit layers {}", i.tile_cache_layers, u.layer_count),
-            );
-        }
-        c.note(format!(
-            "{} tris, {} verts, {} tiles, {} cache layers, groups {}/{}",
-            i.triangle_count, i.vertex_count, i.tile_count, i.tile_cache_layers,
-            i.plain_groups, i.link_groups
-        ));
-        let a = block_on(ent::level_nav_info(game.clone(), art.clone(), h()));
-        match a {
-            Ok(a) => c.ok(!a.has_nav && a.triangle_count == 0, "an art zone claims nav data"),
-            Err(e) => c.err(format!("art zone: {e}")),
-        }
-    });
-
-    r.check("level_nav_mesh", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let b = raw(match block_on(ent::level_nav_mesh(game.clone(), nav_unit_zone.clone(), None)) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        });
-        if b.len() < 8 {
-            return c.err(format!("{} bytes, below the 8-byte header", b.len()));
-        }
-        let (vc, tc) = (u32at(b.as_slice(), 0), u32at(b.as_slice(), 4));
-        let want = 8 + vc as usize * 12 + tc as usize * 12;
-        c.ok(
-            b.len() == want,
-            format!("declares {vc} verts / {tc} tris = {want} bytes, buffer is {}", b.len()),
-        );
-        c.ok(vc > 0 && tc > 0, "the nav unit packs to an empty mesh");
-        if b.len() == want {
-            let mut bad_i = 0usize;
-            let mut bad_p = 0usize;
-            for i in 0..vc as usize {
-                let p = [
-                    f32at(&b, 8 + i * 12),
-                    f32at(&b, 8 + i * 12 + 4),
-                    f32at(&b, 8 + i * 12 + 8),
-                ];
-                if !plausible(p) {
-                    bad_p += 1;
-                }
-            }
-            let ib = 8 + vc as usize * 12;
-            for i in 0..tc as usize * 3 {
-                if u32at(&b, ib + i * 4) >= vc {
-                    bad_i += 1;
-                }
-            }
-            c.ok(bad_p == 0, format!("{bad_p} vertices outside the world"));
-            c.ok(bad_i == 0, format!("{bad_i} indices past the vertex count"));
-        }
-        c.note(format!("{vc} verts, {tc} tris"));
-    });
-
-    r.check("level_nav_tiles", |c| {
-        if nav_unit_zone.is_empty() {
-            return c.err("no nav unit fixture");
-        }
-        let ts = match block_on(ent::level_nav_tiles(game.clone(), nav_unit_zone.clone())) {
-            Ok(v) => v,
-            Err(e) => return c.err(e),
-        };
-        if ts.is_empty() {
-            c.note("this unit zone ships no dtTileCache layers");
-            return;
-        }
-        let bad_magic = ts.iter().filter(|t| !t.magic_ok).count();
-        c.ok(bad_magic == 0, format!("{bad_magic} tiles with a bad dtTileCache magic"));
-        let bad_box = ts
-            .iter()
-            .filter(|t| !plausible(t.bmin) || !plausible(t.bmax) || (0..3).any(|i| t.bmin[i] > t.bmax[i]))
-            .count();
-        c.ok(bad_box == 0, format!("{bad_box} tiles with an impossible bounding box"));
-        let zero = ts.iter().filter(|t| t.compressed_size == 0).count();
-        c.ok(zero == 0, format!("{zero} tiles declare no payload"));
-        c.note(format!("{} tiles, {} bytes compressed", ts.len(),
-            ts.iter().map(|t| t.compressed_size as u64).sum::<u64>()));
-    });
 
     // ---- lighting ----------------------------------------------------------
     let mut atmosphere = String::new();

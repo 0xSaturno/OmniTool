@@ -378,6 +378,7 @@ pub const LEVEL_BUILT_VERSION: u32 = 0x587B_60A6;
 
 /// `RegionType` ordinal -> a readable name.
 ///
+/// The seven names are the region vocabulary this build uses. The ordinal
 /// order is the declaration order of the matching per-type auxiliary structs,
 /// and is corroborated on the shipped level: the region that `LevelBuilt`
 /// names as the always-resident global region has type 0, the only regions
@@ -1359,8 +1360,8 @@ fn read_sub_container(b: &[u8]) -> HibernateSubContainer {
     }
 }
 
-/// IEEE 754 binary16 -> f32. The engine's own converter flushes NaN/Inf to a
-/// finite value; the only place that matters here is corrupt data, so this
+/// IEEE 754 binary16 -> f32. The only place a non-finite encoding turns up
+/// here is corrupt data, so this
 /// returns 0.0 for the non-finite encodings rather than propagating a NaN into
 /// a position.
 fn half_to_f32(h: u16) -> f32 {

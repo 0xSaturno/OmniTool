@@ -16,9 +16,8 @@
  *
  * Sanity check on the translation: zoneMatrix[12..14] is (tx,ty,tz);
  * `fromArray` copies it straight into elements[12..14], which is exactly where
- * three keeps the translation. Verified against mock instance #0 in the dev
- * harness (mock position and `InstancedMesh.getMatrixAt().decompose()` agree to
- * float precision).
+ * three keeps the translation: a synthetic instance's authored position and
+ * `InstancedMesh.getMatrixAt().decompose()` agree to float precision.
  */
 
 import * as THREE from "three";

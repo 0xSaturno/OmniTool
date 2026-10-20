@@ -44,10 +44,6 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("commands_level_entities.rs"),
     ),
     (
-        "commands_level_nav.rs",
-        include_str!("commands_level_nav.rs"),
-    ),
-    (
         "commands_level_graphs.rs",
         include_str!("commands_level_graphs.rs"),
     ),

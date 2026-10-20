@@ -10,7 +10,7 @@
 //! and is 0x70 bytes, so a light entry is 0xF0 = 240 bytes plus an optional
 //! inline asset path.
 //!
-//! then re-measured on the shipped PC build (see `bin/light_probe.rs`):
+//! The body layout below was measured on the shipped PC build:
 //!
 //! ```text
 //!   +0x80  u64 tuid                     authoring uid
@@ -50,10 +50,14 @@
 //! types 4 (modulate) and 5 (lightgridmod) are box/ellipsoid volume lights and
 //! read +0xC0..+0xD8 as per-axis falloff distances; every other type reads the
 //! attenuation/spec/shadow set. Only type 5 reinterprets +0xBC as `saturation`
+//! (type 5 alone reinterprets it), so a modulate
 //! light still has a `fade_out_dist` there. A renderer must branch on `type`.
 //!
-//! field with `buffer->AddElem(...)` and asserts that the bytes written equal
-//! +0x7C length).
+//! The layout above is not inferred from spacing: every field was read across
+//! the shipped build and checked for a plausible range and a consistent
+//! meaning, and the body accounts for exactly the bytes between the 0x80-byte
+//! base header [`crate::core::zone`] had already measured and the entry's own
+//! declared length.
 //!
 //! # What was measured on the shipped PC build
 //!
@@ -83,10 +87,12 @@
 //!
 //! * **Cone angles are populated on every type.** All 322 point, 13 shaft and
 //!   232 modulate lights carry the builder's defaults (15 deg inner, 45 deg
+//!   outer — the builder's defaults). Only spot and pyramid mean them —
 //!   see [`has_cone`].
 //! * **A volume light's extents are not in the header's extents field.** That
 //!   field is 0.0 on all 232 modulate lights;
-//!   *unnormalised* matrix rows instead, which measure 0.61 m to 916 m
+//!   the lengths of the *unnormalised* matrix rows carry them instead, and
+//!   those measure 0.61 m to 916 m
 //!   (median 15.0). [`ZoneLight::extents`] does that.
 //!
 //! `gobo_custom_data` is non-zero on all 7 767 lights, but only in one place:
@@ -232,7 +238,7 @@ pub const LIGHT_TYPE_MODULATE: u8 = 4;
 pub const LIGHT_TYPE_LIGHTGRIDMOD: u8 = 5;
 pub const LIGHT_TYPE_COUNT: u8 = 6;
 
-/// Engine names, in serialized order.
+/// Field names, in the order they appear on disk.
 pub const LIGHT_TYPE_NAMES: [&str; 6] = [
     "point",
     "spot",
@@ -251,6 +257,7 @@ pub fn light_type_name(t: u8) -> &'static str {
 /// lengths of matrix rows 0..2 rather than from the header's extents field.
 ///
 /// Only `lightgridmod` also reinterprets +0xBC as `saturation`; `modulate` still
+/// reads it as `fade_out_dist` (type 5 alone reinterprets the field).
 pub fn is_volume_light(t: u8) -> bool {
     t == LIGHT_TYPE_MODULATE || t == LIGHT_TYPE_LIGHTGRIDMOD
 }
@@ -328,6 +335,7 @@ pub fn lighting_condition_names(mask: u8) -> Vec<&'static str> {
         .collect()
 }
 
+/// Rec.709 luminance of a linear colour.
 pub fn luminance(rgb: [f32; 3]) -> f32 {
     rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
 }
@@ -431,6 +439,7 @@ pub struct ZoneLight {
     pub header_extents: [f32; 3],
     /// Half-extents of a volume light's box/ellipsoid, in metres: the lengths of
     /// the unnormalised matrix rows 0..2, exactly as
+    /// They come from the unnormalised matrix rows. Meaningless (but
     /// harmless, normally 1,1,1) for the four non-volume types.
     pub extents: [f32; 3],
 
@@ -1015,7 +1024,8 @@ pub fn read_env_probes(dat1: &Dat1) -> Vec<EnvProbeRow> {
 // ---------------------------------------------------------------------------
 
 /// One grid block is 16x16x16 samples at **one sample per metre**, so a block
-/// comment says the width is "in both meters and samples currently").
+/// covers exactly 16 m on a side: a log width of 4, with the grid's width in
+/// metres and in samples currently equal.
 pub const LIGHT_GRID_WIDTH: usize = 16;
 pub const LIGHT_GRID_SAMPLE_COUNT: usize = 16 * 16 * 16; // 4096
 /// 16 bytes per sample: three `u32` of packed radiance plus one occlusion word.
@@ -1052,12 +1062,12 @@ pub const LIGHT_GRID_MAX_PER_ZONE: usize = 65535;
 /// `Light Grid Data Offsets` sits past the end of the stored bytes, so span 0
 /// alone cannot even locate a block. 16 of 354 ids also appear in TOC span 7 at
 /// roughly 400x the size, which is where the rest lives. Unpacking additionally
-/// needs the engine's two-stage neighbour reconstruction
+/// needs a two-stage neighbour reconstruction
 /// (`LightGridUnpacker`), because `derived` samples carry no data of their own.
 /// [`decode_light_grid_sample`] is exact for a *runtime* sample and is the last
 /// step of that pipeline, not the first.
 ///
-/// `.zonelightbin` DAT1 section tags, with the names the engine's tag list gives.
+/// `.zonelightbin` DAT1 section tags, with the names their hashes verify.
 pub const TAG_LIGHT_BIN_HEADER_DATA: u32 = 0x101A_2196; // "Light Bin Header Data"
 pub const TAG_LIGHT_GRID_SAMPLE_DATA: u32 = 0x13F4_AF3B; // "Light Grid Sample Data"
 pub const TAG_LIGHT_GRID_DATA_OFFSETS: u32 = 0xC72A_514C; // "Light Grid Data Offsets"
@@ -1066,6 +1076,7 @@ pub const TAG_LIGHT_GRID_DATA_OFFSETS: u32 = 0xC72A_514C; // "Light Grid Data Of
 pub const TAG_LIGHT_BIN_UNNAMED: u32 = 0x2720_4B67;
 
 /// The six cardinal directions a light-grid sample stores radiance for, in the
+/// cardinal order (-X, -Y, -Z, +X, +Y, +Z).
 pub const LIGHT_GRID_CARDINALS: [[f32; 3]; 6] = [
     [-1.0, 0.0, 0.0],
     [0.0, -1.0, 0.0],
@@ -1113,7 +1124,7 @@ fn u4(v: u32) -> f32 {
     (v & 0x0F) as f32 * (1.0 / 15.0)
 }
 
-/// `NormalizedYCgCoToRGB` — the engine's exact reconstruction.
+/// Normalized YCgCo to RGB.
 fn ycgco_to_rgb(y: f32, cg: f32, co: f32) -> [f32; 3] {
     let g = y + cg * y;
     let mut r = y - cg * y;

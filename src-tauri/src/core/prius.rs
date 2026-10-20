@@ -53,6 +53,7 @@
 //!     read: an array is simply `count > 1` (largest seen: 88);
 //!   * `magic` is `0x03150044` on all 74 242 actor-prius and 136 717
 //!     script-prius objects; `0x07201969` never appears, though it is accepted
+//!     here because accepting it costs nothing.
 //!
 //! Two latent bugs in [`crate::core::ddl`], which this module deliberately does
 //! not share code with: it takes the whole high byte as the type
@@ -134,7 +135,9 @@ pub const PRIUS_ROW_LEN: usize = 32;
 
 /// `0x03150044` — the DDL object guard OmniTool already knows.
 pub const DDL_MAGIC: u32 = 0x0315_0044;
-/// blobs: 0 of 50 341. Accepted anyway; costs nothing.
+/// `0x07201969` — a second guard value this reader also accepts. Measured
+/// occurrences on shipped actor prius blobs: 0 of 50 341. Accepted anyway;
+/// costs nothing.
 pub const DDL_MAGIC_ALT: u32 = 0x0720_1969;
 
 // ---------------------------------------------------------------------------
@@ -339,6 +342,7 @@ pub enum Edit {
     ///   * a schema `file` field (21 315 fields, 20 586 of them a wire string)
     ///     - an inline asset path. The zone builder derives the zone's backing
     ///     asset list from these, so pointing one at an asset nothing else in
+    ///     the zone references makes the zone load without it.
     ///   * an id-shaped `u64`/`i64` - engine-allocated; cloning one desyncs
     ///     spawners (`zone.rs`, `PLACED_BIT`).
     Reference,
