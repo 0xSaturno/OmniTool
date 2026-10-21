@@ -139,6 +139,14 @@ impl Dat1 {
         Ok(())
     }
 
+    /// Adds an empty section laid out after the others. The header grows by 12 bytes, which moves every
+    /// absolute string offset, so callers re-serialize all section data afterwards.
+    pub fn add_section(&mut self, tag: u32) {
+        self.sections_map.insert(tag, self.sections.len());
+        self.sections.push(SectionHeader { tag, offset: u32::MAX, size: 0 });
+        self.section_data.push(Vec::new());
+    }
+
     /// Drops sections and every fixup into them. The string pool is front-padded by what the
     /// header loses, so absolute string offsets and the fixups that target them stay valid.
     pub fn remove_sections(&mut self, tags: &[u32]) -> usize {

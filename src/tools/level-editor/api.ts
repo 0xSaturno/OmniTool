@@ -27,6 +27,7 @@ import type {
   ZoneEdit,
   ZoneEntry,
   ZoneLightingDto,
+  ZoneDuplicateResult,
   ZonePriusSummary,
   ZoneSaveResult,
   ZoneScene,
@@ -112,6 +113,17 @@ export async function saveZone(
   edits: ZoneEdit[],
 ): Promise<ZoneSaveResult> {
   return invoke<ZoneSaveResult>("level_save_zone", { gameDir, zonePath, projectName, edits });
+}
+
+/** Copies static models (and their baked collision) into the project's zone, shifted by `translate`. */
+export async function duplicateObjects(
+  gameDir: string,
+  zonePath: string,
+  projectName: string,
+  offsets: number[],
+  translate: [number, number, number],
+): Promise<ZoneDuplicateResult> {
+  return invoke<ZoneDuplicateResult>("level_duplicate_objects", { gameDir, zonePath, projectName, offsets, translate });
 }
 
 export async function zoneStats(gameDir: string, hashesPath?: string): Promise<LevelZoneStats> {

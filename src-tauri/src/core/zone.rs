@@ -2140,6 +2140,67 @@ impl Zone {
         self.dat1.set_section_data(TAG_SCENE_OBJECTS, scene)
     }
 
+    /// Copies static model instances (entries listed in Zone Model Insts) to new matrices. Each copy
+    /// is its source entry whole, extra records included, with fresh ids, appended at the end of
+    /// the scene heap so no existing entry moves. Returns the copies' offsets, in request order.
+    pub fn duplicate_models(&mut self, copies: &[(u32, [f32; 16])]) -> Result<Vec<u32>> {
+        let mut insts = u32_table(&self.dat1, TAG_MODEL_INSTS);
+        let mut scene = self.dat1.get_section_data(TAG_SCENE_OBJECTS).map(|d| d.to_vec()).unwrap_or_default();
+        let ids_of = |scene: &[u8], o: u32| {
+            let r = scene.get(o as usize..o as usize + MODEL_INST_LEN)?;
+            Some((u16::from_le_bytes([r[156], r[157]]), LE::read_u64(&r[256..264])))
+        };
+        let mut ids = std::collections::HashSet::new();
+        let mut uids = std::collections::HashSet::new();
+        for &o in &insts {
+            if let Some((id, uid)) = ids_of(&scene, o) {
+                ids.insert(id);
+                uids.insert(uid);
+            }
+        }
+
+        let mut out = Vec::with_capacity(copies.len());
+        for &(src, matrix) in copies {
+            let bad = |m: &str| ToolkitError::Parse(format!("scene object {src}: {m}"));
+            if !insts.contains(&src) {
+                return Err(bad("not a static model instance (actor-owned models can't be duplicated yet)"));
+            }
+            let len = Self::entry_len(&scene, src as usize)
+                .filter(|&l| l >= MODEL_INST_LEN)
+                .ok_or_else(|| bad("entry has no usable length"))?;
+            let (mut id, mut uid) = ids_of(&scene, src).ok_or_else(|| bad("entry too short"))?;
+            if ids.len() >= 0xFFFF {
+                return Err(bad("a zone holds at most 65535 model instances"));
+            }
+            loop {
+                id = id.wrapping_add(1);
+                if id != 0xFFFF && ids.insert(id) {
+                    break;
+                }
+            }
+            loop {
+                uid = mix64(uid) | ID_FLAG;
+                if uids.insert(uid) {
+                    break;
+                }
+            }
+            let mut r = scene[src as usize..src as usize + len].to_vec();
+            LE::write_f32_into(&matrix, &mut r[OFF_MATRIX..OFF_MATRIX + 64]);
+            r[156..158].copy_from_slice(&id.to_le_bytes());
+            r[256..264].copy_from_slice(&uid.to_le_bytes());
+            // Same as `add_model_instances`, whose copies drew in game.
+            r[264..272].fill(0);
+            r[308..312].copy_from_slice(&(-1i32).to_le_bytes());
+            let at = u32::try_from(scene.len()).map_err(|_| bad("scene heap too large"))?;
+            insts.push(at);
+            out.push(at);
+            scene.extend_from_slice(&r);
+        }
+        self.dat1.set_section_data(TAG_MODEL_INSTS, insts.iter().flat_map(|o| o.to_le_bytes()).collect())?;
+        self.dat1.set_section_data(TAG_SCENE_OBJECTS, scene)?;
+        Ok(out)
+    }
+
     fn apply_script_var_edits(&mut self, edits: &ZoneEdits) -> Result<()> {
         if edits.script_vars.is_empty()
             && edits.script_var_ids.is_empty()

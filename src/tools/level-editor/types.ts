@@ -203,6 +203,11 @@ export interface ZoneSaveResult {
   warnings: string[];
 }
 
+export interface ZoneDuplicateResult extends ZoneSaveResult {
+  /** Scene offsets of the copies, in request order. */
+  offsets: number[];
+}
+
 // ---------------------------------------------------------------------------
 // level_zone_stats
 // ---------------------------------------------------------------------------

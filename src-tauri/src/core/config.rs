@@ -86,10 +86,9 @@ fn parse_actor_sections(dat1: &Dat1) -> Option<Value> {
     }
 
     let mut component_asset_paths = HashSet::new();
-    if let (Some(defs_data), Some(data_section)) = (
-        dat1.get_section_data(ACTOR_COMPONENT_DEFS_TAG),
-        dat1.get_section_data(ACTOR_COMPONENT_DATA_TAG),
-    ) {
+    if let Some(defs_data) = dat1.get_section_data(ACTOR_COMPONENT_DEFS_TAG) {
+        // Actors whose components carry no fields ship without a DATA section.
+        let data_section = dat1.get_section_data(ACTOR_COMPONENT_DATA_TAG).unwrap_or(&[]);
         let this_section_offset = dat1
             .sections
             .iter()
@@ -394,7 +393,9 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
         component_local_offsets.push(Some(data_section.len()));
         data_section.extend_from_slice(&c.data_blob);
     }
-    dat1.set_section_data(ACTOR_COMPONENT_DATA_TAG, data_section)?;
+    if !set_optional_actor_section(dat1, ACTOR_COMPONENT_DATA_TAG, data_section)? {
+        return save_actor_sections(content, dat1);
+    }
 
     // ---- 5. Build COMPONENT_DEFS placeholder of correct size, so that
     // recalculate_section_headers can compute final offsets correctly.
@@ -411,7 +412,10 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
             paths.push(backslash);
         }
     };
-    push_ref(&mut ref_paths, &mut ref_seen, &model_path);
+    // Model-less actors (Model "") ship without a model ref.
+    if !model_path.is_empty() {
+        push_ref(&mut ref_paths, &mut ref_seen, &model_path);
+    }
     for p in &asset_paths_in_order {
         push_ref(&mut ref_paths, &mut ref_seen, p);
     }
@@ -431,17 +435,18 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
         refs_buf.extend_from_slice(&str_off.to_le_bytes());
         refs_buf.extend_from_slice(&ext_hash.to_le_bytes());
     }
-    dat1.set_section_data(ACTOR_ASSET_REFS_TAG, refs_buf)?;
+    if !set_optional_actor_section(dat1, ACTOR_ASSET_REFS_TAG, refs_buf)? {
+        return save_actor_sections(content, dat1);
+    }
 
     // ---- 7. Recalculate DAT1 layout to learn the absolute offset of the
-    // COMPONENT_DATA section (needed to patch DEFS).
+    // COMPONENT_DATA section (needed to patch DEFS). Absent only when no component has data.
     dat1.recalculate_section_headers();
     let data_section_offset = dat1
         .sections
         .iter()
         .find(|s| s.tag == ACTOR_COMPONENT_DATA_TAG)
-        .map(|s| s.offset as usize)
-        .ok_or_else(|| ToolkitError::SectionNotFound(ACTOR_COMPONENT_DATA_TAG))?;
+        .map_or(0, |s| s.offset as usize);
 
     // ---- 8. Build the real COMPONENT_DEFS now that DATA's absolute offset
     // is known. We pre-add each class name to the strings pool here too —
@@ -508,6 +513,23 @@ fn save_actor_sections(content: &Value, dat1: &mut Dat1) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Writes an actor section that shipped actors may lack (DATA when no component has fields, REFS when
+/// nothing is referenced). An absent one stays absent while empty; a needed one is added and `Ok(false)`
+/// asks the caller to start over, as the new header entry moves every absolute string offset written so far.
+fn set_optional_actor_section(dat1: &mut Dat1, tag: u32, data: Vec<u8>) -> Result<bool> {
+    if dat1.get_section_data(tag).is_some() {
+        dat1.set_section_data(tag, data)?;
+    } else if !data.is_empty() {
+        // Fixups are absolute offsets the header growth would invalidate.
+        if !dat1.fixups.is_empty() {
+            return Err(ToolkitError::SectionNotFound(tag));
+        }
+        dat1.add_section(tag);
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Walk a typed component field tree and append every asset-path string
@@ -637,7 +659,10 @@ fn serialize_typed_object(value: &Value, out: &mut Vec<u8>, dat1: &mut Dat1) -> 
 
     // Field values.
     for (_, node_type, count, inner_value, _) in &children {
-        if *count == 1 && !matches!(inner_value, Value::Array(_)) {
+        if *count == 0 && *node_type == NT_NULL {
+            // The game reads an empty NULL field as one byte.
+            inner_buf.push(0);
+        } else if *count == 1 && !matches!(inner_value, Value::Array(_)) {
             serialize_typed_value(*node_type, inner_value, &mut inner_buf, dat1)?;
         } else if let Value::Array(arr) = inner_value {
             for item in arr {
@@ -1157,6 +1182,16 @@ impl ConfigFile {
         if let Some(old) = dat1.get_section_data(CONFIG_CONTENT_TAG).and_then(|d| deserialize_section(d, &dat1).ok()) {
             collect_config_ref_paths(&old, &mut old_paths);
         }
+        // Content with asset paths needs Config Refs or the game never loads them. Added before the
+        // sections are serialized (the new header entry moves every string offset), listing every path.
+        if dat1.get_section_data(CONFIG_REFS_TAG).is_none() && dat1.fixups.is_empty() {
+            let mut paths = Vec::new();
+            collect_config_ref_paths(&content_main, &mut paths);
+            if !paths.is_empty() {
+                dat1.add_section(CONFIG_REFS_TAG);
+                old_paths.clear();
+            }
+        }
 
         let type_obj = serde_json::json!({ "Type": self.config_type });
         let type_bytes = serialize_section_into_dat1(&type_obj, &mut dat1);
@@ -1249,7 +1284,10 @@ fn deserialize_object(cur: &mut Cursor<&[u8]>, dat1: &Dat1) -> Result<Value> {
             .get_string(name_offsets[i])
             .unwrap_or_else(|| format!("field_{}", name_offsets[i]));
 
-        let value = if items_count != 1 {
+        let value = if items_count == 0 && node_type == NT_NULL {
+            cur.read_u8()?; // an empty NULL field still holds one byte
+            Value::Array(Vec::new())
+        } else if items_count != 1 {
             let mut arr = Vec::with_capacity(items_count);
             for _ in 0..items_count {
                 arr.push(deserialize_node(cur, node_type, dat1)?);
@@ -1307,7 +1345,10 @@ fn deserialize_object_typed(cur: &mut Cursor<&[u8]>, dat1: &Dat1) -> Result<Valu
             .get_string(name_offsets[i])
             .unwrap_or_else(|| format!("field_{}", name_offsets[i]));
 
-        let value = if items_count != 1 {
+        let value = if items_count == 0 && node_type == NT_NULL {
+            cur.read_u8()?; // an empty NULL field still holds one byte
+            Value::Array(Vec::new())
+        } else if items_count != 1 {
             let mut arr = Vec::with_capacity(items_count);
             for _ in 0..items_count {
                 arr.push(deserialize_node_payload_typed(cur, node_type, dat1)?);
@@ -1410,11 +1451,9 @@ fn deserialize_inline_string(cur: &mut Cursor<&[u8]>) -> Result<Value> {
     let mut bytes = vec![0u8; length];
     cur.read_exact(&mut bytes)?;
     cur.read_u8()?; // null terminator
-    let pos = cur.position();
-    let aligned = (pos + 3) & !3;
-    if aligned > pos {
-        cur.seek(SeekFrom::Start(aligned))?;
-    }
+    // Padded from the string's own start (16-byte header, text, NUL), not to an absolute boundary.
+    let pad = (4 - (length + 1) % 4) % 4;
+    cur.seek(SeekFrom::Current(pad as i64))?;
     Ok(Value::String(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
@@ -1466,7 +1505,10 @@ fn serialize_object(obj: &Value, out: &mut Vec<u8>, pool: &mut StringsPool) {
     }
 
     for (_, v, node_type, count, _) in &children {
-        if *count != 1 {
+        if *count == 0 && *node_type == NT_NULL {
+            // The game reads an empty NULL field as one byte.
+            inner.push(0);
+        } else if *count != 1 {
             if let Some(arr) = v.as_array() {
                 for elem in arr {
                     serialize_node(elem, *node_type, &mut inner, pool);
@@ -1638,7 +1680,8 @@ fn serialize_inline_string(s: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(&c64.to_le_bytes());
     out.extend_from_slice(s.as_bytes());
     out.push(0);
-    let r = out.len() % 4;
+    // Padded from the string's own start as the game reads it, not to an absolute boundary.
+    let r = (s.len() + 1) % 4;
     if r != 0 {
         out.resize(out.len() + (4 - r), 0);
     }
@@ -1962,6 +2005,76 @@ mod tests {
         assert_eq!(got["Nested"], main["Nested"]);
         // Untyped JSON still works: its type is inferred from the value.
         assert_eq!(got["Plain"], json!({ "Type": "UINT16", "Value": 300 }));
+    }
+
+    #[test]
+    fn empty_null_field_holds_one_byte() {
+        let mut dat1 = Dat1 {
+            magic: DAT1_MAGIC,
+            unk1: 0,
+            total_size: 0,
+            sections: vec![],
+            fixups: vec![],
+            strings_pool: vec![],
+            section_data: vec![],
+            sections_map: HashMap::new(),
+        };
+        let obj = json!({
+            "Empty": { "Type": "NULL", "Value": [] },
+            "Flag": { "Type": "BOOLEAN", "Value": true },
+        });
+        let mut out = Vec::new();
+        serialize_typed_object(&obj, &mut out, &mut dat1).unwrap();
+        // Header 16, two entries 16, two name offsets 8, then the values: the NULL byte, then the flag.
+        assert_eq!(out[40..42], [0, 1]);
+        let back = deserialize_object_typed(&mut Cursor::new(&out[..]), &dat1).unwrap();
+        assert_eq!(back["Flag"], obj["Flag"]);
+        assert_eq!(back["Empty"], obj["Empty"]);
+    }
+
+    #[test]
+    fn string_after_a_byte_pads_from_its_own_start() {
+        let mut dat1 = Dat1 {
+            magic: DAT1_MAGIC,
+            unk1: 0,
+            total_size: 0,
+            sections: vec![],
+            fixups: vec![],
+            strings_pool: vec![],
+            section_data: vec![],
+            sections_map: HashMap::new(),
+        };
+        let obj = json!({
+            "A": { "Type": "BOOLEAN", "Value": true },
+            "B": { "Type": "STRING", "Value": "abc" },
+            "C": { "Type": "STRING", "Value": "d" },
+        });
+        let mut out = Vec::new();
+        serialize_typed_object(&obj, &mut out, &mut dat1).unwrap();
+        // Values start at 16 + 3 * 12 = 52: the flag, then "abc" in 16 + 4 bytes, so "d" starts at 52 + 21.
+        assert_eq!(out[73..77], [1, 0, 0, 0]);
+        let back = deserialize_object_typed(&mut Cursor::new(&out[..]), &dat1).unwrap();
+        assert_eq!(back, obj);
+    }
+
+    #[test]
+    fn asset_path_adds_config_refs() {
+        let path = "configs/equipment/wpn_test_grid.config";
+        let cfg = ConfigFile {
+            magic: DAT1_MAGIC,
+            unk: [0; 28],
+            config_type: "Test".into(),
+            content: json!({ "Main": { "GridConfig": { "Type": "STRING", "Value": path } } }),
+            content_tag: CONFIG_CONTENT_TAG,
+            original_dat1: None,
+        };
+        let once = resave(cfg);
+        let dat1 = once.original_dat1.as_ref().unwrap();
+        let refs = dat1.get_section_data(CONFIG_REFS_TAG).expect("Config Refs should be added");
+        assert_eq!(refs.len(), 16);
+        let offset = u32::from_le_bytes(refs[8..12].try_into().unwrap());
+        assert_eq!(dat1.get_string(offset).as_deref(), Some("configs\\equipment\\wpn_test_grid.config"));
+        assert_eq!(once.content["Main"]["GridConfig"]["Value"], path);
     }
 
     #[test]

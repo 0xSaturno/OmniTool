@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { useLocation } from "react-router-dom";
-import { LuLayers3, LuSave, LuSettings } from "react-icons/lu";
+import { LuCopy, LuLayers3, LuSave, LuSettings } from "react-icons/lu";
 import { useSettings } from "../../contexts/SettingsContext";
 import { useProjects } from "../../contexts/ProjectsContext";
 import StatusLog, { type LogEntry } from "../../components/shared/StatusLog";
@@ -39,6 +39,8 @@ import styles from "./LevelEditor.module.css";
  * single-zone case keeps the real offsets.
  */
 const OFFSET_STRIDE = 1 << 27;
+/** Where a duplicate lands relative to its source, in metres; never on the same placement. */
+const DUPLICATE_SHIFT: [number, number, number] = [1, 0, 0];
 
 /**
  * "Load all" is happy to queue a whole planet (megalopolis alone lists 2,191
@@ -1054,6 +1056,12 @@ export default function LevelEditor() {
         dispatchEdit({ type: e.shiftKey ? "redo" : "undo" });
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        // Ctrl/Cmd+D would otherwise bookmark the page.
+        e.preventDefault();
+        void duplicateRef.current();
+        return;
+      }
       // G / R / T / F / H / Escape belong to the viewport canvas; mirror the
       // gizmo keys into the toolbar so both stay in sync, and keep the shell's
       // own toggles on keys the renderer does not claim.
@@ -1102,11 +1110,13 @@ export default function LevelEditor() {
     }
   }, [newProjName, newProjAuthor, createProject, pushLog]);
 
-  const handleSave = useCallback(async () => {
-    if (!gameDir || pendingByZone.size === 0) return;
+  /** Resolves true once every pending edit is on disk. */
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!gameDir) return false;
+    if (pendingByZone.size === 0) return true;
     if (!selectedProject) {
       pushLog("error", "Pick or create a project to save into first.");
-      return;
+      return false;
     }
     setSaving(true);
     try {
@@ -1129,12 +1139,59 @@ export default function LevelEditor() {
         "info",
         `Wrote ${files} zone file${files === 1 ? "" : "s"} into "${selectedProject}". Open the Stager to export the project as a .stage mod.`,
       );
+      return true;
     } catch (e) {
       pushLog("error", `Save failed: ${e}`);
+      return false;
     } finally {
       setSaving(false);
     }
   }, [gameDir, pendingByZone, selectedProject, pushLog, reloadZones]);
+
+  const handleDuplicate = useCallback(async () => {
+    if (!gameDir || selection.length === 0 || saving) return;
+    if (!selectedProject) {
+      pushLog("error", "Pick or create a project to duplicate into first.");
+      return;
+    }
+    // The copy is written straight into the project and the zone reloads, so pending edits go to
+    // disk first; that also makes a copy of a just-moved object start where it now is.
+    if (!(await handleSave())) return;
+    const byZone = new Map<string, number[]>();
+    let skipped = 0;
+    for (const s of selection) {
+      const rec = objectIndex.get(s);
+      if (!rec || rec.object.kind !== KIND_MODEL) {
+        skipped++;
+        continue;
+      }
+      byZone.set(rec.zonePath, [...(byZone.get(rec.zonePath) ?? []), rec.object.offset]);
+    }
+    if (skipped > 0) pushLog("warning", `${skipped} selected object(s) are not models and were not duplicated.`);
+    if (byZone.size === 0) return;
+    setSaving(true);
+    try {
+      const slots = new Map(loadedRef.current.map((z) => [z.path, z.slot]));
+      const copies: number[] = [];
+      for (const [zonePath, offsets] of byZone) {
+        const res = await api.duplicateObjects(gameDir, zonePath, selectedProject, offsets, DUPLICATE_SHIFT);
+        copies.push(...res.offsets.map((o) => (slots.get(zonePath) ?? 0) * OFFSET_STRIDE + o));
+        pushLog(
+          "success",
+          `${res.assetPath} — ${offsets.length} cop${offsets.length === 1 ? "y" : "ies"}, ${res.collisionPieces} collision piece(s) → ${res.projectFile}`,
+        );
+        for (const w of res.warnings) pushLog("warning", `${res.assetPath} — ${w}`);
+      }
+      await reloadZones([...byZone.keys()]);
+      setSelection(copies);
+    } catch (e) {
+      pushLog("error", `Duplicate failed: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [gameDir, selection, saving, selectedProject, handleSave, objectIndex, pushLog, reloadZones]);
+  const duplicateRef = useRef(handleDuplicate);
+  duplicateRef.current = handleDuplicate;
 
   // Offsets belong to the file a zone was read from, so a project switch
   // re-reads every loaded zone; unsaved edits can't follow and are dropped.
@@ -1226,6 +1283,8 @@ export default function LevelEditor() {
           selectedProject=""
           setSelectedProject={() => {}}
           onSave={() => {}}
+          onDuplicate={() => {}}
+          canDuplicate={false}
           saving={false}
           disabled
           showNewProject={false}
@@ -1258,6 +1317,8 @@ export default function LevelEditor() {
         selectedProject={selectedProject}
         setSelectedProject={setSelectedProject}
         onSave={handleSave}
+        onDuplicate={handleDuplicate}
+        canDuplicate={selection.length > 0}
         saving={saving}
         disabled={editState.edits.size === 0}
         showNewProject={showNewProject}
@@ -1470,6 +1531,8 @@ interface HeaderProps {
   selectedProject: string;
   setSelectedProject: (name: string) => void;
   onSave: () => void;
+  onDuplicate: () => void;
+  canDuplicate: boolean;
   saving: boolean;
   disabled: boolean;
   showNewProject: boolean;
@@ -1487,6 +1550,8 @@ function Header({
   selectedProject,
   setSelectedProject,
   onSave,
+  onDuplicate,
+  canDuplicate,
   saving,
   disabled,
   showNewProject,
@@ -1559,6 +1624,15 @@ function Header({
             </button>
           </>
         )}
+        <button
+          className={styles.ghost}
+          onClick={onDuplicate}
+          disabled={!canDuplicate || saving}
+          title="Save pending edits, then copy the selected models with their collision 1 m along X (Ctrl+D)"
+        >
+          <LuCopy />
+          Duplicate
+        </button>
         <button className={styles.primary} onClick={onSave} disabled={disabled || saving}>
           <LuSave />
           {saving ? "Saving…" : "Save to project"}

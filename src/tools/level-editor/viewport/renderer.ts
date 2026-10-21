@@ -1771,7 +1771,9 @@ export class LevelRenderer {
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (e.ctrlKey || e.metaKey || e.altKey) {
+    // Ctrl/Cmd chords are app shortcuts (Ctrl+D duplicates); only Alt, the slow modifier, flies.
+    if (e.ctrlKey || e.metaKey) return;
+    if (e.altKey) {
       this.rig.setKey(e.code, true);
       return;
     }

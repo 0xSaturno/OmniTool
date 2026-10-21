@@ -107,6 +107,7 @@ pub fn run() {
             commands_level_editor::level_model_materials,
             commands_level_editor::level_texture,
             commands_level_editor::level_save_zone,
+            commands_level_editor::level_duplicate_objects,
             commands_level_editor::level_zone_stats,
             commands_level_entities::level_zone_entities,
             commands_level_entities::level_zone_paths,

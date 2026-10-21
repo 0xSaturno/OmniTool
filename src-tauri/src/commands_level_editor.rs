@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use byteorder::{ByteOrder, LE};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -506,27 +507,11 @@ pub async fn level_save_zone(
     }
     let (collision_pieces, warnings) = move_collision(&mut zone, &moved_models, &placements);
 
-    let project_dir = crate::core::filesystem::projects_dir()?.join(&project_name);
-    if !project_dir.join("info.json").exists() {
-        crate::commands::create_project(
-            project_name.clone(),
-            "RCRA".to_string(),
-            "OmniTool".to_string(),
-        )
-        .await?;
-    }
-
-    let out_path = project_dir.join("0").join(&path);
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let bytes = zone.to_bytes();
-    std::fs::write(&out_path, &bytes)?;
-
+    let project_file = write_to_project(&project_name, &path, &bytes).await?;
     info!(
-        "level_save_zone: {} edit(s) -> {} ({} bytes) in {:?}",
+        "level_save_zone: {} edit(s) -> {project_file} ({} bytes) in {:?}",
         edits.len(),
-        out_path.display(),
         bytes.len(),
         start.elapsed()
     );
@@ -534,10 +519,128 @@ pub async fn level_save_zone(
     Ok(SaveResult {
         asset_path: path,
         bytes_written: bytes.len(),
-        project_file: out_path.to_string_lossy().into_owned(),
+        project_file,
         collision_pieces,
         warnings,
     })
+}
+
+/// `projects/<name>/0/<asset path>`, creating the project when it doesn't exist yet.
+async fn write_to_project(project_name: &str, path: &str, bytes: &[u8]) -> Result<String> {
+    let project_dir = crate::core::filesystem::projects_dir()?.join(project_name);
+    if !project_dir.join("info.json").exists() {
+        crate::commands::create_project(project_name.to_string(), "RCRA".to_string(), "OmniTool".to_string())
+            .await?;
+    }
+    let out_path = project_dir.join("0").join(path);
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&out_path, bytes)?;
+    Ok(out_path.to_string_lossy().into_owned())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateResult {
+    #[serde(flatten)]
+    pub saved: SaveResult,
+    /// Offsets of the copies, in request order.
+    pub offsets: Vec<u32>,
+}
+
+/// Copy static model instances, and their baked collision, into the project's copy of the zone.
+/// Each copy is its source shifted by `translate`, so collision matching never sees two models
+/// with one placement.
+#[tauri::command]
+pub async fn level_duplicate_objects(
+    game_dir: String,
+    zone_path: String,
+    project_name: String,
+    offsets: Vec<u32>,
+    translate: [f32; 3],
+) -> Result<DuplicateResult> {
+    let idx = index(&game_dir, None)?;
+    let (path, _, mut zone, _) = load_zone(&idx, &zone_path, Some(project_name.as_str()))?;
+
+    let mut placements: HashMap<[u32; 16], usize> = HashMap::new();
+    for o in zone.scene_objects.iter().filter(|o| o.kind == 0) {
+        *placements.entry(o.matrix.map(f32::to_bits)).or_insert(0) += 1;
+    }
+    let mut copies = Vec::with_capacity(offsets.len());
+    let mut pairs = Vec::with_capacity(offsets.len());
+    for &o in &offsets {
+        let old = zone
+            .find(o)
+            .filter(|obj| obj.kind == 0)
+            .ok_or_else(|| ToolkitError::Parse(format!("no model at scene offset {o}")))?
+            .matrix;
+        let mut new = old;
+        for a in 0..3 {
+            new[12 + a] += translate[a];
+        }
+        copies.push((o, new));
+        pairs.push((old, new));
+    }
+    let new_offsets = zone.duplicate_models(&copies)?;
+    let (collision_pieces, warnings) = copy_collision(&mut zone, &pairs, &placements);
+
+    let bytes = zone.save(&crate::core::zone::ZoneEdits::default())?;
+    let project_file = write_to_project(&project_name, &path, &bytes).await?;
+    info!("level_duplicate_objects: {} copies, {collision_pieces} collision piece(s) -> {project_file}", offsets.len());
+    Ok(DuplicateResult {
+        saved: SaveResult { asset_path: path, bytes_written: bytes.len(), project_file, collision_pieces, warnings },
+        offsets: new_offsets,
+    })
+}
+
+/// Grow the zone's Havok tagfile with collision for each copy; on any doubt nothing changes.
+fn copy_collision(
+    zone: &mut Zone,
+    pairs: &[([f32; 16], [f32; 16])],
+    placements: &HashMap<[u32; 16], usize>,
+) -> (usize, Vec<String>) {
+    let mut warnings = Vec::new();
+    let usable: Vec<_> = pairs
+        .iter()
+        .filter(|(old, _)| {
+            let shared = placements.get(&old.map(f32::to_bits)).copied().unwrap_or(0) > 1;
+            if shared {
+                warnings.push(format!(
+                    "model at ({:.2}, {:.2}, {:.2}): collision not copied, another model has the same placement",
+                    old[12], old[13], old[14]
+                ));
+            }
+            !shared
+        })
+        .copied()
+        .collect();
+    if usable.is_empty() {
+        return (0, warnings);
+    }
+    let Some(header) = zone.header.as_mut() else {
+        warnings.push("collision not copied: the zone has no asset header to record the larger block in".into());
+        return (0, warnings);
+    };
+    let grown = match crate::core::havok::ZoneCollision::add_copies(&zone.tail, &usable) {
+        Ok(g) => g,
+        Err(e) => {
+            warnings.push(format!("collision not copied: {e}"));
+            return (0, warnings);
+        }
+    };
+    let checked = crate::core::havok::ZoneCollision::parse(&grown.tail)
+        .and_then(|c| c.map_or(Ok(()), |c| c.verify(&grown.tail)));
+    if let Err(e) = checked {
+        warnings.push(format!("collision not copied, the grown tagfile failed its check: {e}"));
+        return (0, warnings);
+    }
+    // Block 1 holds the tagfile; its size is word 2 of the asset header.
+    let block1 = LE::read_u32(&header[8..12]);
+    LE::write_u32(&mut header[8..12], block1 + grown.delta as u32);
+    zone.tail = grown.tail;
+    warnings.extend(grown.warnings);
+    (grown.pieces, warnings)
 }
 
 /// Carry each moved model's baked collision along (docs/ZONE_FORMAT.md "Static collision").
